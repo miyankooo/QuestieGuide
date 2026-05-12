@@ -1,0 +1,9 @@
+## Interface: 11508
+## Title: WhereToQuest
+## Notes: Find currently available quests within a level range around your character level.
+## Author: miyanko
+## Version: 1.0.0
+## Dependencies: Questie
+## SavedVariables: WhereToQuestDB
+
+WhereToQuest.lua
