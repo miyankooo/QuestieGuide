@@ -15,11 +15,16 @@ local DEFAULTS = {
     showCoords = false,
     pinCurrentZone = true,
     framePos = nil,
-    frameSize = { w = 360, h = 560 },
+    frameSize = { w = 360, h = 620 },
     zoneCollapsed = {},
     groupCollapsed = {},
     minimap = { hide = false, minimapPos = 215 },
+    levelBelow = 5,
+    levelAbove = 5,
 }
+
+local LEVEL_RANGE_MIN = 0
+local LEVEL_RANGE_MAX = 5
 
 local INTRO_PREFIX = "|cffffff00[WhereToQuest]:|r "
 
@@ -47,7 +52,7 @@ local ZONE_GAP = 12
 local INDENT_STEP = 16
 
 local FRAME_WIDTH = 360
-local FRAME_HEIGHT = 560
+local FRAME_HEIGHT = 620
 
 local PAD_X = 14
 local PAD_TOP = 30
@@ -312,30 +317,49 @@ local function isQuestCompleted(questId)
     return false
 end
 
--- Grey/trivial quests sit beyond the green range below player level.
-local function isQuestTrivial(questLevel, playerLevel)
-    if not playerLevel or playerLevel <= questLevel then
-        return false
+local function clampRange(value)
+    if type(value) ~= "number" then
+        return nil
     end
-    local greenRange = (GetQuestGreenRange and GetQuestGreenRange("player")) or 5
-    return (playerLevel - questLevel) > greenRange
+    value = math.floor(value + 0.5)
+    if value < LEVEL_RANGE_MIN then return LEVEL_RANGE_MIN end
+    if value > LEVEL_RANGE_MAX then return LEVEL_RANGE_MAX end
+    return value
 end
 
--- Picks the band of quests the player can realistically accept now.
--- QuestieDB.IsDoable does not enforce requiredLevel, and chain-end quests can
--- drift far above the player, so we cap both ends explicitly here.
-local MAX_LEVEL_ABOVE = 5
-local function isQuestPickable(questLevel, requiredLevel, playerLevel)
+local function getLevelRange()
+    local db = WhereToQuestDB or {}
+    local below = clampRange(db.levelBelow) or DEFAULTS.levelBelow
+    local above = clampRange(db.levelAbove) or DEFAULTS.levelAbove
+    return below, above
+end
+
+-- Quest passes when its effective level sits in [player - below, player + above].
+local function isLevelInBand(questLevel, playerLevel, below, above)
     if not playerLevel then
         return true
     end
-    if requiredLevel and requiredLevel > 0 and requiredLevel > playerLevel then
+    if not questLevel or questLevel <= 0 then
+        return true
+    end
+    if (playerLevel - questLevel) > below then
         return false
     end
-    if questLevel and questLevel > 0 and (questLevel - playerLevel) > MAX_LEVEL_ABOVE then
+    if (questLevel - playerLevel) > above then
         return false
     end
     return true
+end
+
+-- QuestieDB.IsDoable does not enforce requiredLevel, so we gate it explicitly.
+local function meetsRequiredLevel(requiredLevel, playerLevel)
+    if not playerLevel then
+        return true
+    end
+    if not requiredLevel or requiredLevel <= 0 then
+        return true
+    end
+    return requiredLevel <= playerLevel
 end
 
 -- True when the quest is not gated by the player's race or class.
@@ -354,25 +378,43 @@ local function matchesPlayerFaction(questId)
     return true
 end
 
+-- Returns the active prereq table for a quest along with which type it is.
 -- preQuestSingle (OR) takes precedence over preQuestGroup (AND); Questie treats them as exclusive.
 local function getQuestPrereqs(questId)
     local preIds = QuestieDB.QueryQuestSingle(questId, "preQuestSingle")
     if type(preIds) == "table" and preIds[1] then
-        return preIds
+        return preIds, "single"
     end
     preIds = QuestieDB.QueryQuestSingle(questId, "preQuestGroup")
     if type(preIds) == "table" and preIds[1] then
-        return preIds
+        return preIds, "group"
     end
-    return nil
+    return nil, nil
+end
+
+-- True when the quest has prereqs and Questie reports them as not yet satisfied.
+local function isBlockedByPrereqs(questId)
+    local preIds, kind = getQuestPrereqs(questId)
+    if not preIds then
+        return false
+    end
+    if kind == "single" then
+        return not QuestieDB:IsPreQuestSingleFulfilled(preIds)
+    end
+    return not QuestieDB:IsPreQuestGroupFulfilled(preIds)
 end
 
 -- Returns the chain [initial, ..., target] of incomplete prereqs, or nil if all are complete.
+-- Walks back only while each cursor reports unsatisfied prereqs, so a satisfied
+-- preQuestSingle branch stops the walk instead of dragging in irrelevant alternatives.
 local function findMissingChain(targetId)
     local chain = { targetId }
     local visited = { [targetId] = true }
     local cursor = targetId
     for _ = 1, MAX_CHAIN_DEPTH do
+        if not isBlockedByPrereqs(cursor) then
+            break
+        end
         local preIds = getQuestPrereqs(cursor)
         if not preIds then
             break
@@ -404,6 +446,7 @@ local function scanQuestsByZone()
     end
     local playerLevel = UnitLevel("player")
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
+    local below, above = getLevelRange()
 
     local byZone = {}
 
@@ -421,10 +464,15 @@ local function scanQuestsByZone()
         return entry
     end
 
+    local function passesClassicCaps(level, requiredLevel)
+        return level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
+    end
+
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
-        if zoneOrSort and level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL and not isQuestTrivial(level, playerLevel) then
+        if zoneOrSort and passesClassicCaps(level, requiredLevel)
+            and isLevelInBand(level, playerLevel, below, above) then
             local entry = ensureZone(getZoneName(zoneOrSort))
             entry.inLog[#entry.inLog + 1] = {
                 id = questId,
@@ -438,11 +486,11 @@ local function scanQuestsByZone()
     end
 
     for questId in pairs(QuestieDB.QuestPointers) do
-        if not currentLog[questId] then
+        if not currentLog[questId] and not isQuestCompleted(questId) then
             local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
-            if level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
-                and not isQuestTrivial(level, playerLevel)
-                and isQuestPickable(level, requiredLevel, playerLevel) then
+            if passesClassicCaps(level, requiredLevel)
+                and isLevelInBand(level, playerLevel, below, above)
+                and meetsRequiredLevel(requiredLevel, playerLevel) then
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
@@ -456,33 +504,38 @@ local function scanQuestsByZone()
                         }
                         entry.count = entry.count + 1
                     end
-                elseif getQuestPrereqs(questId) and matchesPlayerFaction(questId) then
+                elseif isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
                     local chain = findMissingChain(questId)
                     if chain then
-                        local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                         local initialId = chain[1]
-                        local initialZoneOrSort = QuestieDB.QueryQuestSingle(initialId, "zoneOrSort")
-                        -- Only surface chains where the player has to travel: the
-                        -- initial prereq lives in a different zone than the target.
-                        if zoneOrSort and initialZoneOrSort and initialZoneOrSort ~= zoneOrSort then
-                            local entry = ensureZone(getZoneName(zoneOrSort))
-                            local mpe = entry.missingPre.entries[initialId]
-                            if not mpe then
-                                mpe = {
-                                    initialId = initialId,
-                                    initialName = getQuestName(initialId),
-                                    initialLevel = getEffectiveLevel(initialId, playerLevel),
-                                    initialZone = getZoneName(initialZoneOrSort),
-                                    targets = {},
+                        -- Only surface chains the player can actually start now:
+                        -- the initial step must itself pass Questie's full doability check
+                        -- (handles race/class/faction/reputation/exclusiveTo/breadcrumb).
+                        if QuestieDB.IsDoable(initialId) then
+                            local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+                            local initialZoneOrSort = QuestieDB.QueryQuestSingle(initialId, "zoneOrSort")
+                            -- Only surface chains where the player has to travel: the
+                            -- initial prereq lives in a different zone than the target.
+                            if zoneOrSort and initialZoneOrSort and initialZoneOrSort ~= zoneOrSort then
+                                local entry = ensureZone(getZoneName(zoneOrSort))
+                                local mpe = entry.missingPre.entries[initialId]
+                                if not mpe then
+                                    mpe = {
+                                        initialId = initialId,
+                                        initialName = getQuestName(initialId),
+                                        initialLevel = getEffectiveLevel(initialId, playerLevel),
+                                        initialZone = getZoneName(initialZoneOrSort),
+                                        targets = {},
+                                    }
+                                    entry.missingPre.entries[initialId] = mpe
+                                    entry.missingPre.order[#entry.missingPre.order + 1] = initialId
+                                end
+                                mpe.targets[#mpe.targets + 1] = {
+                                    id = questId,
+                                    name = getQuestName(questId),
+                                    chain = chain,
                                 }
-                                entry.missingPre.entries[initialId] = mpe
-                                entry.missingPre.order[#entry.missingPre.order + 1] = initialId
                             end
-                            mpe.targets[#mpe.targets + 1] = {
-                                id = questId,
-                                name = getQuestName(questId),
-                                chain = chain,
-                            }
                         end
                     end
                 end
@@ -1170,10 +1223,10 @@ local function buildMainFrame()
     frame:SetMovable(true)
     frame:SetResizable(true)
     if frame.SetResizeBounds then
-        frame:SetResizeBounds(320, 320, 720, 900)
+        frame:SetResizeBounds(320, 380, 720, 960)
     elseif frame.SetMinResize then
-        frame:SetMinResize(320, 320)
-        frame:SetMaxResize(720, 900)
+        frame:SetMinResize(320, 380)
+        frame:SetMaxResize(720, 960)
     end
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
@@ -1248,10 +1301,84 @@ local function buildMainFrame()
         return cb
     end
 
+    -- Quest Level Range section
+
+    local rangeTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    rangeTitle:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
+    rangeTitle:SetText("Quest Level Range")
+
+    local RANGE_SLIDER_WIDTH = 120
+    local RANGE_SLIDER_LABEL_PAD = 4
+    local RANGE_SLIDER_TOP_OFFSET = 14
+
+    local rangeRow = CreateFrame("Frame", nil, frame)
+    rangeRow:SetPoint("TOPLEFT", rangeTitle, "BOTTOMLEFT", 0, -(ELEMENT_GAP + 8))
+    rangeRow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    rangeRow:SetHeight(46)
+
+    local sliderCounter = 0
+    local function buildRangeSlider(parent, labelPrefix, dbKey)
+        sliderCounter = sliderCounter + 1
+        local name = "WhereToQuestRangeSlider" .. sliderCounter
+        local slider = CreateFrame("Slider", name, parent, "OptionsSliderTemplate")
+        slider:SetWidth(RANGE_SLIDER_WIDTH)
+        slider:SetHeight(18)
+        slider:SetMinMaxValues(LEVEL_RANGE_MIN, LEVEL_RANGE_MAX)
+        slider:SetValueStep(1)
+        slider:SetObeyStepOnDrag(true)
+        local low = _G[name .. "Low"]
+        local high = _G[name .. "High"]
+        local text = _G[name .. "Text"]
+        if low then low:SetText(tostring(LEVEL_RANGE_MIN)) end
+        if high then high:SetText(tostring(LEVEL_RANGE_MAX)) end
+        -- Bump the label up so the text isn't flush with the slider track.
+        if text then
+            text:ClearAllPoints()
+            text:SetPoint("BOTTOM", slider, "TOP", 0, RANGE_SLIDER_LABEL_PAD)
+        end
+        slider._labelPrefix = labelPrefix
+        slider._dbKey = dbKey
+        slider._text = text
+        -- Seed the value before attaching the handler so initial layout never
+        -- fires OnValueChanged with a stale default and clobbers the saved value.
+        local initial = clampRange(WhereToQuestDB and WhereToQuestDB[dbKey]) or DEFAULTS[dbKey]
+        slider:SetValue(initial)
+        if text then text:SetText(labelPrefix .. initial) end
+        slider:SetScript("OnValueChanged", function(self, value)
+            local v = clampRange(value)
+            if not v then return end
+            if self._text then
+                self._text:SetText(self._labelPrefix .. v)
+            end
+            local cur = WhereToQuestDB and WhereToQuestDB[self._dbKey]
+            if cur == v then return end
+            WhereToQuestDB[self._dbKey] = v
+            invalidateScan()
+            renderList()
+        end)
+        return slider
+    end
+
+    local belowSlider = buildRangeSlider(rangeRow, "Quest Level Below: -", "levelBelow")
+    belowSlider:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", 4, -RANGE_SLIDER_TOP_OFFSET)
+
+    local aboveSlider = buildRangeSlider(rangeRow, "Quest Level Above: +", "levelAbove")
+    aboveSlider:SetPoint("TOPRIGHT", rangeRow, "TOPRIGHT", -4, -RANGE_SLIDER_TOP_OFFSET)
+
+    frame.belowSlider = belowSlider
+    frame.aboveSlider = aboveSlider
+    frame.refreshRangeSliders = function()
+        local below, above = getLevelRange()
+        belowSlider:SetValue(below)
+        if belowSlider._text then belowSlider._text:SetText(belowSlider._labelPrefix .. below) end
+        aboveSlider:SetValue(above)
+        if aboveSlider._text then aboveSlider._text:SetText(aboveSlider._labelPrefix .. above) end
+    end
+
     -- Filters section
 
     local filtersTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    filtersTitle:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
+    filtersTitle:SetPoint("TOPLEFT", rangeRow, "BOTTOMLEFT", 0, -SECTION_GAP)
     filtersTitle:SetText("Filters")
 
     local filterFlow = CreateFrame("Frame", nil, frame)
@@ -1511,6 +1638,9 @@ local function showFrame()
     if frame.refreshToggles then
         frame.refreshToggles()
     end
+    if frame.refreshRangeSliders then
+        frame.refreshRangeSliders()
+    end
     frame:Show()
     if frame.relayoutFilters then
         frame.relayoutFilters()
@@ -1613,6 +1743,8 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         WhereToQuestDB.minBelow = nil
         WhereToQuestDB.maxAbove = nil
+        WhereToQuestDB.levelBelow = clampRange(WhereToQuestDB.levelBelow) or DEFAULTS.levelBelow
+        WhereToQuestDB.levelAbove = clampRange(WhereToQuestDB.levelAbove) or DEFAULTS.levelAbove
         local validSort = false
         for _, opt in ipairs(SORT_OPTIONS) do
             if WhereToQuestDB.sortMode == opt.value then
