@@ -3,25 +3,38 @@
 local ADDON_NAME = ...
 
 local DEFAULTS = {
-    minBelow = 5,
-    maxAbove = 3,
-    sortMode = "name",
-    filters = { inLog = true, available = true, missingPre = true },
+    sortMode = "count",
+    filters = {
+        inLog = true,
+        available = true,
+        missingPre = true,
+        dungeons = true,
+        eliteGroup = true,
+    },
+    showNpcName = false,
+    showCoords = false,
+    pinCurrentZone = true,
+    framePos = nil,
+    frameSize = { w = 360, h = 560 },
+    zoneCollapsed = {},
+    groupCollapsed = {},
+    minimap = { hide = false, minimapPos = 215 },
 }
 
 local INTRO_PREFIX = "|cffffff00[WhereToQuest]:|r "
 
 local SORT_OPTIONS = {
-    { value = "name",     label = "Alphabetical" },
-    { value = "count",    label = "Number of quests" },
-    { value = "levelDiff", label = "Level discrepancy" },
+    { value = "count",    label = "Number of Quests" },
+    { value = "xp",       label = "Total XP" },
+    { value = "avgLevel", label = "Average Quest Level" },
+    { value = "name",     label = "Alphabetical Zone Names" },
 }
 
 local SUBCAT_ORDER = { "inLog", "available", "missingPre" }
 local SUBCAT_LABEL = {
     inLog = "In Quest Log",
     available = "Available",
-    missingPre = "Missing Pre Quest",
+    missingPre = "Chain / Picked Outside",
 }
 
 -- List spacing on an 8px grid.
@@ -38,10 +51,10 @@ local FRAME_HEIGHT = 560
 
 local PAD_X = 14
 local PAD_TOP = 30
-local PAD_BOTTOM = 12
+local PAD_BOTTOM = 22
 local SECTION_GAP = 14
 local ELEMENT_GAP = 6
-local INPUT_ROW_HEIGHT = 22
+local SCROLLBAR_RESERVE = 22
 
 local MAX_CHAIN_DEPTH = 12
 
@@ -54,14 +67,40 @@ local QuestieLib
 local ZoneDB
 local QuestiePlayer
 local QuestXP
+local QuestieMap
+local QuestieLink
 
 local mainFrame
 local scrollChild
 local rowPool = {}
-local zoneCollapsed = {}
-local groupCollapsed = {}
 local lastZoneOrder = {}
 local renderList
+local searchText = ""
+local getQuestTagLabel
+local getQuestXp
+local formatNumber
+
+local QUEST_TAG_LABELS = {
+    [1] = "Elite",
+    [41] = "PvP",
+    [62] = "Raid",
+    [81] = "Dungeon",
+}
+
+local QUEST_TAG_COLORS = {
+    Elite = "ff8000",
+    Dungeon = "a335ee",
+    Raid = "ff4040",
+    PvP = "ffd200",
+}
+
+local function getZoneCollapsed()
+    return (WhereToQuestDB and WhereToQuestDB.zoneCollapsed) or {}
+end
+
+local function getGroupCollapsed()
+    return (WhereToQuestDB and WhereToQuestDB.groupCollapsed) or {}
+end
 
 local function loadQuestie()
     if QuestieDB and QuestieDB.QuestPointers then
@@ -76,6 +115,8 @@ local function loadQuestie()
     ZoneDB = loader:ImportModule("ZoneDB")
     QuestiePlayer = loader:ImportModule("QuestiePlayer")
     QuestXP = loader:ImportModule("QuestXP")
+    QuestieMap = loader:ImportModule("QuestieMap")
+    QuestieLink = loader:ImportModule("QuestieLink")
     return QuestieDB ~= nil and QuestieDB.QuestPointers ~= nil
 end
 
@@ -111,22 +152,22 @@ local function getQuestName(questId)
     return QuestieDB.QueryQuestSingle(questId, "name") or ("Quest " .. questId)
 end
 
--- Returns name, zoneName, {x, y} for the quest's lowest-id starting NPC spawn.
+-- Returns name, zoneName, {x, y}, areaId for the quest's lowest-id starting NPC spawn.
 local function getQuestStartInfo(questId)
     if not QuestieDB or not QuestieDB.GetNPC then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     local startedBy = QuestieDB.QueryQuestSingle(questId, "startedBy")
     local npcIds = startedBy and startedBy[1]
     if type(npcIds) ~= "table" or not npcIds[1] then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     local npc = QuestieDB:GetNPC(npcIds[1])
     if not npc then
-        return nil, nil, nil
+        return nil, nil, nil, nil
     end
     if type(npc.spawns) ~= "table" then
-        return npc.name, nil, nil
+        return npc.name, nil, nil, nil
     end
     local bestZoneId, bestSpawn
     for zoneId, spawns in pairs(npc.spawns) do
@@ -136,9 +177,132 @@ local function getQuestStartInfo(questId)
         end
     end
     if not bestZoneId then
-        return npc.name, nil, nil
+        return npc.name, nil, nil, nil
     end
-    return npc.name, getZoneName(bestZoneId), bestSpawn
+    return npc.name, getZoneName(bestZoneId), bestSpawn, bestZoneId
+end
+
+-- Caches start info on the quest table so repeated row renders / clicks are cheap.
+local function resolveStartInfo(quest)
+    if quest.startInfo then
+        return quest.startInfo
+    end
+    local npcName, zoneName, spawn, areaId = getQuestStartInfo(quest.id)
+    quest.startInfo = {
+        npcName = npcName,
+        zoneName = zoneName,
+        spawn = spawn,
+        areaId = areaId,
+    }
+    return quest.startInfo
+end
+
+local HIGHLIGHT_PULSE_SCALE = 1.25
+local HIGHLIGHT_PULSE_DIM = 0.55
+local HIGHLIGHT_HALF_DURATION = 0.45
+local HIGHLIGHT_PULSE_COUNT = 3
+
+-- Combined scale + alpha "breathing" pulse on every Questie icon for the quest.
+-- Scale and alpha run in parallel so the pin grows brighter at the peak; using
+-- SetLooping("REPEAT") lets WoW reset the frame state between cycles cleanly,
+-- which avoids the velocity discontinuities pure scale animation suffered from.
+local function highlightQuestOnMap(questId)
+    if not QuestieMap or not QuestieMap.GetFramesForQuest then
+        return
+    end
+    local frames = QuestieMap:GetFramesForQuest(questId)
+    if not frames then
+        return
+    end
+    for _, frame in pairs(frames) do
+        if frame and frame.CreateAnimationGroup and frame:IsObjectType("Frame") then
+            local pulse = frame.wtqPulse
+            if not pulse then
+                pulse = frame:CreateAnimationGroup()
+                pulse:SetLooping("REPEAT")
+
+                local scaleUp = pulse:CreateAnimation("Scale")
+                scaleUp:SetOrder(1)
+                scaleUp:SetDuration(HIGHLIGHT_HALF_DURATION)
+                scaleUp:SetSmoothing("IN_OUT")
+                if scaleUp.SetScale then scaleUp:SetScale(HIGHLIGHT_PULSE_SCALE, HIGHLIGHT_PULSE_SCALE) end
+                if scaleUp.SetScaleFrom then scaleUp:SetScaleFrom(1, 1) end
+                if scaleUp.SetScaleTo then scaleUp:SetScaleTo(HIGHLIGHT_PULSE_SCALE, HIGHLIGHT_PULSE_SCALE) end
+
+                local fadeDown = pulse:CreateAnimation("Alpha")
+                fadeDown:SetOrder(1)
+                fadeDown:SetDuration(HIGHLIGHT_HALF_DURATION)
+                fadeDown:SetSmoothing("IN_OUT")
+                if fadeDown.SetChange then fadeDown:SetChange(HIGHLIGHT_PULSE_DIM - 1) end
+                if fadeDown.SetFromAlpha then fadeDown:SetFromAlpha(1) end
+                if fadeDown.SetToAlpha then fadeDown:SetToAlpha(HIGHLIGHT_PULSE_DIM) end
+
+                local scaleDown = pulse:CreateAnimation("Scale")
+                scaleDown:SetOrder(2)
+                scaleDown:SetDuration(HIGHLIGHT_HALF_DURATION)
+                scaleDown:SetSmoothing("IN_OUT")
+                if scaleDown.SetScale then scaleDown:SetScale(1 / HIGHLIGHT_PULSE_SCALE, 1 / HIGHLIGHT_PULSE_SCALE) end
+                if scaleDown.SetScaleFrom then scaleDown:SetScaleFrom(HIGHLIGHT_PULSE_SCALE, HIGHLIGHT_PULSE_SCALE) end
+                if scaleDown.SetScaleTo then scaleDown:SetScaleTo(1, 1) end
+
+                local fadeUp = pulse:CreateAnimation("Alpha")
+                fadeUp:SetOrder(2)
+                fadeUp:SetDuration(HIGHLIGHT_HALF_DURATION)
+                fadeUp:SetSmoothing("IN_OUT")
+                if fadeUp.SetChange then fadeUp:SetChange(1 - HIGHLIGHT_PULSE_DIM) end
+                if fadeUp.SetFromAlpha then fadeUp:SetFromAlpha(HIGHLIGHT_PULSE_DIM) end
+                if fadeUp.SetToAlpha then fadeUp:SetToAlpha(1) end
+
+                pulse:SetScript("OnLoop", function(self)
+                    self._wtqCount = (self._wtqCount or 0) + 1
+                    if self._wtqCount >= HIGHLIGHT_PULSE_COUNT then
+                        self:Stop()
+                        self._wtqCount = 0
+                    end
+                end)
+
+                frame.wtqPulse = pulse
+            end
+            pulse:Stop()
+            pulse._wtqCount = 0
+            pulse:Play()
+        end
+    end
+end
+
+local function openMapForQuest(quest)
+    if not loadQuestie() then
+        return
+    end
+    local info = resolveStartInfo(quest)
+    if not info.areaId or not ZoneDB or not ZoneDB.GetUiMapIdByAreaId then
+        if WorldMapFrame and not WorldMapFrame:IsShown() then
+            ShowUIPanel(WorldMapFrame)
+        end
+        return
+    end
+    local uiMapId = ZoneDB:GetUiMapIdByAreaId(info.areaId)
+    if not uiMapId then
+        return
+    end
+    if not WorldMapFrame:IsShown() then
+        ShowUIPanel(WorldMapFrame)
+    end
+    if WorldMapFrame.SetMapID then
+        WorldMapFrame:SetMapID(uiMapId)
+    end
+    if info.spawn and C_Map and C_Map.SetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates then
+        pcall(function()
+            C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(uiMapId, info.spawn[1] / 100, info.spawn[2] / 100))
+            if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then
+                C_SuperTrack.SetSuperTrackedUserWaypoint(true)
+            end
+        end)
+    end
+    -- Questie draws icons asynchronously after SetMapID, so wait a tick before pulsing.
+    C_Timer.After(0.2, function()
+        highlightQuestOnMap(quest.id)
+    end)
 end
 
 local function isQuestCompleted(questId)
@@ -146,6 +310,48 @@ local function isQuestCompleted(questId)
         return IsQuestFlaggedCompleted(questId) == true
     end
     return false
+end
+
+-- Grey/trivial quests sit beyond the green range below player level.
+local function isQuestTrivial(questLevel, playerLevel)
+    if not playerLevel or playerLevel <= questLevel then
+        return false
+    end
+    local greenRange = (GetQuestGreenRange and GetQuestGreenRange("player")) or 5
+    return (playerLevel - questLevel) > greenRange
+end
+
+-- Picks the band of quests the player can realistically accept now.
+-- QuestieDB.IsDoable does not enforce requiredLevel, and chain-end quests can
+-- drift far above the player, so we cap both ends explicitly here.
+local MAX_LEVEL_ABOVE = 5
+local function isQuestPickable(questLevel, requiredLevel, playerLevel)
+    if not playerLevel then
+        return true
+    end
+    if requiredLevel and requiredLevel > 0 and requiredLevel > playerLevel then
+        return false
+    end
+    if questLevel and questLevel > 0 and (questLevel - playerLevel) > MAX_LEVEL_ABOVE then
+        return false
+    end
+    return true
+end
+
+-- True when the quest is not gated by the player's race or class.
+local function matchesPlayerFaction(questId)
+    if not QuestiePlayer then
+        return true
+    end
+    local requiredRaces = QuestieDB.QueryQuestSingle(questId, "requiredRaces")
+    if requiredRaces and QuestiePlayer.HasRequiredRace and not QuestiePlayer.HasRequiredRace(requiredRaces) then
+        return false
+    end
+    local requiredClasses = QuestieDB.QueryQuestSingle(questId, "requiredClasses")
+    if requiredClasses and QuestiePlayer.HasRequiredClass and not QuestiePlayer.HasRequiredClass(requiredClasses) then
+        return false
+    end
+    return true
 end
 
 -- preQuestSingle (OR) takes precedence over preQuestGroup (AND); Questie treats them as exclusive.
@@ -197,9 +403,6 @@ local function scanQuestsByZone()
         return {}, {}
     end
     local playerLevel = UnitLevel("player")
-    local cfg = WhereToQuestDB or DEFAULTS
-    local minLevel = playerLevel - (cfg.minBelow or DEFAULTS.minBelow)
-    local maxLevel = playerLevel + (cfg.maxAbove or DEFAULTS.maxAbove)
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
 
     local byZone = {}
@@ -221,40 +424,55 @@ local function scanQuestsByZone()
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
-        if zoneOrSort and level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL then
+        if zoneOrSort and level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL and not isQuestTrivial(level, playerLevel) then
             local entry = ensureZone(getZoneName(zoneOrSort))
-            entry.inLog[#entry.inLog + 1] = { id = questId, level = level, name = getQuestName(questId) }
+            entry.inLog[#entry.inLog + 1] = {
+                id = questId,
+                level = level,
+                name = getQuestName(questId),
+                xp = getQuestXp(questId),
+                tag = getQuestTagLabel(questId),
+            }
             entry.count = entry.count + 1
         end
     end
 
-    local rangeCap = math.min(maxLevel, CLASSIC_MAX_LEVEL)
-
     for questId in pairs(QuestieDB.QuestPointers) do
         if not currentLog[questId] then
             local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
-            if level >= minLevel and level <= rangeCap and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL then
+            if level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
+                and not isQuestTrivial(level, playerLevel)
+                and isQuestPickable(level, requiredLevel, playerLevel) then
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
                         local entry = ensureZone(getZoneName(zoneOrSort))
-                        entry.available[#entry.available + 1] = { id = questId, level = level, name = getQuestName(questId) }
+                        entry.available[#entry.available + 1] = {
+                            id = questId,
+                            level = level,
+                            name = getQuestName(questId),
+                            xp = getQuestXp(questId),
+                            tag = getQuestTagLabel(questId),
+                        }
                         entry.count = entry.count + 1
                     end
-                elseif getQuestPrereqs(questId) then
-                    -- Skip quests blocked by class/faction/race (no prereqs to surface).
+                elseif getQuestPrereqs(questId) and matchesPlayerFaction(questId) then
                     local chain = findMissingChain(questId)
                     if chain then
                         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
-                        if zoneOrSort then
+                        local initialId = chain[1]
+                        local initialZoneOrSort = QuestieDB.QueryQuestSingle(initialId, "zoneOrSort")
+                        -- Only surface chains where the player has to travel: the
+                        -- initial prereq lives in a different zone than the target.
+                        if zoneOrSort and initialZoneOrSort and initialZoneOrSort ~= zoneOrSort then
                             local entry = ensureZone(getZoneName(zoneOrSort))
-                            local initialId = chain[1]
                             local mpe = entry.missingPre.entries[initialId]
                             if not mpe then
                                 mpe = {
                                     initialId = initialId,
                                     initialName = getQuestName(initialId),
                                     initialLevel = getEffectiveLevel(initialId, playerLevel),
+                                    initialZone = getZoneName(initialZoneOrSort),
                                     targets = {},
                                 }
                                 entry.missingPre.entries[initialId] = mpe
@@ -294,14 +512,20 @@ local function scanQuestsByZone()
             return ea.initialLevel < eb.initialLevel
         end)
 
-        local sum, total = 0, 0
-        for _, q in ipairs(entry.inLog) do sum = sum + q.level; total = total + 1 end
-        for _, q in ipairs(entry.available) do sum = sum + q.level; total = total + 1 end
-        local avg = total > 0 and (sum / total) or 0
+        local xpTotal = 0
+        for _, q in ipairs(entry.inLog) do xpTotal = xpTotal + (q.xp or 0) end
+        for _, q in ipairs(entry.available) do xpTotal = xpTotal + (q.xp or 0) end
+        local levelSum, levelCount = 0, 0
+        for _, q in ipairs(entry.available) do
+            if q.level and q.level > 0 then
+                levelSum = levelSum + q.level
+                levelCount = levelCount + 1
+            end
+        end
         entry.stats = {
             count = entry.count,
-            avgLevel = avg,
-            levelDiff = math.abs(avg - playerLevel),
+            xp = xpTotal,
+            avgLevel = levelCount > 0 and (levelSum / levelCount) or nil,
         }
     end
 
@@ -320,13 +544,24 @@ local function sortZones(zoneOrder, byZone)
             end
             return ca > cb
         end)
-    elseif mode == "levelDiff" then
+    elseif mode == "xp" then
         table.sort(zoneOrder, function(a, b)
-            local da, db = byZone[a].stats.levelDiff, byZone[b].stats.levelDiff
-            if da == db then
+            local xa, xb = byZone[a].stats.xp or 0, byZone[b].stats.xp or 0
+            if xa == xb then
                 return a < b
             end
-            return da < db
+            return xa > xb
+        end)
+    elseif mode == "avgLevel" then
+        -- Zones without an average sort to the end, so the player sees only
+        -- zones with available quests at the top.
+        local hi = math.huge
+        table.sort(zoneOrder, function(a, b)
+            local la, lb = byZone[a].stats.avgLevel or hi, byZone[b].stats.avgLevel or hi
+            if la == lb then
+                return a < b
+            end
+            return la < lb
         end)
     else
         table.sort(zoneOrder)
@@ -382,6 +617,15 @@ local function showQuestTooltip(anchor, questId)
         addTooltipField("Required level", quest.requiredLevel)
     end
 
+    if QuestieDB.IsRepeatable and QuestieDB.IsRepeatable(questId) then
+        GameTooltip:AddLine("|cffff80ffRepeatable|r")
+    end
+    local tagLabel = getQuestTagLabel(questId)
+    if tagLabel then
+        local color = QUEST_TAG_COLORS[tagLabel] or "ff8000"
+        GameTooltip:AddLine("|cff" .. color .. tagLabel .. "|r")
+    end
+
     local npcName, npcZone, npcSpawn = getQuestStartInfo(questId)
     addTooltipField("NPC", npcName)
     addTooltipField("Location", formatLocation(npcZone, npcSpawn))
@@ -416,11 +660,13 @@ local function showChainTooltip(anchor, entry)
 
     GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
     GameTooltip:AddLine(entry.initialName)
+    addTooltipField("Pick up in", entry.initialZone)
     if #entry.targets == 1 then
         addTooltipField("Chain leads to", primary.name)
     else
         addTooltipField("Chain unlocks", string.format("%d quests in this zone", #entry.targets))
     end
+    addTooltipField("Steps to target", #chain)
     GameTooltip:AddLine(" ")
 
     for i, qid in ipairs(chain) do
@@ -458,6 +704,7 @@ local function acquireRow(index)
     row:SetHeight(ROW_HEIGHT)
     row:SetPoint("LEFT", scrollChild, "LEFT", 0, 0)
     row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
+    row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     row.text = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     row.text:SetPoint("LEFT", row, "LEFT", 4, 0)
     row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
@@ -487,6 +734,153 @@ local function colorQuestName(level, name)
         math.floor(r * 255), math.floor(g * 255), math.floor(b * 255), name)
 end
 
+local function searchMatches(text)
+    if searchText == "" then
+        return true
+    end
+    if not text then
+        return false
+    end
+    return string.find(string.lower(text), searchText, 1, true) ~= nil
+end
+
+local function formatRowLabel(level, name, quest)
+    local label = colorQuestName(level, name)
+    if quest and quest.tag then
+        local color = QUEST_TAG_COLORS[quest.tag] or "ff8000"
+        label = label .. " |cff" .. color .. "[" .. quest.tag .. "]|r"
+    end
+    if not quest then
+        return label
+    end
+    local wantName = WhereToQuestDB and WhereToQuestDB.showNpcName
+    local wantCoords = WhereToQuestDB and WhereToQuestDB.showCoords
+    if not wantName and not wantCoords then
+        return label
+    end
+    local info = resolveStartInfo(quest)
+    if not info then
+        return label
+    end
+    local parts = {}
+    if wantName and info.npcName then
+        if info.zoneName then
+            parts[#parts + 1] = info.npcName .. ", " .. info.zoneName
+        else
+            parts[#parts + 1] = info.npcName
+        end
+    end
+    if wantCoords and info.spawn then
+        parts[#parts + 1] = string.format("%.1f, %.1f", info.spawn[1], info.spawn[2])
+    end
+    if #parts == 0 then
+        return label
+    end
+    return label .. "  |cff7f7f7f" .. table.concat(parts, " \194\183 ") .. "|r"
+end
+
+local function getPlayerZoneName()
+    if not C_Map or not C_Map.GetBestMapForUnit then
+        return nil
+    end
+    local uiMapId = C_Map.GetBestMapForUnit("player")
+    if not uiMapId or not C_Map.GetMapInfo then
+        return nil
+    end
+    local info = C_Map.GetMapInfo(uiMapId)
+    return info and info.name or nil
+end
+
+-- Forward declarations resolved later.
+local showQuestContextMenu
+local showChainContextMenu
+
+-- Questie's plain-text share format: receivers running Questie convert the
+-- pattern into a rich |Hquestie:id:guid|h hyperlink via its chat filter, while
+-- non-Questie users still see a readable "[[level] Name (id)]" string.
+local function buildQuestLink(quest)
+    local lvl = quest.level or 0
+    local name = quest.name or ("Quest " .. quest.id)
+    if QuestieLink and QuestieLink.GetQuestLinkString then
+        return QuestieLink:GetQuestLinkString(lvl, name, quest.id)
+    end
+    return string.format("[[%d] %s (%d)]", lvl, name, quest.id)
+end
+
+local function linkQuestInChat(quest)
+    local link = buildQuestLink(quest)
+    local edit = ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow()
+    if edit and edit:IsVisible() and ChatEdit_InsertLink then
+        ChatEdit_InsertLink(link)
+    elseif ChatFrame_OpenChat then
+        ChatFrame_OpenChat(link)
+    else
+        print(INTRO_PREFIX .. link)
+    end
+end
+
+local contextMenuFrame
+
+local function ensureContextMenuFrame()
+    if not contextMenuFrame then
+        contextMenuFrame = CreateFrame("Frame", "WhereToQuestContextMenu", UIParent, "UIDropDownMenuTemplate")
+    end
+    return contextMenuFrame
+end
+
+function showQuestContextMenu(anchor, quest)
+    local items = {
+        { text = quest.name, isTitle = true, notCheckable = true },
+        { text = "Show on map", notCheckable = true, func = function() openMapForQuest(quest) end },
+        { text = "Link in chat", notCheckable = true, func = function() linkQuestInChat(quest) end },
+        { text = "Close", notCheckable = true, func = function() end },
+    }
+    EasyMenu(items, ensureContextMenuFrame(), "cursor", 0, 0, "MENU")
+end
+
+function showChainContextMenu(anchor, mpe)
+    local quest = mpe._pseudo or { id = mpe.initialId, level = mpe.initialLevel, name = mpe.initialName }
+    local items = {
+        { text = mpe.initialName, isTitle = true, notCheckable = true },
+        { text = "Show on map", notCheckable = true, func = function() openMapForQuest(quest) end },
+        { text = "Link in chat", notCheckable = true, func = function() linkQuestInChat(quest) end },
+        { text = "Close", notCheckable = true, func = function() end },
+    }
+    EasyMenu(items, ensureContextMenuFrame(), "cursor", 0, 0, "MENU")
+end
+
+function getQuestTagLabel(questId)
+    if not QuestieDB or not QuestieDB.GetQuestTagInfo then
+        return nil
+    end
+    local tagId = QuestieDB.GetQuestTagInfo(questId)
+    return tagId and QUEST_TAG_LABELS[tagId] or nil
+end
+
+function getQuestXp(questId)
+    if not QuestXP or not QuestXP.GetQuestLogRewardXP then
+        return 0
+    end
+    local ok, xp = pcall(function() return QuestXP:GetQuestLogRewardXP(questId, true) end)
+    if not ok or type(xp) ~= "number" then
+        return 0
+    end
+    return xp
+end
+
+function formatNumber(n)
+    n = math.floor(n + 0.5)
+    if n < 1000 then return tostring(n) end
+    local s = tostring(n)
+    local out = s:sub(-3)
+    s = s:sub(1, -4)
+    while #s > 0 do
+        out = s:sub(-3) .. "," .. out
+        s = s:sub(1, -4)
+    end
+    return out
+end
+
 function renderList()
     if not scrollChild then
         return
@@ -511,86 +905,214 @@ function renderList()
         GameTooltip:Hide()
     end
 
-    local function renderQuestRow(level, name, onEnter)
+    local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick)
         y = y + ROW_GAP
         local row = acquireRow(index)
         placeRow(row, ROW_HEIGHT, INDENT_STEP * 2)
-        row.text:SetText(colorQuestName(level, name))
+        row.text:SetText(label)
         row:SetScript("OnEnter", onEnter)
         row:SetScript("OnLeave", hideGameTooltip)
-        row:SetScript("OnClick", nil)
+        if onLeftClick or onRightClick or onShiftClick then
+            row:SetScript("OnClick", function(self, btn)
+                if btn == "LeftButton" and IsModifiedClick and IsModifiedClick("CHATLINK") then
+                    if onShiftClick then onShiftClick(self) end
+                elseif btn == "RightButton" then
+                    if onRightClick then onRightClick(self) end
+                else
+                    if onLeftClick then onLeftClick(self) end
+                end
+            end)
+        else
+            row:SetScript("OnClick", nil)
+        end
         y = y + ROW_HEIGHT
         index = index + 1
     end
 
+    local zoneCollapsedDB = getZoneCollapsed()
+    local groupCollapsedDB = getGroupCollapsed()
+    local pinCurrentZone = WhereToQuestDB and WhereToQuestDB.pinCurrentZone
+    local playerZone = pinCurrentZone and getPlayerZoneName() or nil
+    local showDungeons = filters.dungeons ~= false
+    local showEliteGroup = filters.eliteGroup ~= false
+
+    local function passesTagFilter(quest)
+        local tag = quest.tag
+        if not tag then
+            return true
+        end
+        if tag == "Dungeon" then
+            return showDungeons
+        end
+        if tag == "Elite" or tag == "Raid" then
+            return showEliteGroup
+        end
+        return true
+    end
+
+    local function passesQuest(quest, zoneMatch)
+        if not passesTagFilter(quest) then
+            return false
+        end
+        if zoneMatch then
+            return true
+        end
+        if searchMatches(quest.name) then
+            return true
+        end
+        if WhereToQuestDB and (WhereToQuestDB.showNpcName or WhereToQuestDB.showCoords) then
+            local info = resolveStartInfo(quest)
+            if info and searchMatches(info.npcName) then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function passesChain(mpe, zoneMatch)
+        if zoneMatch then
+            return true
+        end
+        if searchMatches(mpe.initialName) then
+            return true
+        end
+        for _, target in ipairs(mpe.targets) do
+            if searchMatches(target.name) then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Reorder so the player's current zone floats to the top when pinning is on.
+    if playerZone then
+        local reordered = { playerZone }
+        for _, name in ipairs(zoneOrder) do
+            if name ~= playerZone then
+                reordered[#reordered + 1] = name
+            end
+        end
+        if byZone[playerZone] then
+            zoneOrder = reordered
+        end
+    end
+
     for _, zoneName in ipairs(zoneOrder) do
         local entry = byZone[zoneName]
-        local collapsed = zoneCollapsed[zoneName] == true
+        if entry then
+            local collapsed = zoneCollapsedDB[zoneName] == true
+            local zoneMatch = searchMatches(zoneName)
 
-        local visibleCounts = {
-            inLog = filters.inLog and #entry.inLog or 0,
-            available = filters.available and #entry.available or 0,
-            missingPre = filters.missingPre and #entry.missingPre.order or 0,
-        }
-
-        if visibleCounts.inLog + visibleCounts.available + visibleCounts.missingPre > 0 then
-            if renderedZones > 0 then
-                y = y + ZONE_GAP
+            local visible = { inLog = {}, available = {}, missingPre = {} }
+            if filters.inLog then
+                for _, q in ipairs(entry.inLog) do
+                    if passesQuest(q, zoneMatch) then
+                        visible.inLog[#visible.inLog + 1] = q
+                    end
+                end
             end
-            renderedZones = renderedZones + 1
+            if filters.available then
+                for _, q in ipairs(entry.available) do
+                    if passesQuest(q, zoneMatch) then
+                        visible.available[#visible.available + 1] = q
+                    end
+                end
+            end
+            if filters.missingPre then
+                for _, initialId in ipairs(entry.missingPre.order) do
+                    local mpe = entry.missingPre.entries[initialId]
+                    if passesChain(mpe, zoneMatch) then
+                        visible.missingPre[#visible.missingPre + 1] = mpe
+                    end
+                end
+            end
 
-            local header = acquireRow(index)
-            placeRow(header, HEADER_HEIGHT, 0)
-            local arrow = collapsed and "|cffffd200[+]|r " or "|cffffd200[-]|r "
-            header.text:SetText(arrow .. zoneName .. " (" .. entry.count .. ")")
-            header:SetScript("OnClick", function()
-                zoneCollapsed[zoneName] = not collapsed
-                renderList()
-            end)
-            header:SetScript("OnEnter", nil)
-            header:SetScript("OnLeave", nil)
-            y = y + HEADER_HEIGHT
-            index = index + 1
+            local visibleTotal = #visible.inLog + #visible.available + #visible.missingPre
+            if visibleTotal > 0 then
+                if renderedZones > 0 then
+                    y = y + ZONE_GAP
+                end
+                renderedZones = renderedZones + 1
 
-            if not collapsed then
-                local subIndex = 0
-                for _, subKey in ipairs(SUBCAT_ORDER) do
-                    local count = filters[subKey] and visibleCounts[subKey] or 0
-                    if count > 0 then
-                        subIndex = subIndex + 1
-                        local groupKey = zoneName .. "||" .. subKey
-                        local groupHidden = groupCollapsed[groupKey] == true
+                local visibleXp = 0
+                for _, q in ipairs(visible.available) do visibleXp = visibleXp + (q.xp or 0) end
+                for _, q in ipairs(visible.inLog) do visibleXp = visibleXp + (q.xp or 0) end
 
-                        y = y + (subIndex == 1 and ROW_GAP or GROUP_GAP)
+                local header = acquireRow(index)
+                placeRow(header, HEADER_HEIGHT, 0)
+                local arrow = collapsed and "|cffffd200[+]|r " or "|cffffd200[-]|r "
+                local summary = " (" .. visibleTotal .. ")"
+                if visibleXp > 0 then
+                    local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
+                    if xpMax > 0 then
+                        local pct = math.floor(visibleXp / xpMax * 100 + 0.5)
+                        summary = summary .. string.format(" |cff7f7f7f\194\183 %s XP (%d%% lvl)|r", formatNumber(visibleXp), pct)
+                    else
+                        summary = summary .. string.format(" |cff7f7f7f\194\183 %s XP|r", formatNumber(visibleXp))
+                    end
+                end
+                header.text:SetText(arrow .. zoneName .. summary)
+                header:SetScript("OnClick", function()
+                    zoneCollapsedDB[zoneName] = not collapsed
+                    renderList()
+                end)
+                header:SetScript("OnEnter", nil)
+                header:SetScript("OnLeave", nil)
+                y = y + HEADER_HEIGHT
+                index = index + 1
 
-                        local sub = acquireRow(index)
-                        placeRow(sub, SUBHEADER_HEIGHT, INDENT_STEP)
-                        local subArrow = groupHidden and "[+]" or "[-]"
-                        sub.text:SetText(string.format("|cff9d9d9d%s %s (%d)|r",
-                            subArrow, SUBCAT_LABEL[subKey], count))
-                        sub:SetScript("OnClick", function()
-                            groupCollapsed[groupKey] = not groupHidden
-                            renderList()
-                        end)
-                        sub:SetScript("OnEnter", nil)
-                        sub:SetScript("OnLeave", nil)
-                        y = y + SUBHEADER_HEIGHT
-                        index = index + 1
+                if not collapsed then
+                    local subIndex = 0
+                    for _, subKey in ipairs(SUBCAT_ORDER) do
+                        local list = visible[subKey]
+                        if filters[subKey] and #list > 0 then
+                            subIndex = subIndex + 1
+                            local groupKey = zoneName .. "||" .. subKey
+                            local groupHidden = groupCollapsedDB[groupKey] == true
 
-                        if not groupHidden then
-                            if subKey == "missingPre" then
-                                for _, initialId in ipairs(entry.missingPre.order) do
-                                    local mpe = entry.missingPre.entries[initialId]
-                                    renderQuestRow(mpe.initialLevel, mpe.initialName, function(self)
-                                        showChainTooltip(self, mpe)
-                                    end)
-                                end
-                            else
-                                for _, quest in ipairs(entry[subKey]) do
-                                    local questId = quest.id
-                                    renderQuestRow(quest.level, quest.name, function(self)
-                                        showQuestTooltip(self, questId)
-                                    end)
+                            y = y + (subIndex == 1 and ROW_GAP or GROUP_GAP)
+
+                            local sub = acquireRow(index)
+                            placeRow(sub, SUBHEADER_HEIGHT, INDENT_STEP)
+                            local subArrow = groupHidden and "[+]" or "[-]"
+                            sub.text:SetText(string.format("|cff9d9d9d%s %s (%d)|r",
+                                subArrow, SUBCAT_LABEL[subKey], #list))
+                            sub:SetScript("OnClick", function()
+                                groupCollapsedDB[groupKey] = not groupHidden
+                                renderList()
+                            end)
+                            sub:SetScript("OnEnter", nil)
+                            sub:SetScript("OnLeave", nil)
+                            y = y + SUBHEADER_HEIGHT
+                            index = index + 1
+
+                            if not groupHidden then
+                                if subKey == "missingPre" then
+                                    for _, mpe in ipairs(list) do
+                                        local pseudo = mpe._pseudo
+                                        if not pseudo then
+                                            pseudo = { id = mpe.initialId, level = mpe.initialLevel, name = mpe.initialName }
+                                            mpe._pseudo = pseudo
+                                        end
+                                        local label = formatRowLabel(mpe.initialLevel, mpe.initialName, pseudo)
+                                        if mpe.initialZone then
+                                            label = label .. " |cff7f7f7f(pick up in " .. mpe.initialZone .. ")|r"
+                                        end
+                                        renderQuestRow(label,
+                                            function(self) showChainTooltip(self, mpe) end,
+                                            function() openMapForQuest(pseudo) end,
+                                            function(self) if showChainContextMenu then showChainContextMenu(self, mpe) end end,
+                                            function() linkQuestInChat(pseudo) end)
+                                    end
+                                else
+                                    for _, quest in ipairs(list) do
+                                        local label = formatRowLabel(quest.level, quest.name, quest)
+                                        renderQuestRow(label,
+                                            function(self) showQuestTooltip(self, quest.id) end,
+                                            function() openMapForQuest(quest) end,
+                                            function(self) if showQuestContextMenu then showQuestContextMenu(self, quest) end end,
+                                            function() linkQuestInChat(quest) end)
+                                    end
                                 end
                             end
                         end
@@ -601,13 +1123,23 @@ function renderList()
     end
 
     if renderedZones == 0 then
+        local anyBucket = filters.inLog or filters.available or filters.missingPre
+        local msg
+        if not anyBucket then
+            msg = "All quest filters are off. Enable In Quest Log, Available, or Show Chain / Picked Outside to see quests."
+        elseif searchText ~= "" then
+            msg = string.format("No quests match \"%s\". Clear the search or change filters.", searchText)
+        else
+            msg = "No non-trivial quests available right now. Level up or move to a different area to unlock more."
+        end
         local row = acquireRow(index)
-        placeRow(row, ROW_HEIGHT, 0)
-        row.text:SetText("|cffaaaaaaNo quests match the current filters.|r")
+        placeRow(row, ROW_HEIGHT * 2, 0)
+        row.text:SetText("|cffaaaaaa" .. msg .. "|r")
+        row.text:SetWordWrap(true)
         row:SetScript("OnEnter", nil)
         row:SetScript("OnLeave", nil)
         row:SetScript("OnClick", nil)
-        y = y + ROW_HEIGHT
+        y = y + ROW_HEIGHT * 2
         index = index + 1
     end
 
@@ -617,12 +1149,12 @@ function renderList()
     if mainFrame and mainFrame.toggleAllButton then
         local allCollapsed = #zoneOrder > 0
         for _, zoneName in ipairs(zoneOrder) do
-            if not zoneCollapsed[zoneName] then
+            if not zoneCollapsedDB[zoneName] then
                 allCollapsed = false
                 break
             end
         end
-        mainFrame.toggleAllButton:SetText(allCollapsed and "Expand all" or "Collapse all")
+        mainFrame.toggleAllButton:SetText(allCollapsed and "Expand" or "Collapse")
     end
 end
 
@@ -632,170 +1164,186 @@ local function buildMainFrame()
     end
 
     local frame = CreateFrame("Frame", "WhereToQuestFrame", UIParent, "BasicFrameTemplateWithInset")
-    frame:SetSize(FRAME_WIDTH, FRAME_HEIGHT)
-    frame:SetPoint("CENTER")
+    local savedSize = (WhereToQuestDB and WhereToQuestDB.frameSize) or DEFAULTS.frameSize
+    frame:SetSize(savedSize.w or FRAME_WIDTH, savedSize.h or FRAME_HEIGHT)
     frame:SetFrameStrata("DIALOG")
     frame:SetMovable(true)
+    frame:SetResizable(true)
+    if frame.SetResizeBounds then
+        frame:SetResizeBounds(320, 320, 720, 900)
+    elseif frame.SetMinResize then
+        frame:SetMinResize(320, 320)
+        frame:SetMaxResize(720, 900)
+    end
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", frame.StartMoving)
-    frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        local point, _, relPoint, x, y = self:GetPoint(1)
+        WhereToQuestDB.framePos = { point = point, relPoint = relPoint, x = x, y = y }
+    end)
+
+    local savedPos = WhereToQuestDB and WhereToQuestDB.framePos
+    if type(savedPos) == "table" and savedPos.point then
+        frame:ClearAllPoints()
+        frame:SetPoint(savedPos.point, UIParent, savedPos.relPoint or savedPos.point, savedPos.x or 0, savedPos.y or 0)
+    else
+        frame:SetPoint("CENTER")
+    end
     frame:Hide()
 
     frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     frame.title:SetPoint("TOP", frame.TitleBg, "TOP", 0, -3)
     frame.title:SetText("WhereToQuest")
 
-    -- Level Range section
-
-    local levelRangeTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    levelRangeTitle:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
-    levelRangeTitle:SetText("Level Range")
-
-    local levelRangeHelp = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    levelRangeHelp:SetPoint("TOPLEFT", levelRangeTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    levelRangeHelp:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    levelRangeHelp:SetJustifyH("LEFT")
-    levelRangeHelp:SetWordWrap(true)
-    levelRangeHelp:SetText("Quests within this many levels below and above your current level.")
-
-    local rangeRow = CreateFrame("Frame", nil, frame)
-    rangeRow:SetPoint("TOPLEFT", levelRangeHelp, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    rangeRow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    rangeRow:SetHeight(INPUT_ROW_HEIGHT)
-
-    local belowLabel = rangeRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    belowLabel:SetPoint("LEFT", rangeRow, "LEFT", 0, 0)
-    belowLabel:SetText("Levels below")
-
-    local belowBox = CreateFrame("EditBox", nil, rangeRow, "InputBoxTemplate")
-    belowBox:SetSize(36, 20)
-    belowBox:SetPoint("LEFT", belowLabel, "RIGHT", 10, 0)
-    belowBox:SetAutoFocus(false)
-    belowBox:SetNumeric(true)
-    belowBox:SetMaxLetters(2)
-    frame.belowBox = belowBox
-
-    local aboveLabel = rangeRow:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    aboveLabel:SetPoint("LEFT", belowBox, "RIGHT", 16, 0)
-    aboveLabel:SetText("Levels above")
-
-    local aboveBox = CreateFrame("EditBox", nil, rangeRow, "InputBoxTemplate")
-    aboveBox:SetSize(36, 20)
-    aboveBox:SetPoint("LEFT", aboveLabel, "RIGHT", 10, 0)
-    aboveBox:SetAutoFocus(false)
-    aboveBox:SetNumeric(true)
-    aboveBox:SetMaxLetters(2)
-    frame.aboveBox = aboveBox
-
-    -- Returns true when the edit box value differs from saved state.
-    local function applyInput(editBox, key)
-        local n = tonumber(editBox:GetText() or "")
-        if not n or n < 0 then
-            return false
+    -- Measures the checkbox + label width at layout time, since GetStringWidth
+    -- only reports accurately once the fontstring has been drawn.
+    local function measureCheckboxWidth(cb)
+        local cbText = cb._cbText
+        local textW = 0
+        if cbText then
+            textW = math.ceil(cbText:GetStringWidth())
+            if textW == 0 and cb._labelLen then
+                textW = cb._labelLen * 7
+            end
         end
-        n = math.floor(n)
-        if WhereToQuestDB[key] == n then
-            return false
-        end
-        WhereToQuestDB[key] = n
-        return true
+        return 22 + 4 + textW + 6
     end
 
-    local function applyAndRefresh()
-        local changed = applyInput(belowBox, "minBelow")
-        if applyInput(aboveBox, "maxAbove") then
-            changed = true
+    -- Position items left-to-right, wrap when the next one would overflow.
+    local function layoutFlow(container, items, hGap, vGap, rowHeight)
+        local width = container:GetWidth()
+        if width <= 1 then
+            return
         end
-        if changed then
-            invalidateScan()
-            renderList()
+        local x, y = 0, 0
+        for _, item in ipairs(items) do
+            local w = measureCheckboxWidth(item.frame)
+            if x > 0 and (x + w) > width then
+                x = 0
+                y = y + rowHeight + vGap
+            end
+            item.frame:ClearAllPoints()
+            item.frame:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
+            x = x + w + hGap
         end
+        container:SetHeight(y + rowHeight)
     end
 
-    -- Debounce keystrokes so the list rebuilds once per pause.
-    local pendingTimer
-    local function cancelPending()
-        if pendingTimer then
-            pendingTimer:Cancel()
-            pendingTimer = nil
+    local cbCounter = 0
+    local function buildCheckbox(parent, label, onClick)
+        cbCounter = cbCounter + 1
+        local name = "WhereToQuestCB" .. cbCounter
+        local cb = CreateFrame("CheckButton", name, parent, "UICheckButtonTemplate")
+        cb:SetSize(22, 22)
+        local cbText = _G[name .. "Text"]
+        if cbText then
+            cbText:SetText(label)
+            cbText:SetFontObject("GameFontNormalSmall")
         end
-    end
-    local function scheduleApply()
-        cancelPending()
-        pendingTimer = C_Timer.NewTimer(0.25, function()
-            pendingTimer = nil
-            applyAndRefresh()
-        end)
-    end
-    local function flushApply(self)
-        cancelPending()
-        applyAndRefresh()
-        if self and self.ClearFocus then
-            self:ClearFocus()
-        end
-    end
-
-    for _, box in ipairs({ belowBox, aboveBox }) do
-        box:SetScript("OnTextChanged", scheduleApply)
-        box:SetScript("OnEnterPressed", flushApply)
-        box:SetScript("OnEditFocusLost", flushApply)
-        box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        cb:SetScript("OnClick", onClick)
+        cb._cbText = cbText
+        cb._labelLen = #label
+        return cb
     end
 
     -- Filters section
 
     local filtersTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    filtersTitle:SetPoint("TOPLEFT", rangeRow, "BOTTOMLEFT", 0, -SECTION_GAP)
+    filtersTitle:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
     filtersTitle:SetText("Filters")
 
-    local filterRow = CreateFrame("Frame", nil, frame)
-    filterRow:SetPoint("TOPLEFT", filtersTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    filterRow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    filterRow:SetHeight(24)
+    local filterFlow = CreateFrame("Frame", nil, frame)
+    filterFlow:SetPoint("TOPLEFT", filtersTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    filterFlow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    filterFlow:SetHeight(22)
 
-    local FILTER_LAYOUT = {
-        { key = "inLog",      label = "In Log",     x = 0   },
-        { key = "available",  label = "Available",  x = 90  },
-        { key = "missingPre", label = "Missing Pre", x = 190 },
+    local FILTER_KEYS = {
+        { key = "inLog",      label = "In Quest Log" },
+        { key = "available",  label = "Available" },
+        { key = "missingPre", label = "Show Chain / Picked Outside" },
+        { key = "dungeons",   label = "Show Dungeons" },
+        { key = "eliteGroup", label = "Show Elite/Group Quests" },
     }
 
-    frame.filterCheckboxes = {}
-    for i, spec in ipairs(FILTER_LAYOUT) do
-        local cb = CreateFrame("CheckButton", "WhereToQuestFilter" .. i, filterRow, "UICheckButtonTemplate")
-        cb:SetSize(22, 22)
-        cb:SetPoint("LEFT", filterRow, "LEFT", spec.x, 0)
-        local cbText = _G[cb:GetName() .. "Text"]
-        if cbText then
-            cbText:SetText(spec.label)
-            cbText:SetFontObject("GameFontNormalSmall")
-        end
-        cb:SetScript("OnClick", function(self)
+    local filterItems = {}
+    for _, spec in ipairs(FILTER_KEYS) do
+        local cb = buildCheckbox(filterFlow, spec.label, function(self)
             WhereToQuestDB.filters = WhereToQuestDB.filters or {}
             WhereToQuestDB.filters[spec.key] = self:GetChecked() and true or false
             renderList()
         end)
         cb.filterKey = spec.key
-        frame.filterCheckboxes[#frame.filterCheckboxes + 1] = cb
+        filterItems[#filterItems + 1] = { frame = cb }
     end
+    frame.filterItems = filterItems
+
+    frame.relayoutFilters = function()
+        layoutFlow(filterFlow, filterItems, 10, 4, 22)
+    end
+    filterFlow:SetScript("OnSizeChanged", frame.relayoutFilters)
 
     frame.refreshFilters = function()
         local fs = (WhereToQuestDB and WhereToQuestDB.filters) or DEFAULTS.filters
-        for _, cb in ipairs(frame.filterCheckboxes) do
-            cb:SetChecked(fs[cb.filterKey] and true or false)
+        for _, item in ipairs(filterItems) do
+            local v = fs[item.frame.filterKey]
+            if v == nil then v = DEFAULTS.filters[item.frame.filterKey] end
+            item.frame:SetChecked(v and true or false)
+        end
+    end
+
+    -- View section
+
+    local viewTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    viewTitle:SetPoint("TOPLEFT", filterFlow, "BOTTOMLEFT", 0, -SECTION_GAP)
+    viewTitle:SetText("View")
+
+    local viewFlow = CreateFrame("Frame", nil, frame)
+    viewFlow:SetPoint("TOPLEFT", viewTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    viewFlow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    viewFlow:SetHeight(22)
+
+    local VIEW_KEYS = {
+        { key = "showNpcName",    label = "Show NPC Name and Location" },
+        { key = "showCoords",     label = "Show NPC Coordinates" },
+        { key = "pinCurrentZone", label = "Pin Current Zone" },
+    }
+
+    local viewItems = {}
+    for _, spec in ipairs(VIEW_KEYS) do
+        local cb = buildCheckbox(viewFlow, spec.label, function(self)
+            WhereToQuestDB[spec.key] = self:GetChecked() and true or false
+            renderList()
+        end)
+        cb.toggleKey = spec.key
+        viewItems[#viewItems + 1] = { frame = cb }
+    end
+    frame.viewItems = viewItems
+
+    frame.relayoutView = function()
+        layoutFlow(viewFlow, viewItems, 10, 4, 22)
+    end
+    viewFlow:SetScript("OnSizeChanged", frame.relayoutView)
+
+    frame.refreshToggles = function()
+        for _, item in ipairs(viewItems) do
+            local v = WhereToQuestDB and WhereToQuestDB[item.frame.toggleKey]
+            if v == nil then v = DEFAULTS[item.frame.toggleKey] end
+            item.frame:SetChecked(v and true or false)
         end
     end
 
     -- Sorting section
 
     local sortingTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sortingTitle:SetPoint("TOPLEFT", filterRow, "BOTTOMLEFT", 0, -SECTION_GAP)
+    sortingTitle:SetPoint("TOPLEFT", viewFlow, "BOTTOMLEFT", 0, -SECTION_GAP)
     sortingTitle:SetText("Sorting")
 
     -- UIDropDownMenuTemplate has ~16px invisible padding; offset to align edges.
     local sortDropdown = CreateFrame("Frame", "WhereToQuestSortDropdown", frame, "UIDropDownMenuTemplate")
     sortDropdown:SetPoint("TOPLEFT", sortingTitle, "BOTTOMLEFT", -16, 0)
-    UIDropDownMenu_SetWidth(sortDropdown, 160)
+    UIDropDownMenu_SetWidth(sortDropdown, 200)
 
     local function getSortLabel(value)
         for _, opt in ipairs(SORT_OPTIONS) do
@@ -828,53 +1376,158 @@ local function buildMainFrame()
         UIDropDownMenu_SetText(sortDropdown, getSortLabel((WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode))
     end
 
-    -- Match +16 inset to undo dropdown internal padding.
-    local toggleAllButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-    toggleAllButton:SetSize(110, 22)
-    toggleAllButton:SetPoint("TOPLEFT", sortDropdown, "BOTTOMLEFT", 16, -ELEMENT_GAP)
-    toggleAllButton:SetText("Collapse all")
+    -- Search section
+
+    local searchTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    searchTitle:SetPoint("TOPLEFT", sortDropdown, "BOTTOMLEFT", 16, -SECTION_GAP)
+    searchTitle:SetText("Search")
+
+    local searchHelp = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    searchHelp:SetPoint("TOPLEFT", searchTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    searchHelp:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    searchHelp:SetJustifyH("LEFT")
+    searchHelp:SetWordWrap(true)
+    searchHelp:SetText("Filter by quest name, zone name, or NPC name (when NPC display is on).")
+
+    local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", frame, "SearchBoxTemplate")
+    searchBox:SetHeight(20)
+    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    searchBox:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    searchBox:SetAutoFocus(false)
+    searchBox:HookScript("OnTextChanged", function(self)
+        local newText = string.lower(self:GetText() or "")
+        if newText == searchText then
+            return
+        end
+        searchText = newText
+        renderList()
+    end)
+    frame.searchBox = searchBox
+
+    -- Quests header row: title on the left, Collapse + Refresh on the right.
+
+    local questsRow = CreateFrame("Frame", nil, frame)
+    questsRow:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -SECTION_GAP)
+    questsRow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    questsRow:SetHeight(22)
+
+    local questsTitle = questsRow:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    questsTitle:SetPoint("LEFT", questsRow, "LEFT", 0, 0)
+    questsTitle:SetText("Quests")
+
+    local refreshButton = CreateFrame("Button", nil, questsRow, "UIPanelButtonTemplate")
+    refreshButton:SetSize(80, 22)
+    refreshButton:SetPoint("RIGHT", questsRow, "RIGHT", 0, 0)
+    refreshButton:SetText("Refresh")
+    refreshButton:SetScript("OnClick", function()
+        invalidateScan()
+        renderList()
+    end)
+    frame.refreshButton = refreshButton
+
+    local toggleAllButton = CreateFrame("Button", nil, questsRow, "UIPanelButtonTemplate")
+    toggleAllButton:SetSize(90, 22)
+    toggleAllButton:SetPoint("RIGHT", refreshButton, "LEFT", -ELEMENT_GAP, 0)
+    toggleAllButton:SetText("Collapse")
     toggleAllButton:SetScript("OnClick", function()
+        local zc = getZoneCollapsed()
         local anyExpanded = false
         for _, zoneName in ipairs(lastZoneOrder) do
-            if not zoneCollapsed[zoneName] then
+            if not zc[zoneName] then
                 anyExpanded = true
                 break
             end
         end
         for _, zoneName in ipairs(lastZoneOrder) do
-            zoneCollapsed[zoneName] = anyExpanded
+            zc[zoneName] = anyExpanded
         end
         renderList()
     end)
     frame.toggleAllButton = toggleAllButton
 
     local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", toggleAllButton, "BOTTOMLEFT", 0, -SECTION_GAP)
-    scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -(PAD_X + 18), PAD_BOTTOM)
+    scroll:SetPoint("TOPLEFT", questsRow, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -(PAD_X + SCROLLBAR_RESERVE), PAD_BOTTOM)
 
     local child = CreateFrame("Frame", nil, scroll)
-    child:SetSize(FRAME_WIDTH - (PAD_X * 2) - 18, 1)
+    child:SetSize(savedSize.w - (PAD_X * 2) - SCROLLBAR_RESERVE, 1)
     scroll:SetScrollChild(child)
     scrollChild = child
     frame.scroll = scroll
+
+    local function updateScrollChildWidth()
+        child:SetWidth(frame:GetWidth() - (PAD_X * 2) - SCROLLBAR_RESERVE)
+    end
+    frame:HookScript("OnSizeChanged", function(self)
+        updateScrollChildWidth()
+        WhereToQuestDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
+        renderList()
+    end)
+
+    local resizeGrip = CreateFrame("Button", nil, frame)
+    resizeGrip:SetSize(16, 16)
+    resizeGrip:SetPoint("BOTTOMRIGHT", -4, 4)
+    resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+    resizeGrip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    resizeGrip:SetScript("OnMouseDown", function() frame:StartSizing("BOTTOMRIGHT") end)
+    resizeGrip:SetScript("OnMouseUp", function() frame:StopMovingOrSizing() end)
+
+    -- Lets ESC close the window like a Blizzard panel.
+    tinsert(UISpecialFrames, "WhereToQuestFrame")
 
     mainFrame = frame
     return frame
 end
 
+local function renderLoadingPlaceholder()
+    if not scrollChild then
+        return
+    end
+    for _, row in ipairs(rowPool) do
+        row:Hide()
+        row:SetScript("OnClick", nil)
+        row:SetScript("OnEnter", nil)
+        row:SetScript("OnLeave", nil)
+    end
+    local row = acquireRow(1)
+    row:SetHeight(ROW_HEIGHT)
+    row:ClearAllPoints()
+    row:SetPoint("LEFT", scrollChild, "LEFT", 0, 0)
+    row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
+    row:SetPoint("TOP", scrollChild, "TOP", 0, -ROW_HEIGHT)
+    row.text:SetText("|cff7f7f7fScanning quest database\226\128\166|r")
+    scrollChild:SetHeight(ROW_HEIGHT * 3)
+end
+
 local function showFrame()
     local frame = buildMainFrame()
-    invalidateScan()
-    frame.belowBox:SetText(tostring(WhereToQuestDB.minBelow))
-    frame.aboveBox:SetText(tostring(WhereToQuestDB.maxAbove))
     if frame.refreshSortDropdown then
         frame.refreshSortDropdown()
     end
     if frame.refreshFilters then
         frame.refreshFilters()
     end
+    if frame.refreshToggles then
+        frame.refreshToggles()
+    end
     frame:Show()
-    renderList()
+    if frame.relayoutFilters then
+        frame.relayoutFilters()
+    end
+    if frame.relayoutView then
+        frame.relayoutView()
+    end
+    if scanCache.valid then
+        renderList()
+    else
+        renderLoadingPlaceholder()
+        C_Timer.After(0, function()
+            if frame:IsShown() then
+                renderList()
+            end
+        end)
+    end
 end
 
 local function toggleFrame()
@@ -894,6 +1547,39 @@ SlashCmdList["WHERETOQUEST"] = function()
         return
     end
     toggleFrame()
+end
+
+-- Registers the launcher with LibDBIcon so any addon-manager UI (CleanUI's
+-- edge-snap refresh, Titan Panel, ChocolateBar, etc.) can manage it consistently.
+local function setupMinimapButton()
+    local LDB = LibStub("LibDataBroker-1.1")
+    local LDBIcon = LibStub("LibDBIcon-1.0")
+    if LDBIcon:IsRegistered("WhereToQuest") then
+        return
+    end
+
+    local dataObject = LDB:NewDataObject("WhereToQuest", {
+        type = "launcher",
+        text = "WhereToQuest",
+        icon = "Interface\\Icons\\INV_Misc_Map02",
+        OnClick = function(_, button)
+            if button == "LeftButton" then
+                SlashCmdList["WHERETOQUEST"]()
+            end
+        end,
+        OnTooltipShow = function(tt)
+            tt:AddLine("WhereToQuest")
+            tt:AddLine("|cffffffffClick|r to toggle.", 1, 1, 1)
+        end,
+    })
+
+    -- Migrate legacy angle field to LibDBIcon's minimapPos.
+    if WhereToQuestDB.minimap.angle and not WhereToQuestDB.minimap.minimapPos then
+        WhereToQuestDB.minimap.minimapPos = WhereToQuestDB.minimap.angle
+    end
+    WhereToQuestDB.minimap.angle = nil
+
+    LDBIcon:Register("WhereToQuest", dataObject, WhereToQuestDB.minimap)
 end
 
 local refreshTimer
@@ -925,12 +1611,8 @@ loader:SetScript("OnEvent", function(self, event, name)
         if type(WhereToQuestDB) ~= "table" then
             WhereToQuestDB = {}
         end
-        if type(WhereToQuestDB.minBelow) ~= "number" then
-            WhereToQuestDB.minBelow = DEFAULTS.minBelow
-        end
-        if type(WhereToQuestDB.maxAbove) ~= "number" then
-            WhereToQuestDB.maxAbove = DEFAULTS.maxAbove
-        end
+        WhereToQuestDB.minBelow = nil
+        WhereToQuestDB.maxAbove = nil
         local validSort = false
         for _, opt in ipairs(SORT_OPTIONS) do
             if WhereToQuestDB.sortMode == opt.value then
@@ -949,7 +1631,31 @@ loader:SetScript("OnEvent", function(self, event, name)
                 WhereToQuestDB.filters[key] = defaultOn
             end
         end
+        if type(WhereToQuestDB.showNpcName) ~= "boolean" then
+            WhereToQuestDB.showNpcName = DEFAULTS.showNpcName
+        end
+        if type(WhereToQuestDB.showCoords) ~= "boolean" then
+            WhereToQuestDB.showCoords = DEFAULTS.showCoords
+        end
+        if type(WhereToQuestDB.pinCurrentZone) ~= "boolean" then
+            WhereToQuestDB.pinCurrentZone = DEFAULTS.pinCurrentZone
+        end
+        if type(WhereToQuestDB.frameSize) ~= "table" then
+            WhereToQuestDB.frameSize = { w = DEFAULTS.frameSize.w, h = DEFAULTS.frameSize.h }
+        end
+        if type(WhereToQuestDB.zoneCollapsed) ~= "table" then
+            WhereToQuestDB.zoneCollapsed = {}
+        end
+        if type(WhereToQuestDB.groupCollapsed) ~= "table" then
+            WhereToQuestDB.groupCollapsed = {}
+        end
+        if type(WhereToQuestDB.minimap) ~= "table" then
+            WhereToQuestDB.minimap = { hide = false, minimapPos = 215 }
+        end
+        WhereToQuestDB.showHidden = nil
+        WhereToQuestDB.hiddenQuests = nil
     elseif event == "PLAYER_LOGIN" then
+        setupMinimapButton()
         print(INTRO_PREFIX .. "loaded. Type /wtq to open.")
     end
 end)
