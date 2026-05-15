@@ -1788,6 +1788,6 @@ loader:SetScript("OnEvent", function(self, event, name)
         WhereToQuestDB.hiddenQuests = nil
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
-        print(INTRO_PREFIX .. "loaded. Type /wtq to open.")
+        print(INTRO_PREFIX .. "Loaded. Type /wtq to open.")
     end
 end)
