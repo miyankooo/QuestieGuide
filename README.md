@@ -7,9 +7,10 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 - `/wtq` slash command or minimap button opens a movable, resizable dialog.
 - Search box with helper text that matches against quest names, zone names, and (when **Show NPC Name and Location** or **Show NPC Coordinates** is on) NPC names.
 - Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone header shows the visible-quest count, total reward XP, and how much of your current level that represents.
-- Filters: **In Quest Log**, **Available**, **Show Chain / Picked Outside**, **Show Dungeons**, **Show Elite/Group Quests**.
+- **Quest Level Range** sliders configure how many levels below and above the player to include (each 0–5, default 5/5). Quests already in your log are always shown regardless of the range.
+- Filters: **In Quest Log**, **Available**, **Show Chain Prerequisites**, **Show Dungeons**, **Show Elite/Group Quests**.
 - View toggles: **Show NPC Name and Location**, **Show NPC Coordinates**, **Pin Current Zone**.
-- Sort modes: **Number of Quests**, **Total XP**, **Alphabetical Zone Names**.
+- Sort modes: **Number of Quests**, **Total XP**, **Average Quest Level**, **Alphabetical Zone Names**.
 - **Collapse / Expand** all zones and a **Refresh** button to force a re-scan, placed beneath the search box.
 - Click a quest to open the World Map at its start NPC zone; the matching Questie pin pulses for a few seconds so you can spot it.
 - Right-click a quest for a context menu: **Show on map**, **Link in chat**.
@@ -52,28 +53,29 @@ The embedded libraries (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIc
 
 WhereToQuest imports a small set of Questie modules through `QuestieLoader`:
 
-- `QuestieDB` — `QuestPointers`, `IsDoable`, `GetQuest`, `QueryQuestSingle`, `GetQuestTagInfo`, `IsRepeatable`, `GetNPC`.
+- `QuestieDB` — `QuestPointers`, `IsDoable`, `GetQuest`, `QueryQuestSingle`, `GetQuestTagInfo`, `IsRepeatable`, `GetNPC`, `IsPreQuestSingleFulfilled`, `IsPreQuestGroupFulfilled`.
 - `QuestieLib` — `GetTbcLevel`, `GetColoredQuestName`, `GetDifficultyColorPercent`.
 - `ZoneDB` — `GetLocalizedDungeonName` for dungeon zone fallbacks and `GetUiMapIdByAreaId` for the click-to-map feature.
 - `QuestiePlayer` — `currentQuestlog`, `HasRequiredRace`, `HasRequiredClass`.
 - `QuestXP` — `GetQuestLogRewardXP` for per-quest and per-zone XP totals.
 - `QuestieMap` — `GetFramesForQuest` to pulse a quest's icons on the world map.
+- `QuestieLink` — `GetQuestLinkString` to build the Questie-flavored chat link for **Link in chat**.
 
 A quest is shown when:
 
 1. Its filter category is enabled.
 2. Either it is in the player's quest log, or `QuestieDB.IsDoable(questId)` returns true, or it is gated only by an incomplete prerequisite chain (and matches your race/class).
-3. The player meets `requiredLevel` and the effective level is no more than 5 above the player.
-4. The effective level is not below the trivial (grey) threshold reported by `GetQuestGreenRange`.
+3. For non-log quests, the player meets `requiredLevel` and the effective level falls within the configured **Quest Level Range** band. In-log quests bypass the band.
+4. For **Chain Prerequisites**, the initial step itself must pass `QuestieDB.IsDoable` (race, class, faction, reputation, exclusivity, breadcrumb). For `preQuestGroup` (AND) gating, every incomplete prereq is surfaced as its own row so the player sees all initials they have to pick up.
 
-Zone names come from `C_Map.GetAreaInfo` using `zoneOrSort`, with `ZoneDB:GetLocalizedDungeonName` as a fallback. Quests with non-positive `zoneOrSort` (sort categories such as class or profession buckets) are grouped under **Other**.
+Zone names come from `C_Map.GetAreaInfo` using `zoneOrSort`, with `ZoneDB:GetLocalizedDungeonName` as a fallback. Quests with non-positive `zoneOrSort` (sort categories such as class or profession buckets) are grouped under **Other**. The start-NPC location displayed on each row prefers a spawn that lives in the quest's own zone; if the NPC doesn't spawn there, the smallest area id is used as a deterministic fallback.
 
 ## Saved Variables
 
-`WhereToQuestDB` stores the sort mode, filters, view toggles, collapsed zones/groups, minimap button angle, and frame position/size per-account.
+`WhereToQuestDB` stores the sort mode, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account.
 
 ## Notes and assumptions
 
 - `QuestXP:GetQuestLogRewardXP` is called inside `pcall` because its signature has shifted between Questie versions; if it errors, the XP value is treated as 0.
-- Trivial (grey) quests are filtered out using `GetQuestGreenRange("player")`. To see them, lower your level or pick a higher-level zone.
+- The **Quest Level Range** sliders gate which non-log quests are surfaced. Lower the **below** slider to hide near-trivial quests, or raise the **above** slider to see slightly higher-level ones that are still flagged as doable.
 - The list rebuilds automatically when you change a filter, pick a new sort, or when the quest log updates / you level up. The **Refresh** button forces a re-scan.

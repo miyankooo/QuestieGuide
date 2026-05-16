@@ -39,7 +39,7 @@ local SUBCAT_ORDER = { "inLog", "available", "missingPre" }
 local SUBCAT_LABEL = {
     inLog = "In Quest Log",
     available = "Available",
-    missingPre = "Chain / Picked Outside",
+    missingPre = "Chain Prerequisites",
 }
 
 -- List spacing on an 8px grid.
@@ -157,7 +157,10 @@ local function getQuestName(questId)
     return QuestieDB.QueryQuestSingle(questId, "name") or ("Quest " .. questId)
 end
 
--- Returns name, zoneName, {x, y}, areaId for the quest's lowest-id starting NPC spawn.
+-- Returns name, zoneName, {x, y}, areaId for the quest's first start NPC.
+-- Prefers a spawn in the quest's own zone (zoneOrSort) so the labeled location
+-- matches the zone the quest is bucketed under; falls back to the smallest
+-- area id if no spawn lives in the quest zone (deterministic, but arbitrary).
 local function getQuestStartInfo(questId)
     if not QuestieDB or not QuestieDB.GetNPC then
         return nil, nil, nil, nil
@@ -174,13 +177,23 @@ local function getQuestStartInfo(questId)
     if type(npc.spawns) ~= "table" then
         return npc.name, nil, nil, nil
     end
-    local bestZoneId, bestSpawn
+    local questZone = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+    local preferZoneId = (questZone and questZone > 0) and questZone or nil
+    local preferredZoneId, preferredSpawn
+    local fallbackZoneId, fallbackSpawn
     for zoneId, spawns in pairs(npc.spawns) do
-        if type(spawns) == "table" and spawns[1] and not (bestZoneId and zoneId >= bestZoneId) then
-            bestZoneId = zoneId
-            bestSpawn = spawns[1]
+        if type(spawns) == "table" and spawns[1] then
+            if preferZoneId and zoneId == preferZoneId then
+                preferredZoneId = zoneId
+                preferredSpawn = spawns[1]
+            elseif not fallbackZoneId or zoneId < fallbackZoneId then
+                fallbackZoneId = zoneId
+                fallbackSpawn = spawns[1]
+            end
         end
     end
+    local bestZoneId = preferredZoneId or fallbackZoneId
+    local bestSpawn = preferredSpawn or fallbackSpawn
     if not bestZoneId then
         return npc.name, nil, nil, nil
     end
@@ -404,39 +417,60 @@ local function isBlockedByPrereqs(questId)
     return not QuestieDB:IsPreQuestGroupFulfilled(preIds)
 end
 
--- Returns the chain [initial, ..., target] of incomplete prereqs, or nil if all are complete.
--- Walks back only while each cursor reports unsatisfied prereqs, so a satisfied
--- preQuestSingle branch stops the walk instead of dragging in irrelevant alternatives.
-local function findMissingChain(targetId)
-    local chain = { targetId }
-    local visited = { [targetId] = true }
-    local cursor = targetId
-    for _ = 1, MAX_CHAIN_DEPTH do
-        if not isBlockedByPrereqs(cursor) then
-            break
+-- Returns a list of chains [initial, ..., target] of incomplete prereqs.
+-- preQuestSingle (OR) takes the first incomplete alternative; preQuestGroup
+-- (AND) branches into one chain per incomplete prereq so the player sees
+-- every initial they have to pick up, not just one arbitrary path.
+local function findMissingChains(targetId)
+    local results = {}
+
+    local function walk(questId, chain, depth, visited)
+        if depth > MAX_CHAIN_DEPTH then
+            results[#results + 1] = chain
+            return
         end
-        local preIds = getQuestPrereqs(cursor)
+        if not isBlockedByPrereqs(questId) then
+            results[#results + 1] = chain
+            return
+        end
+        local preIds, kind = getQuestPrereqs(questId)
         if not preIds then
-            break
+            results[#results + 1] = chain
+            return
         end
-        local nextPre
+        local pending = {}
         for _, preId in ipairs(preIds) do
             if not visited[preId] and not isQuestCompleted(preId) then
-                nextPre = preId
-                break
+                pending[#pending + 1] = preId
             end
         end
-        if not nextPre then
-            break
+        if #pending == 0 then
+            results[#results + 1] = chain
+            return
         end
-        visited[nextPre] = true
-        table.insert(chain, 1, nextPre)
-        cursor = nextPre
+        -- OR: any one prereq satisfies the gate, so the first incomplete option
+        -- is enough. AND: every prereq must be done, so each becomes its own chain.
+        if kind == "single" then
+            pending = { pending[1] }
+        end
+        for _, preId in ipairs(pending) do
+            local subChain = { preId }
+            for _, c in ipairs(chain) do subChain[#subChain + 1] = c end
+            -- Clone visited per branch so AND siblings don't shadow each other's nodes.
+            local nextVisited = {}
+            for k in pairs(visited) do nextVisited[k] = true end
+            nextVisited[preId] = true
+            walk(preId, subChain, depth + 1, nextVisited)
+        end
     end
-    if #chain <= 1 then
-        return nil
+
+    walk(targetId, { targetId }, 0, { [targetId] = true })
+
+    local valid = {}
+    for _, p in ipairs(results) do
+        if #p > 1 then valid[#valid + 1] = p end
     end
-    return chain
+    return valid
 end
 
 -- Buckets every quest into its zone. Expensive; caller should cache the result.
@@ -468,11 +502,13 @@ local function scanQuestsByZone()
         return level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
     end
 
+    -- Quests already in the player's log bypass the level band: if the player
+    -- accepted it, they want to see it regardless of how far it has drifted
+    -- from their current level.
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
-        if zoneOrSort and passesClassicCaps(level, requiredLevel)
-            and isLevelInBand(level, playerLevel, below, above) then
+        if zoneOrSort and passesClassicCaps(level, requiredLevel) then
             local entry = ensureZone(getZoneName(zoneOrSort))
             entry.inLog[#entry.inLog + 1] = {
                 id = questId,
@@ -505,18 +541,16 @@ local function scanQuestsByZone()
                         entry.count = entry.count + 1
                     end
                 elseif isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
-                    local chain = findMissingChain(questId)
-                    if chain then
-                        local initialId = chain[1]
-                        -- Only surface chains the player can actually start now:
-                        -- the initial step must itself pass Questie's full doability check
-                        -- (handles race/class/faction/reputation/exclusiveTo/breadcrumb).
-                        if QuestieDB.IsDoable(initialId) then
-                            local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
-                            local initialZoneOrSort = QuestieDB.QueryQuestSingle(initialId, "zoneOrSort")
-                            -- Only surface chains where the player has to travel: the
-                            -- initial prereq lives in a different zone than the target.
-                            if zoneOrSort and initialZoneOrSort and initialZoneOrSort ~= zoneOrSort then
+                    local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+                    if zoneOrSort then
+                        local chains = findMissingChains(questId)
+                        for _, chain in ipairs(chains) do
+                            local initialId = chain[1]
+                            -- Only surface chains the player can actually start now:
+                            -- the initial step must itself pass Questie's full doability check
+                            -- (handles race/class/faction/reputation/exclusiveTo/breadcrumb).
+                            if QuestieDB.IsDoable(initialId) then
+                                local initialZoneOrSort = QuestieDB.QueryQuestSingle(initialId, "zoneOrSort")
                                 local entry = ensureZone(getZoneName(zoneOrSort))
                                 local mpe = entry.missingPre.entries[initialId]
                                 if not mpe then
@@ -524,17 +558,23 @@ local function scanQuestsByZone()
                                         initialId = initialId,
                                         initialName = getQuestName(initialId),
                                         initialLevel = getEffectiveLevel(initialId, playerLevel),
-                                        initialZone = getZoneName(initialZoneOrSort),
+                                        initialZone = initialZoneOrSort and getZoneName(initialZoneOrSort) or nil,
                                         targets = {},
+                                        -- Dedupe per (initial, target) so AND paths that converge
+                                        -- on the same initial don't list the same target twice.
+                                        targetIds = {},
                                     }
                                     entry.missingPre.entries[initialId] = mpe
                                     entry.missingPre.order[#entry.missingPre.order + 1] = initialId
                                 end
-                                mpe.targets[#mpe.targets + 1] = {
-                                    id = questId,
-                                    name = getQuestName(questId),
-                                    chain = chain,
-                                }
+                                if not mpe.targetIds[questId] then
+                                    mpe.targetIds[questId] = true
+                                    mpe.targets[#mpe.targets + 1] = {
+                                        id = questId,
+                                        name = getQuestName(questId),
+                                        chain = chain,
+                                    }
+                                end
                             end
                         end
                     end
@@ -1148,7 +1188,9 @@ function renderList()
                                             mpe._pseudo = pseudo
                                         end
                                         local label = formatRowLabel(mpe.initialLevel, mpe.initialName, pseudo)
-                                        if mpe.initialZone then
+                                        -- Only call out the pickup zone when it differs from the row's
+                                        -- own zone; otherwise the hint just repeats the zone header.
+                                        if mpe.initialZone and mpe.initialZone ~= zoneName then
                                             label = label .. " |cff7f7f7f(pick up in " .. mpe.initialZone .. ")|r"
                                         end
                                         renderQuestRow(label,
@@ -1179,7 +1221,7 @@ function renderList()
         local anyBucket = filters.inLog or filters.available or filters.missingPre
         local msg
         if not anyBucket then
-            msg = "All quest filters are off. Enable In Quest Log, Available, or Show Chain / Picked Outside to see quests."
+            msg = "All quest filters are off. Enable In Quest Log, Available, or Show Chain Prerequisites to see quests."
         elseif searchText ~= "" then
             msg = string.format("No quests match \"%s\". Clear the search or change filters.", searchText)
         else
@@ -1389,7 +1431,7 @@ local function buildMainFrame()
     local FILTER_KEYS = {
         { key = "inLog",      label = "In Quest Log" },
         { key = "available",  label = "Available" },
-        { key = "missingPre", label = "Show Chain / Picked Outside" },
+        { key = "missingPre", label = "Show Chain Prerequisites" },
         { key = "dungeons",   label = "Show Dungeons" },
         { key = "eliteGroup", label = "Show Elite/Group Quests" },
     }
@@ -1788,6 +1830,6 @@ loader:SetScript("OnEvent", function(self, event, name)
         WhereToQuestDB.hiddenQuests = nil
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
-        print(INTRO_PREFIX .. "Loaded. Type /wtq to open.")
+        print(INTRO_PREFIX .. "Loaded. Type /wtq for available commands.")
     end
 end)
