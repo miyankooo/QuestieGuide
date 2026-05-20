@@ -8,12 +8,11 @@ local DEFAULTS = {
     filters = {
         inLog = true,
         available = true,
+        pickedUpElsewhere = true,
         missingPre = true,
         dungeons = true,
         eliteGroup = true,
     },
-    showNpcName = false,
-    showCoords = false,
     pinCurrentZone = true,
     framePos = nil,
     frameSize = { w = 360, h = 620 },
@@ -26,7 +25,7 @@ local DEFAULTS = {
 }
 
 local LEVEL_RANGE_MIN = 0
-local LEVEL_RANGE_MAX = 5
+local LEVEL_RANGE_MAX = 10
 
 local INTRO_PREFIX = "|cffffff00[WhereToQuest]:|r "
 
@@ -41,11 +40,12 @@ local SORT_DIR_OPTIONS = {
     { value = "desc", label = "Descending" },
 }
 
-local SUBCAT_ORDER = { "inLog", "available", "missingPre" }
+local SUBCAT_ORDER = { "inLog", "available", "pickedUpElsewhere", "missingPre" }
 local SUBCAT_LABEL = {
     inLog = "In Quest Log",
     available = "Available",
-    missingPre = "Chain Prerequisites",
+    pickedUpElsewhere = "Picked Up Elsewhere",
+    missingPre = "Missing Prerequisite",
 }
 
 -- Layout grid: 8px outer chrome, 4px sub-grid for compact list rows.
@@ -75,7 +75,7 @@ local SECTION_LABEL_LIFT = 7     -- lift of section label above its box's top ed
 -- (UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2 == 50): UIDropDownMenu_SetWidth(d, W)
 -- sets the Middle texture to W and frame width to W + 50 (left cap 25 + right
 -- cap 25 are added on top of the requested width).
-local ROW_EDGE_PAD = 4
+local ROW_EDGE_PAD = 0
 local SLIDER_CENTER_HALF_GAP = 8           -- each slider sits this far from the row's centerline.
 local DROPDOWN_CAP_TOTAL = 50              -- frame width = middle width + 50; matches Blizzard's UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2.
 local DROPDOWN_VISIBLE_GAP = SLIDER_CENTER_HALF_GAP * 2  -- visible gap between adjacent dropdown frames (16, matching the sliders' total center gap).
@@ -130,6 +130,18 @@ local QUEST_TAG_COLORS = {
     Dungeon = "a335ee",
     Raid = "ff4040",
     PvP = "ffd200",
+}
+
+-- Native game color hex codes. RGB values mirror Classic Era's
+-- QuestDifficultyColors (Blizzard_FrameXMLBase/Classic/Constants.lua) and
+-- C_UIColor.GetColors() font color globals (HIGHLIGHT/GRAY/YELLOW/GREEN).
+local COLOR = {
+    WHITE  = "|cffffffff",
+    GREY   = "|cff7f7f7f",
+    YELLOW = "|cffffff00",
+    GREEN  = "|cff00ff00",
+    GOLD   = "|cffffd200",
+    ORANGE = "|cffff8000",
 }
 
 local function getZoneCollapsed()
@@ -195,47 +207,64 @@ local function getQuestName(questId)
     return QuestieDB.QueryQuestSingle(questId, "name") or ("Quest " .. questId)
 end
 
--- Returns name, zoneName, {x, y}, areaId for the quest's first start NPC.
--- Prefers a spawn in the quest's own zone (zoneOrSort) so the labeled location
--- matches the zone the quest is bucketed under; falls back to the smallest
--- area id if no spawn lives in the quest zone (deterministic, but arbitrary).
+-- Returns name, zoneName, {x, y}, areaId for the quest's start source.
+-- Questie's `startedBy` is a 3-tuple: [1] NPC ids, [2] object ids, [3] item ids.
+-- Real NPC start: prefer a spawn in the quest's own zone (zoneOrSort) so the
+-- labeled location matches the bucket; fall back to the smallest area id when
+-- no spawn lives in the quest zone (deterministic, but arbitrary).
+-- Object/item start (no NPC giver): use the quest's own zone as a best-effort
+-- location and "Quest Item" as the generic giver name.
 local function getQuestStartInfo(questId)
-    if not QuestieDB or not QuestieDB.GetNPC then
+    if not QuestieDB then
         return nil, nil, nil, nil
     end
     local startedBy = QuestieDB.QueryQuestSingle(questId, "startedBy")
-    local npcIds = startedBy and startedBy[1]
-    if type(npcIds) ~= "table" or not npcIds[1] then
+    if type(startedBy) ~= "table" then
         return nil, nil, nil, nil
     end
-    local npc = QuestieDB:GetNPC(npcIds[1])
-    if not npc then
-        return nil, nil, nil, nil
-    end
-    if type(npc.spawns) ~= "table" then
-        return npc.name, nil, nil, nil
-    end
-    local questZone = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
-    local preferZoneId = (questZone and questZone > 0) and questZone or nil
-    local preferredZoneId, preferredSpawn
-    local fallbackZoneId, fallbackSpawn
-    for zoneId, spawns in pairs(npc.spawns) do
-        if type(spawns) == "table" and spawns[1] then
-            if preferZoneId and zoneId == preferZoneId then
-                preferredZoneId = zoneId
-                preferredSpawn = spawns[1]
-            elseif not fallbackZoneId or zoneId < fallbackZoneId then
-                fallbackZoneId = zoneId
-                fallbackSpawn = spawns[1]
+
+    local npcIds = startedBy[1]
+    if type(npcIds) == "table" and npcIds[1] and QuestieDB.GetNPC then
+        local npc = QuestieDB:GetNPC(npcIds[1])
+        if npc then
+            if type(npc.spawns) ~= "table" then
+                return npc.name, nil, nil, nil
             end
+            local questZone = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+            local preferZoneId = (questZone and questZone > 0) and questZone or nil
+            local preferredZoneId, preferredSpawn
+            local fallbackZoneId, fallbackSpawn
+            for zoneId, spawns in pairs(npc.spawns) do
+                if type(spawns) == "table" and spawns[1] then
+                    if preferZoneId and zoneId == preferZoneId then
+                        preferredZoneId = zoneId
+                        preferredSpawn = spawns[1]
+                    elseif not fallbackZoneId or zoneId < fallbackZoneId then
+                        fallbackZoneId = zoneId
+                        fallbackSpawn = spawns[1]
+                    end
+                end
+            end
+            local bestZoneId = preferredZoneId or fallbackZoneId
+            local bestSpawn = preferredSpawn or fallbackSpawn
+            if not bestZoneId then
+                return npc.name, nil, nil, nil
+            end
+            return npc.name, getZoneName(bestZoneId), bestSpawn, bestZoneId
         end
     end
-    local bestZoneId = preferredZoneId or fallbackZoneId
-    local bestSpawn = preferredSpawn or fallbackSpawn
-    if not bestZoneId then
-        return npc.name, nil, nil, nil
+
+    local hasObjectStart = type(startedBy[2]) == "table" and startedBy[2][1] ~= nil
+    local hasItemStart = type(startedBy[3]) == "table" and startedBy[3][1] ~= nil
+    if hasObjectStart or hasItemStart then
+        local questZone = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+        if questZone and questZone > 0 then
+            return "Quest Item", getZoneName(questZone), nil, questZone
+        end
+        return "Quest Item", nil, nil, nil
     end
-    return npc.name, getZoneName(bestZoneId), bestSpawn, bestZoneId
+
+    return nil, nil, nil, nil
 end
 
 -- Caches start info on the quest table so repeated row renders / clicks are cheap.
@@ -581,6 +610,7 @@ local function scanQuestsByZone()
             entry = {
                 inLog = {},
                 available = {},
+                pickedUpElsewhere = {},
                 missingPre = { order = {}, entries = {} },
                 count = 0,
             }
@@ -595,19 +625,27 @@ local function scanQuestsByZone()
 
     -- Quests already in the player's log bypass the level band: if the player
     -- accepted it, they want to see it regardless of how far it has drifted
-    -- from their current level.
+    -- from their current level. Split by where the giver lives: NPC in the
+    -- bucketed zone -> "In Quest Log"; NPC in a different (or unknown) zone
+    -- -> "Picked Up Elsewhere".
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
         if zoneOrSort and passesClassicCaps(level, requiredLevel) then
-            local entry = ensureZone(getZoneName(zoneOrSort))
-            entry.inLog[#entry.inLog + 1] = {
+            local questZoneName = getZoneName(zoneOrSort)
+            local _, giverZoneName = getQuestStartInfo(questId)
+            local entry = ensureZone(questZoneName)
+            local quest = {
                 id = questId,
                 level = level,
                 name = getQuestName(questId),
                 xp = getQuestXp(questId),
                 tag = getQuestTagLabel(questId),
             }
+            local bucket = (giverZoneName and giverZoneName ~= questZoneName)
+                and entry.pickedUpElsewhere
+                or entry.inLog
+            bucket[#bucket + 1] = quest
             entry.count = entry.count + 1
         end
     end
@@ -634,39 +672,28 @@ local function scanQuestsByZone()
                 elseif isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
-                        local chains = findMissingChains(questId)
-                        for _, chain in ipairs(chains) do
-                            local initialId = chain[1]
-                            -- Only surface chains the player can actually start now:
-                            -- the initial step must itself pass Questie's full doability check
-                            -- (handles race/class/faction/reputation/exclusiveTo/breadcrumb).
-                            if QuestieDB.IsDoable(initialId) then
-                                local initialZoneOrSort = QuestieDB.QueryQuestSingle(initialId, "zoneOrSort")
-                                local entry = ensureZone(getZoneName(zoneOrSort))
-                                local mpe = entry.missingPre.entries[initialId]
-                                if not mpe then
-                                    mpe = {
-                                        initialId = initialId,
-                                        initialName = getQuestName(initialId),
-                                        initialLevel = getEffectiveLevel(initialId, playerLevel),
-                                        initialZone = initialZoneOrSort and getZoneName(initialZoneOrSort) or nil,
-                                        targets = {},
-                                        -- Dedupe per (initial, target) so AND paths that converge
-                                        -- on the same initial don't list the same target twice.
-                                        targetIds = {},
-                                    }
-                                    entry.missingPre.entries[initialId] = mpe
-                                    entry.missingPre.order[#entry.missingPre.order + 1] = initialId
-                                end
-                                if not mpe.targetIds[questId] then
-                                    mpe.targetIds[questId] = true
-                                    mpe.targets[#mpe.targets + 1] = {
-                                        id = questId,
-                                        name = getQuestName(questId),
-                                        chain = chain,
-                                    }
-                                end
+                        -- Pick the shortest prereq chain. We don't require the
+                        -- chain initial to be doable; if it is, its tooltip badge
+                        -- shows `[Available]`, otherwise the chain is informational.
+                        -- Each blocked quest contributes ONE row keyed by its own
+                        -- questId — quests in `available` never reappear here.
+                        local bestChain
+                        for _, chain in ipairs(findMissingChains(questId)) do
+                            if not bestChain or #chain < #bestChain then
+                                bestChain = chain
                             end
+                        end
+                        if bestChain then
+                            local entry = ensureZone(getZoneName(zoneOrSort))
+                            entry.missingPre.entries[questId] = {
+                                id = questId,
+                                level = level,
+                                name = getQuestName(questId),
+                                tag = getQuestTagLabel(questId),
+                                chain = bestChain,
+                            }
+                            entry.missingPre.order[#entry.missingPre.order + 1] = questId
+                            entry.count = entry.count + 1
                         end
                     end
                 end
@@ -688,17 +715,17 @@ local function scanQuestsByZone()
         zoneOrder[#zoneOrder + 1] = zoneName
         sortQuests(entry.inLog)
         sortQuests(entry.available)
+        sortQuests(entry.pickedUpElsewhere)
         table.sort(entry.missingPre.order, function(a, b)
             local ea, eb = entry.missingPre.entries[a], entry.missingPre.entries[b]
-            if ea.initialLevel == eb.initialLevel then
-                return ea.initialName < eb.initialName
-            end
-            return ea.initialLevel < eb.initialLevel
+            if ea.level ~= eb.level then return ea.level < eb.level end
+            return ea.name < eb.name
         end)
 
         local xpTotal = 0
         for _, q in ipairs(entry.inLog) do xpTotal = xpTotal + (q.xp or 0) end
         for _, q in ipairs(entry.available) do xpTotal = xpTotal + (q.xp or 0) end
+        for _, q in ipairs(entry.pickedUpElsewhere) do xpTotal = xpTotal + (q.xp or 0) end
         local levelSum, levelCount = 0, 0
         for _, q in ipairs(entry.available) do
             if q.level and q.level > 0 then
@@ -834,54 +861,140 @@ local function showQuestTooltip(anchor, questId)
 
     if type(quest.objectivesText) == "table" and #quest.objectivesText > 0 then
         GameTooltip:AddLine(" ")
-        GameTooltip:AddLine("|cffffd200Objectives|r")
+        GameTooltip:AddLine(COLOR.GOLD .. "Objectives|r")
         for _, line in ipairs(quest.objectivesText) do
-            GameTooltip:AddLine("  " .. line, 1, 1, 1, true)
+            GameTooltip:AddLine(line, 1, 1, 1, true)
         end
     end
 
     GameTooltip:Show()
 end
 
-local function showChainTooltip(anchor, entry)
+-- Questie's difficulty color (red/orange/yellow/green/grey) for the quest level.
+-- Matches the color the name receives so the level brackets and name share a hue.
+local function getDifficultyColorCode(level)
+    local r, g, b = 1, 1, 1
+    if QuestieLib and QuestieLib.GetDifficultyColorPercent then
+        r, g, b = QuestieLib:GetDifficultyColorPercent(level)
+    end
+    return string.format("|cff%02x%02x%02x",
+        math.floor(r * 255), math.floor(g * 255), math.floor(b * 255))
+end
+
+-- Two-line row presentation:
+--   [LVL] [TYPE] QUEST_NAME [badge?]
+--   QUEST_GIVER_LOCATION, QUEST_GIVER_NAME
+-- Level and quest name share Questie's difficulty color; the type tag keeps
+-- its native quality color (orange for Elite, purple for Dungeon). The whole
+-- giver line is grey (location, comma, and NPC name together) so it sits as
+-- a single subtle subtitle under the title. `badge` is appended after the
+-- quest name on line 1 when provided (used by the chain tooltip).
+local function formatRowLines(level, name, quest, badge)
+    local diff = getDifficultyColorCode(level)
+    local line1 = diff .. "[" .. tostring(level or 0) .. "]|r"
+    if quest and quest.tag then
+        local color = QUEST_TAG_COLORS[quest.tag] or "ff8000"
+        line1 = line1 .. " |cff" .. color .. "[" .. quest.tag .. "]|r"
+    end
+    line1 = line1 .. " " .. diff .. (name or "") .. "|r"
+    if badge then
+        line1 = line1 .. " " .. badge
+    end
+
+    local line2
+    if quest then
+        local info = resolveStartInfo(quest)
+        if info and (info.zoneName or info.npcName) then
+            local parts = {}
+            if info.zoneName then parts[#parts + 1] = info.zoneName end
+            if info.npcName then parts[#parts + 1] = info.npcName end
+            line2 = COLOR.GREY .. table.concat(parts, ", ") .. "|r"
+        end
+    end
+    return line1, line2
+end
+
+local function formatRowLabel(level, name, quest)
+    local line1, line2 = formatRowLines(level, name, quest, nil)
+    if line2 then
+        return line1 .. "\n" .. line2
+    end
+    return line1
+end
+
+-- Status badge for prior quests in the chain tooltip. `[In Progress]` (yellow)
+-- if the player has the quest in their log, `[Available]` (green) if it can be
+-- picked up right now, otherwise no badge. Completed quests don't appear in
+-- the chain at all (findMissingChains skips them).
+local function getStatusBadge(questId)
+    local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
+    if currentLog[questId] then
+        return COLOR.YELLOW .. "[In Progress]|r"
+    end
+    if QuestieDB and QuestieDB.IsDoable and QuestieDB.IsDoable(questId) then
+        return COLOR.GREEN .. "[Available]|r"
+    end
+    return nil
+end
+
+-- Lightweight quest spec for formatRowLines callers that don't already have
+-- a list-row table on hand (i.e. the chain tooltip).
+local function buildQuestSpec(questId)
+    local playerLevel = UnitLevel("player")
+    local level = getEffectiveLevel(questId, playerLevel)
+    return {
+        id = questId,
+        level = level,
+        name = getQuestName(questId),
+        tag = getQuestTagLabel(questId),
+    }
+end
+
+local function showChainTooltip(anchor, mpe)
     if not loadQuestie() then
         return
     end
-    local primary = entry.targets[1]
-    if not primary then
+    local chain = mpe.chain
+    if type(chain) ~= "table" or #chain < 2 then
         return
     end
-    local chain = primary.chain
 
     GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
-    GameTooltip:AddLine(entry.initialName)
-    addTooltipField("Pick up in", entry.initialZone)
-    if #entry.targets == 1 then
-        addTooltipField("Chain leads to", primary.name)
-    else
-        addTooltipField("Chain unlocks", string.format("%d quests in this zone", #entry.targets))
+
+    -- Title: the hovered (blocked) quest. The tooltip's first AddLine uses the
+    -- larger title font, so the hovered quest naturally stands out above the
+    -- prior-quests list.
+    local diff = getDifficultyColorCode(mpe.level)
+    local title = string.format("%s[%d] %s|r", diff, mpe.level or 0, mpe.name or "")
+    if mpe.tag then
+        local tagColor = QUEST_TAG_COLORS[mpe.tag] or "ff8000"
+        title = title .. " |cff" .. tagColor .. "[" .. mpe.tag .. "]|r"
     end
-    addTooltipField("Steps to target", #chain)
+    GameTooltip:AddLine(title)
+
+    local info = resolveStartInfo(mpe)
+    if info and (info.zoneName or info.npcName) then
+        local parts = {}
+        if info.zoneName then parts[#parts + 1] = info.zoneName end
+        if info.npcName then parts[#parts + 1] = info.npcName end
+        GameTooltip:AddLine(COLOR.GREY .. table.concat(parts, ", ") .. "|r", 1, 1, 1, true)
+    end
+
     GameTooltip:AddLine(" ")
 
-    for i, qid in ipairs(chain) do
-        local isTarget = (i == #chain)
-        local heading
-        if isTarget then
-            heading = string.format("|cffffaa00%d. %s  (target)|r", i, getQuestName(qid))
-        else
-            heading = string.format("|cffffd200%d.|r %s", i, getQuestName(qid))
+    -- Prior quests that must be completed before the hovered quest unlocks.
+    -- The hovered quest itself is the chain tail (chain[#chain]); skip it.
+    local priorCount = #chain - 1
+    for i = 1, priorCount do
+        local qid = chain[i]
+        local spec = buildQuestSpec(qid)
+        local badge = getStatusBadge(qid)
+        local line1, line2 = formatRowLines(spec.level, spec.name, spec, badge)
+        GameTooltip:AddLine(string.format("%d. %s", i, line1), 1, 1, 1, true)
+        if line2 then
+            GameTooltip:AddLine(line2, 1, 1, 1, true)
         end
-        GameTooltip:AddLine(heading, 1, 1, 1, true)
-
-        local npcName, npcZone, npcSpawn = getQuestStartInfo(qid)
-        GameTooltip:AddDoubleLine("   |cff9d9d9dNPC|r", npcName or "unknown", 1, 1, 1, 1, 1, 1)
-        local locText = formatLocation(npcZone, npcSpawn)
-        if locText then
-            GameTooltip:AddDoubleLine("   |cff9d9d9dLocation|r", locText, 1, 1, 1, 1, 1, 1)
-        end
-
-        if not isTarget then
+        if i ~= priorCount then
             GameTooltip:AddLine(" ")
         end
     end
@@ -925,15 +1038,6 @@ local function hideUnusedRows(fromIndex)
     end
 end
 
-local function colorQuestName(level, name)
-    local r, g, b = 1, 1, 1
-    if QuestieLib and QuestieLib.GetDifficultyColorPercent then
-        r, g, b = QuestieLib:GetDifficultyColorPercent(level)
-    end
-    return string.format("|cff%02x%02x%02x%s|r",
-        math.floor(r * 255), math.floor(g * 255), math.floor(b * 255), name)
-end
-
 local function searchMatches(text)
     if searchText == "" then
         return true
@@ -942,41 +1046,6 @@ local function searchMatches(text)
         return false
     end
     return string.find(string.lower(text), searchText, 1, true) ~= nil
-end
-
-local function formatRowLabel(level, name, quest)
-    local label = colorQuestName(level, name)
-    if quest and quest.tag then
-        local color = QUEST_TAG_COLORS[quest.tag] or "ff8000"
-        label = label .. " |cff" .. color .. "[" .. quest.tag .. "]|r"
-    end
-    if not quest then
-        return label
-    end
-    local wantName = WhereToQuestDB and WhereToQuestDB.showNpcName
-    local wantCoords = WhereToQuestDB and WhereToQuestDB.showCoords
-    if not wantName and not wantCoords then
-        return label
-    end
-    local info = resolveStartInfo(quest)
-    if not info then
-        return label
-    end
-    local parts = {}
-    if wantName and info.npcName then
-        if info.zoneName then
-            parts[#parts + 1] = info.npcName .. ", " .. info.zoneName
-        else
-            parts[#parts + 1] = info.npcName
-        end
-    end
-    if wantCoords and info.spawn then
-        parts[#parts + 1] = string.format("%.1f, %.1f", info.spawn[1], info.spawn[2])
-    end
-    if #parts == 0 then
-        return label
-    end
-    return label .. "  |cff7f7f7f" .. table.concat(parts, " \194\183 ") .. "|r"
 end
 
 local function getPlayerZoneName()
@@ -1039,11 +1108,14 @@ function showQuestContextMenu(anchor, quest)
 end
 
 function showChainContextMenu(anchor, mpe)
-    local quest = mpe._pseudo or { id = mpe.initialId, level = mpe.initialLevel, name = mpe.initialName }
+    -- "Show on map" jumps to the next actionable step (the chain's initial),
+    -- since the blocked quest itself isn't pickup-able yet. "Link in chat"
+    -- links the blocked quest (the row the player is hovering).
+    local initial = { id = mpe.chain and mpe.chain[1] }
     local items = {
-        { text = mpe.initialName, isTitle = true, notCheckable = true },
-        { text = "Show on map", notCheckable = true, func = function() openMapForQuest(quest) end },
-        { text = "Link in chat", notCheckable = true, func = function() linkQuestInChat(quest) end },
+        { text = mpe.name, isTitle = true, notCheckable = true },
+        { text = "Show next step on map", notCheckable = true, func = function() openMapForQuest(initial) end },
+        { text = "Link in chat", notCheckable = true, func = function() linkQuestInChat(mpe) end },
         { text = "Close", notCheckable = true, func = function() end },
     }
     EasyMenu(items, ensureContextMenuFrame(), "cursor", 0, 0, "MENU")
@@ -1174,11 +1246,9 @@ function renderList()
         if searchMatches(quest.name) then
             return true
         end
-        if WhereToQuestDB and (WhereToQuestDB.showNpcName or WhereToQuestDB.showCoords) then
-            local info = resolveStartInfo(quest)
-            if info and searchMatches(info.npcName) then
-                return true
-            end
+        local info = resolveStartInfo(quest)
+        if info and searchMatches(info.npcName) then
+            return true
         end
         return false
     end
@@ -1187,12 +1257,16 @@ function renderList()
         if zoneMatch then
             return true
         end
-        if searchMatches(mpe.initialName) then
+        if searchMatches(mpe.name) then
             return true
         end
-        for _, target in ipairs(mpe.targets) do
-            if searchMatches(target.name) then
-                return true
+        -- Match any step in the chain so typing the name of a prereq surfaces
+        -- the quest that unlocks behind it.
+        if type(mpe.chain) == "table" then
+            for _, qid in ipairs(mpe.chain) do
+                if searchMatches(getQuestName(qid)) then
+                    return true
+                end
             end
         end
         return false
@@ -1217,31 +1291,47 @@ function renderList()
             local collapsed = zoneCollapsedDB[zoneName] == true
             local zoneMatch = searchMatches(zoneName)
 
-            local visible = { inLog = {}, available = {}, missingPre = {} }
+            -- Initialise one empty list per declared subcategory so iterating
+            -- SUBCAT_ORDER below never lands on a nil bucket if a future key is
+            -- added.
+            local visible = {}
+            for _, subKey in ipairs(SUBCAT_ORDER) do
+                visible[subKey] = {}
+            end
             if filters.inLog then
-                for _, q in ipairs(entry.inLog) do
+                for _, q in ipairs(entry.inLog or {}) do
                     if passesQuest(q, zoneMatch) then
                         visible.inLog[#visible.inLog + 1] = q
                     end
                 end
             end
             if filters.available then
-                for _, q in ipairs(entry.available) do
+                for _, q in ipairs(entry.available or {}) do
                     if passesQuest(q, zoneMatch) then
                         visible.available[#visible.available + 1] = q
                     end
                 end
             end
-            if filters.missingPre then
-                for _, initialId in ipairs(entry.missingPre.order) do
-                    local mpe = entry.missingPre.entries[initialId]
-                    if passesChain(mpe, zoneMatch) then
+            if filters.pickedUpElsewhere then
+                for _, q in ipairs(entry.pickedUpElsewhere or {}) do
+                    if passesQuest(q, zoneMatch) then
+                        visible.pickedUpElsewhere[#visible.pickedUpElsewhere + 1] = q
+                    end
+                end
+            end
+            if filters.missingPre and entry.missingPre and entry.missingPre.order then
+                for _, blockedId in ipairs(entry.missingPre.order) do
+                    local mpe = entry.missingPre.entries[blockedId]
+                    if mpe and passesChain(mpe, zoneMatch) then
                         visible.missingPre[#visible.missingPre + 1] = mpe
                     end
                 end
             end
 
-            local visibleTotal = #visible.inLog + #visible.available + #visible.missingPre
+            local visibleTotal = 0
+            for _, subKey in ipairs(SUBCAT_ORDER) do
+                visibleTotal = visibleTotal + #visible[subKey]
+            end
             if visibleTotal > 0 then
                 if renderedZones > 0 then
                     y = y + ZONE_GAP
@@ -1251,6 +1341,7 @@ function renderList()
                 local visibleXp = 0
                 for _, q in ipairs(visible.available) do visibleXp = visibleXp + (q.xp or 0) end
                 for _, q in ipairs(visible.inLog) do visibleXp = visibleXp + (q.xp or 0) end
+                for _, q in ipairs(visible.pickedUpElsewhere) do visibleXp = visibleXp + (q.xp or 0) end
 
                 local header = acquireRow(index)
                 placeRow(header, 0)
@@ -1260,9 +1351,11 @@ function renderList()
                     local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
                     if xpMax > 0 then
                         local pct = math.floor(visibleXp / xpMax * 100 + 0.5)
-                        summary = summary .. string.format(" |cff7f7f7f\194\183 %s XP (%d%% lvl)|r", formatNumber(visibleXp), pct)
+                        summary = summary .. string.format(" %s%s total XP (%d%% of current level)|r",
+                            COLOR.GREY, formatNumber(visibleXp), pct)
                     else
-                        summary = summary .. string.format(" |cff7f7f7f\194\183 %s XP|r", formatNumber(visibleXp))
+                        summary = summary .. string.format(" %s%s total XP|r",
+                            COLOR.GREY, formatNumber(visibleXp))
                     end
                 end
                 header.text:SetText(arrow .. zoneName .. summary)
@@ -1278,7 +1371,7 @@ function renderList()
                 if not collapsed then
                     local subIndex = 0
                     for _, subKey in ipairs(SUBCAT_ORDER) do
-                        local list = visible[subKey]
+                        local list = visible[subKey] or {}
                         if filters[subKey] and #list > 0 then
                             subIndex = subIndex + 1
                             local groupKey = zoneName .. "||" .. subKey
@@ -1303,22 +1396,20 @@ function renderList()
                             if not groupHidden then
                                 if subKey == "missingPre" then
                                     for _, mpe in ipairs(list) do
-                                        local pseudo = mpe._pseudo
-                                        if not pseudo then
-                                            pseudo = { id = mpe.initialId, level = mpe.initialLevel, name = mpe.initialName }
-                                            mpe._pseudo = pseudo
+                                        -- Row is the blocked quest itself. Map jumps to the
+                                        -- next actionable step (chain[1]); chat link points
+                                        -- at the blocked quest (the row being hovered).
+                                        local initial = mpe._initial
+                                        if not initial then
+                                            initial = { id = mpe.chain and mpe.chain[1] }
+                                            mpe._initial = initial
                                         end
-                                        local label = formatRowLabel(mpe.initialLevel, mpe.initialName, pseudo)
-                                        -- Only call out the pickup zone when it differs from the row's
-                                        -- own zone; otherwise the hint just repeats the zone header.
-                                        if mpe.initialZone and mpe.initialZone ~= zoneName then
-                                            label = label .. " |cff7f7f7f(pick up in " .. mpe.initialZone .. ")|r"
-                                        end
+                                        local label = formatRowLabel(mpe.level, mpe.name, mpe)
                                         renderQuestRow(label,
                                             function(self) showChainTooltip(self, mpe) end,
-                                            function() openMapForQuest(pseudo) end,
+                                            function() openMapForQuest(initial) end,
                                             function(self) if showChainContextMenu then showChainContextMenu(self, mpe) end end,
-                                            function() linkQuestInChat(pseudo) end)
+                                            function() linkQuestInChat(mpe) end)
                                     end
                                 else
                                     for _, quest in ipairs(list) do
@@ -1339,10 +1430,10 @@ function renderList()
     end
 
     if renderedZones == 0 then
-        local anyBucket = filters.inLog or filters.available or filters.missingPre
+        local anyBucket = filters.inLog or filters.available or filters.pickedUpElsewhere or filters.missingPre
         local msg
         if not anyBucket then
-            msg = "All quest filters are off. Enable In Quest Log, Available, or Show Chain Prerequisites to see quests."
+            msg = "All quest filters are off. Enable In Quest Log, Available, Picked Up Elsewhere, or Missing Prerequisite to see quests."
         elseif searchText ~= "" then
             msg = string.format("No quests match \"%s\". Clear the search or change filters.", searchText)
         else
@@ -1424,23 +1515,21 @@ local function buildTitleHeader(parent, text)
 end
 
 -- Lays out N native UIDropDownMenuTemplate dropdowns side by side inside `row`,
--- with ROW_EDGE_PAD on each end and DROPDOWN_VISIBLE_GAP between adjacent
--- dropdowns. Every dropdown frame fits entirely inside the row, so nothing
--- spills past the subcontainer's right edge regardless of how narrow the row
--- gets. Call from row:HookScript("OnSizeChanged", ...) so the row stays
--- responsive to frame resizes.
+-- flush with the row edges, with DROPDOWN_VISIBLE_GAP between adjacent
+-- dropdowns. The section body already provides symmetric padding around the
+-- row, so no extra edge inset is added here. Call from row:HookScript(
+-- "OnSizeChanged", ...) so the row stays responsive to frame resizes.
 local function layoutDropdownRow(dropdowns, row)
     local n = #dropdowns
     if n == 0 then return end
     local w = row:GetWidth()
     if w <= 1 then return end
 
-    local contentW = w - 2 * ROW_EDGE_PAD
-    local frameW = math.max(80, (contentW - (n - 1) * DROPDOWN_VISIBLE_GAP) / n)
+    local frameW = math.max(80, (w - (n - 1) * DROPDOWN_VISIBLE_GAP) / n)
     -- UIDropDownMenu_SetWidth(d, middleW) yields a frame of (middleW + DROPDOWN_CAP_TOTAL).
     local middleW = math.max(30, frameW - DROPDOWN_CAP_TOTAL)
 
-    local x = ROW_EDGE_PAD
+    local x = 0
     for _, d in ipairs(dropdowns) do
         UIDropDownMenu_SetWidth(d, middleW)
         d:ClearAllPoints()
@@ -1571,7 +1660,9 @@ local function buildMainFrame()
     local RANGE_SLIDER_LABEL_PAD = 4
     -- Original slider top offset (14) plus space cleared by the checkbox row above it.
     local RANGE_SLIDER_TOP_OFFSET = RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP + 14
-    rangeSection:SetHeight(SPACING.LG * 2 + SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP)
+    local RANGE_HEIGHT_EXPANDED = SPACING.LG * 2 + SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP
+    local RANGE_HEIGHT_COLLAPSED = SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT
+    rangeSection:SetHeight(RANGE_HEIGHT_EXPANDED)
     local rangeRow = rangeSection.body
 
     local useQuestieCheckbox = CreateFrame("CheckButton", "WhereToQuestUseQuestieLevelRange", rangeRow, "UICheckButtonTemplate")
@@ -1635,14 +1726,19 @@ local function buildMainFrame()
     frame.belowSlider = belowSlider
     frame.aboveSlider = aboveSlider
 
-    -- Sliders are visually locked (greyed out) when Questie's range governs.
+    -- Sliders disappear (and the section shrinks) when Questie's range governs,
+    -- freeing vertical room for the quest list below.
     local function applySliderLock(locked)
         if locked then
-            belowSlider:Disable()
-            aboveSlider:Disable()
+            belowSlider:Hide()
+            aboveSlider:Hide()
+            rangeSection:SetHeight(RANGE_HEIGHT_COLLAPSED)
         else
+            belowSlider:Show()
+            aboveSlider:Show()
             belowSlider:Enable()
             aboveSlider:Enable()
+            rangeSection:SetHeight(RANGE_HEIGHT_EXPANDED)
         end
     end
 
@@ -1703,9 +1799,10 @@ local function buildMainFrame()
             get = getFilterValue,
             set = setFilterValue,
             specs = {
-                { key = "inLog",      label = "In Quest Log" },
-                { key = "available",  label = "Available" },
-                { key = "missingPre", label = "Show Chain Prerequisites" },
+                { key = "inLog",             label = "In Quest Log" },
+                { key = "available",         label = "Available" },
+                { key = "pickedUpElsewhere", label = "Picked Up Elsewhere" },
+                { key = "missingPre",        label = "Missing Prerequisite" },
             },
         },
         {
@@ -1718,12 +1815,10 @@ local function buildMainFrame()
             },
         },
         {
-            title = "Zone & NPCs",
+            title = "Zones",
             get = getToggleValue,
             set = setToggleValue,
             specs = {
-                { key = "showNpcName",    label = "Show NPC Name and Location" },
-                { key = "showCoords",     label = "Show NPC Coordinates" },
                 { key = "pinCurrentZone", label = "Pin Current Zone" },
             },
         },
@@ -1866,12 +1961,12 @@ local function buildMainFrame()
     searchHelp:SetJustifyH("LEFT")
     searchHelp:SetWordWrap(true)
     searchHelp:SetSpacing(LINE_SPACING)
-    searchHelp:SetText("Filter by quest name, zone name, or NPC name (when NPC display is on).")
+    searchHelp:SetText("Filter by quest name, zone name, or NPC name.")
 
     local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", questsSection.body, "SearchBoxTemplate")
     searchBox:SetHeight(20)
-    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", SPACING.SM, -ELEMENT_GAP)
-    searchBox:SetPoint("RIGHT", questsSection.body, "RIGHT", -SPACING.SM, 0)
+    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    searchBox:SetPoint("RIGHT", questsSection.body, "RIGHT", 0, 0)
     searchBox:SetAutoFocus(false)
     searchBox:HookScript("OnTextChanged", function(self)
         local newText = string.lower(self:GetText() or "")
@@ -2113,12 +2208,8 @@ loader:SetScript("OnEvent", function(self, event, name)
                 WhereToQuestDB.filters[key] = defaultOn
             end
         end
-        if type(WhereToQuestDB.showNpcName) ~= "boolean" then
-            WhereToQuestDB.showNpcName = DEFAULTS.showNpcName
-        end
-        if type(WhereToQuestDB.showCoords) ~= "boolean" then
-            WhereToQuestDB.showCoords = DEFAULTS.showCoords
-        end
+        WhereToQuestDB.showNpcName = nil
+        WhereToQuestDB.showCoords = nil
         if type(WhereToQuestDB.pinCurrentZone) ~= "boolean" then
             WhereToQuestDB.pinCurrentZone = DEFAULTS.pinCurrentZone
         end
