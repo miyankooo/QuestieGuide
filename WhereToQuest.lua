@@ -42,24 +42,37 @@ local SUBCAT_LABEL = {
     missingPre = "Chain Prerequisites",
 }
 
--- List spacing on an 8px grid.
-local ROW_HEIGHT = 16
-local SUBHEADER_HEIGHT = 18
-local HEADER_HEIGHT = 20
-local ROW_GAP = 4
-local GROUP_GAP = 8
-local ZONE_GAP = 12
-local INDENT_STEP = 16
+-- Layout grid: 8px outer chrome, 4px sub-grid for compact list rows.
+local SPACING = {
+    XS = 4,
+    SM = 8,
+    MD = 16,
+    LG = 24,
+}
 
 local FRAME_WIDTH = 360
 local FRAME_HEIGHT = 620
 
-local PAD_X = 14
-local PAD_TOP = 30
-local PAD_BOTTOM = 22
-local SECTION_GAP = 14
-local ELEMENT_GAP = 6
-local SCROLLBAR_RESERVE = 22
+-- Outer frame padding and section rhythm.
+local PAD_X = SPACING.MD
+local PAD_TOP = SPACING.LG + SPACING.SM  -- 32, clears BasicFrame TitleBg.
+local PAD_BOTTOM = SPACING.LG
+local SECTION_GAP = SPACING.MD
+local ELEMENT_GAP = SPACING.SM
+local SCROLLBAR_RESERVE = SPACING.LG
+
+-- List rhythm (rows use the 4px sub-grid for density).
+local ROW_HEIGHT = SPACING.MD
+local SUBHEADER_HEIGHT = SPACING.MD
+local HEADER_HEIGHT = SPACING.LG
+local ROW_GAP = SPACING.XS
+local GROUP_GAP = SPACING.SM
+local ZONE_GAP = SPACING.MD
+local INDENT_STEP = SPACING.MD
+
+-- Wrapping: row height grows with wrapped text; LINE_SPACING tunes legibility.
+local ROW_PAD_V = 2
+local LINE_SPACING = 3
 
 local MAX_CHAIN_DEPTH = 12
 
@@ -288,6 +301,28 @@ local function highlightQuestOnMap(questId)
     end
 end
 
+-- Some Classic Era UI maps (notably dungeon interiors) have no art layers and
+-- crash Blizzard_MapCanvas when passed to SetMapID. Walk up to the first
+-- ancestor that actually has art so we open something instead of erroring.
+local function resolveRenderableMapId(uiMapId)
+    if not uiMapId or not C_Map or not C_Map.GetMapArtLayers then
+        return nil
+    end
+    local current = uiMapId
+    for _ = 1, 5 do
+        local layers = C_Map.GetMapArtLayers(current)
+        if layers and #layers > 0 then
+            return current
+        end
+        local info = C_Map.GetMapInfo and C_Map.GetMapInfo(current)
+        if not info or not info.parentMapID or info.parentMapID == 0 or info.parentMapID == current then
+            return nil
+        end
+        current = info.parentMapID
+    end
+    return nil
+end
+
 local function openMapForQuest(quest)
     if not loadQuestie() then
         return
@@ -303,13 +338,22 @@ local function openMapForQuest(quest)
     if not uiMapId then
         return
     end
+    local renderMapId = resolveRenderableMapId(uiMapId)
+    if not renderMapId then
+        if WorldMapFrame and not WorldMapFrame:IsShown() then
+            ShowUIPanel(WorldMapFrame)
+        end
+        return
+    end
     if not WorldMapFrame:IsShown() then
         ShowUIPanel(WorldMapFrame)
     end
     if WorldMapFrame.SetMapID then
-        WorldMapFrame:SetMapID(uiMapId)
+        WorldMapFrame:SetMapID(renderMapId)
     end
-    if info.spawn and C_Map and C_Map.SetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates then
+    -- Spawn coords belong to the original uiMapId's coordinate space; only
+    -- drop a waypoint when we're actually showing that map.
+    if renderMapId == uiMapId and info.spawn and C_Map and C_Map.SetUserWaypoint and UiMapPoint and UiMapPoint.CreateFromCoordinates then
         pcall(function()
             C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(uiMapId, info.spawn[1] / 100, info.spawn[2] / 100))
             if C_SuperTrack and C_SuperTrack.SetSuperTrackedUserWaypoint then
@@ -799,9 +843,14 @@ local function acquireRow(index)
     row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     row.text = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    row.text:SetPoint("LEFT", row, "LEFT", 4, 0)
-    row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+    -- Anchor text from the top so wrapped lines grow downward; row height is
+    -- sized to fit the measured text + ROW_PAD_V padding (see renderList).
+    row.text:SetPoint("TOPLEFT", row, "TOPLEFT", SPACING.XS, -ROW_PAD_V)
+    row.text:SetPoint("TOPRIGHT", row, "TOPRIGHT", -SPACING.XS, -ROW_PAD_V)
     row.text:SetJustifyH("LEFT")
+    row.text:SetJustifyV("TOP")
+    row.text:SetWordWrap(true)
+    row.text:SetSpacing(LINE_SPACING)
     row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
     row.highlight:SetAllPoints(true)
     row.highlight:SetColorTexture(1, 1, 1, 0.08)
@@ -986,12 +1035,26 @@ function renderList()
     local y = 0
     local renderedZones = 0
 
-    local function placeRow(row, height, indent)
-        row:SetHeight(height)
+    -- Two-anchor (TOPLEFT + TOPRIGHT) placement: x-range comes from the
+    -- horizontal span, top y from the shared y offset, height from sizeRow.
+    -- Using three anchors (LEFT/RIGHT/TOP) over-constrains the vertical center
+    -- and resolves inconsistently between the first paint and subsequent
+    -- layout passes, which is what produced the post-reload offset.
+    local function placeRow(row, indent)
         row:ClearAllPoints()
-        row:SetPoint("LEFT", scrollChild, "LEFT", indent, 0)
-        row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
-        row:SetPoint("TOP", scrollChild, "TOP", 0, -y)
+        row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", indent, -y)
+        row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -y)
+    end
+
+    -- Sizes the row to fit its wrapped text; minHeight keeps short rows on the grid.
+    -- The text fontstring already has LEFT/RIGHT anchors inside the row, so wrap
+    -- width is bounded and GetStringHeight reflects the wrapped result.
+    local function sizeRow(row, minHeight)
+        local textHeight = math.ceil(row.text:GetStringHeight())
+        local h = textHeight + ROW_PAD_V * 2
+        if h < minHeight then h = minHeight end
+        row:SetHeight(h)
+        return h
     end
 
     local function hideGameTooltip()
@@ -1001,7 +1064,7 @@ function renderList()
     local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick)
         y = y + ROW_GAP
         local row = acquireRow(index)
-        placeRow(row, ROW_HEIGHT, INDENT_STEP * 2)
+        placeRow(row, INDENT_STEP * 2)
         row.text:SetText(label)
         row:SetScript("OnEnter", onEnter)
         row:SetScript("OnLeave", hideGameTooltip)
@@ -1018,7 +1081,7 @@ function renderList()
         else
             row:SetScript("OnClick", nil)
         end
-        y = y + ROW_HEIGHT
+        y = y + sizeRow(row, ROW_HEIGHT)
         index = index + 1
     end
 
@@ -1132,7 +1195,7 @@ function renderList()
                 for _, q in ipairs(visible.inLog) do visibleXp = visibleXp + (q.xp or 0) end
 
                 local header = acquireRow(index)
-                placeRow(header, HEADER_HEIGHT, 0)
+                placeRow(header, 0)
                 local arrow = collapsed and "|cffffd200[+]|r " or "|cffffd200[-]|r "
                 local summary = " (" .. visibleTotal .. ")"
                 if visibleXp > 0 then
@@ -1151,7 +1214,7 @@ function renderList()
                 end)
                 header:SetScript("OnEnter", nil)
                 header:SetScript("OnLeave", nil)
-                y = y + HEADER_HEIGHT
+                y = y + sizeRow(header, HEADER_HEIGHT)
                 index = index + 1
 
                 if not collapsed then
@@ -1166,7 +1229,7 @@ function renderList()
                             y = y + (subIndex == 1 and ROW_GAP or GROUP_GAP)
 
                             local sub = acquireRow(index)
-                            placeRow(sub, SUBHEADER_HEIGHT, INDENT_STEP)
+                            placeRow(sub, INDENT_STEP)
                             local subArrow = groupHidden and "[+]" or "[-]"
                             sub.text:SetText(string.format("|cff9d9d9d%s %s (%d)|r",
                                 subArrow, SUBCAT_LABEL[subKey], #list))
@@ -1176,7 +1239,7 @@ function renderList()
                             end)
                             sub:SetScript("OnEnter", nil)
                             sub:SetScript("OnLeave", nil)
-                            y = y + SUBHEADER_HEIGHT
+                            y = y + sizeRow(sub, SUBHEADER_HEIGHT)
                             index = index + 1
 
                             if not groupHidden then
@@ -1228,13 +1291,12 @@ function renderList()
             msg = "No non-trivial quests available right now. Level up or move to a different area to unlock more."
         end
         local row = acquireRow(index)
-        placeRow(row, ROW_HEIGHT * 2, 0)
+        placeRow(row, 0)
         row.text:SetText("|cffaaaaaa" .. msg .. "|r")
-        row.text:SetWordWrap(true)
         row:SetScript("OnEnter", nil)
         row:SetScript("OnLeave", nil)
         row:SetScript("OnClick", nil)
-        y = y + ROW_HEIGHT * 2
+        y = y + sizeRow(row, ROW_HEIGHT * 2)
         index = index + 1
     end
 
@@ -1252,6 +1314,20 @@ function renderList()
         mainFrame.toggleAllButton:SetText(allCollapsed and "Expand" or "Collapse")
     end
 end
+
+-- Layout model
+-- ------------
+-- The frame contains exactly one `content` container, inset from the frame by
+-- PAD_X on the sides, PAD_TOP at the top (clears the title bar), PAD_BOTTOM at
+-- the bottom. Every section lives inside `content` and is anchored via a
+-- single helper, `stack(element, gap)`, which pins TOPLEFT to the previous
+-- element's BOTTOMLEFT and RIGHT to `content`'s RIGHT. This keeps the layout
+-- one-dimensional: each section determines its own height; vertical position
+-- follows automatically.
+--
+-- The quest list lives in the final section (`questsArea`), which is anchored
+-- both TOP (below the previous section) and BOTTOM (to content), so it fills
+-- the remaining vertical space regardless of frame size.
 
 local function buildMainFrame()
     if mainFrame then
@@ -1292,6 +1368,33 @@ local function buildMainFrame()
     frame.title:SetPoint("TOP", frame.TitleBg, "TOP", 0, -3)
     frame.title:SetText("WhereToQuest")
 
+    -- The single content container. Every section anchors inside this; nothing
+    -- outside this is sized by the section chain.
+    local content = CreateFrame("Frame", nil, frame)
+    content:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
+    content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PAD_X, PAD_BOTTOM)
+
+    -- Stacks the element below the previous one with a chosen gap. The first
+    -- element (prev == nil) docks to content's top-left.
+    local lastInStack
+    local function stack(element, gap)
+        element:ClearAllPoints()
+        if lastInStack then
+            element:SetPoint("TOPLEFT", lastInStack, "BOTTOMLEFT", 0, -(gap or SECTION_GAP))
+        else
+            element:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+        end
+        element:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+        lastInStack = element
+    end
+
+    local function sectionTitle(text)
+        local fs = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        fs:SetText(text)
+        fs:SetJustifyH("LEFT")
+        return fs
+    end
+
     -- Measures the checkbox + label width at layout time, since GetStringWidth
     -- only reports accurately once the fontstring has been drawn.
     local function measureCheckboxWidth(cb)
@@ -1307,23 +1410,26 @@ local function buildMainFrame()
     end
 
     -- Position items left-to-right, wrap when the next one would overflow.
-    local function layoutFlow(container, items, hGap, vGap, rowHeight)
+    -- Returns the total height used so callers can size the container.
+    local function layoutFlow(container, items)
         local width = container:GetWidth()
         if width <= 1 then
-            return
+            return SPACING.LG
         end
         local x, y = 0, 0
         for _, item in ipairs(items) do
             local w = measureCheckboxWidth(item.frame)
             if x > 0 and (x + w) > width then
                 x = 0
-                y = y + rowHeight + vGap
+                y = y + SPACING.LG + SPACING.SM
             end
             item.frame:ClearAllPoints()
             item.frame:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
-            x = x + w + hGap
+            x = x + w + SPACING.SM
         end
-        container:SetHeight(y + rowHeight)
+        local total = y + SPACING.LG
+        container:SetHeight(total)
+        return total
     end
 
     local cbCounter = 0
@@ -1343,20 +1449,17 @@ local function buildMainFrame()
         return cb
     end
 
-    -- Quest Level Range section
+    -- 1) Quest Level Range section: title + slider row (fixed height).
+    local rangeTitle = sectionTitle("Quest Level Range")
+    stack(rangeTitle, 0)
 
-    local rangeTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    rangeTitle:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
-    rangeTitle:SetText("Quest Level Range")
+    local rangeRow = CreateFrame("Frame", nil, content)
+    rangeRow:SetHeight(SPACING.LG * 2)
+    stack(rangeRow, ELEMENT_GAP + SPACING.SM)
 
     local RANGE_SLIDER_WIDTH = 120
     local RANGE_SLIDER_LABEL_PAD = 4
     local RANGE_SLIDER_TOP_OFFSET = 14
-
-    local rangeRow = CreateFrame("Frame", nil, frame)
-    rangeRow:SetPoint("TOPLEFT", rangeTitle, "BOTTOMLEFT", 0, -(ELEMENT_GAP + 8))
-    rangeRow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    rangeRow:SetHeight(46)
 
     local sliderCounter = 0
     local function buildRangeSlider(parent, labelPrefix, dbKey)
@@ -1373,7 +1476,6 @@ local function buildMainFrame()
         local text = _G[name .. "Text"]
         if low then low:SetText(tostring(LEVEL_RANGE_MIN)) end
         if high then high:SetText(tostring(LEVEL_RANGE_MAX)) end
-        -- Bump the label up so the text isn't flush with the slider track.
         if text then
             text:ClearAllPoints()
             text:SetPoint("BOTTOM", slider, "TOP", 0, RANGE_SLIDER_LABEL_PAD)
@@ -1381,8 +1483,6 @@ local function buildMainFrame()
         slider._labelPrefix = labelPrefix
         slider._dbKey = dbKey
         slider._text = text
-        -- Seed the value before attaching the handler so initial layout never
-        -- fires OnValueChanged with a stale default and clobbers the saved value.
         local initial = clampRange(WhereToQuestDB and WhereToQuestDB[dbKey]) or DEFAULTS[dbKey]
         slider:SetValue(initial)
         if text then text:SetText(labelPrefix .. initial) end
@@ -1417,16 +1517,13 @@ local function buildMainFrame()
         if aboveSlider._text then aboveSlider._text:SetText(aboveSlider._labelPrefix .. above) end
     end
 
-    -- Filters section
+    -- 2) Filters section: title + wrap-flow of checkboxes.
+    local filtersTitle = sectionTitle("Filters")
+    stack(filtersTitle)
 
-    local filtersTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    filtersTitle:SetPoint("TOPLEFT", rangeRow, "BOTTOMLEFT", 0, -SECTION_GAP)
-    filtersTitle:SetText("Filters")
-
-    local filterFlow = CreateFrame("Frame", nil, frame)
-    filterFlow:SetPoint("TOPLEFT", filtersTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    filterFlow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    filterFlow:SetHeight(22)
+    local filterFlow = CreateFrame("Frame", nil, content)
+    filterFlow:SetHeight(SPACING.LG)
+    stack(filterFlow, ELEMENT_GAP)
 
     local FILTER_KEYS = {
         { key = "inLog",      label = "In Quest Log" },
@@ -1448,9 +1545,7 @@ local function buildMainFrame()
     end
     frame.filterItems = filterItems
 
-    frame.relayoutFilters = function()
-        layoutFlow(filterFlow, filterItems, 10, 4, 22)
-    end
+    frame.relayoutFilters = function() layoutFlow(filterFlow, filterItems) end
     filterFlow:SetScript("OnSizeChanged", frame.relayoutFilters)
 
     frame.refreshFilters = function()
@@ -1462,16 +1557,13 @@ local function buildMainFrame()
         end
     end
 
-    -- View section
+    -- 3) View section: title + wrap-flow of checkboxes.
+    local viewTitle = sectionTitle("View")
+    stack(viewTitle)
 
-    local viewTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    viewTitle:SetPoint("TOPLEFT", filterFlow, "BOTTOMLEFT", 0, -SECTION_GAP)
-    viewTitle:SetText("View")
-
-    local viewFlow = CreateFrame("Frame", nil, frame)
-    viewFlow:SetPoint("TOPLEFT", viewTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    viewFlow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    viewFlow:SetHeight(22)
+    local viewFlow = CreateFrame("Frame", nil, content)
+    viewFlow:SetHeight(SPACING.LG)
+    stack(viewFlow, ELEMENT_GAP)
 
     local VIEW_KEYS = {
         { key = "showNpcName",    label = "Show NPC Name and Location" },
@@ -1490,9 +1582,7 @@ local function buildMainFrame()
     end
     frame.viewItems = viewItems
 
-    frame.relayoutView = function()
-        layoutFlow(viewFlow, viewItems, 10, 4, 22)
-    end
+    frame.relayoutView = function() layoutFlow(viewFlow, viewItems) end
     viewFlow:SetScript("OnSizeChanged", frame.relayoutView)
 
     frame.refreshToggles = function()
@@ -1503,22 +1593,23 @@ local function buildMainFrame()
         end
     end
 
-    -- Sorting section
+    -- 4) Sorting section: title + dropdown wrapped in a fixed-height container
+    -- so the dropdown's lazy positioning can't pull downstream sections out of
+    -- alignment.
+    local sortingTitle = sectionTitle("Sorting")
+    stack(sortingTitle)
 
-    local sortingTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sortingTitle:SetPoint("TOPLEFT", viewFlow, "BOTTOMLEFT", 0, -SECTION_GAP)
-    sortingTitle:SetText("Sorting")
+    local sortRow = CreateFrame("Frame", nil, content)
+    sortRow:SetHeight(SPACING.LG + SPACING.SM)
+    stack(sortRow, ELEMENT_GAP)
 
-    -- UIDropDownMenuTemplate has ~16px invisible padding; offset to align edges.
-    local sortDropdown = CreateFrame("Frame", "WhereToQuestSortDropdown", frame, "UIDropDownMenuTemplate")
-    sortDropdown:SetPoint("TOPLEFT", sortingTitle, "BOTTOMLEFT", -16, 0)
+    local sortDropdown = CreateFrame("Frame", "WhereToQuestSortDropdown", sortRow, "UIDropDownMenuTemplate")
+    sortDropdown:SetPoint("TOPLEFT", sortRow, "TOPLEFT", -16, 0)
     UIDropDownMenu_SetWidth(sortDropdown, 200)
 
     local function getSortLabel(value)
         for _, opt in ipairs(SORT_OPTIONS) do
-            if opt.value == value then
-                return opt.label
-            end
+            if opt.value == value then return opt.label end
         end
         return SORT_OPTIONS[1].label
     end
@@ -1545,48 +1636,48 @@ local function buildMainFrame()
         UIDropDownMenu_SetText(sortDropdown, getSortLabel((WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode))
     end
 
-    -- Search section
+    -- 5) Search section: title + help text + search box.
+    local searchTitle = sectionTitle("Search")
+    stack(searchTitle)
 
-    local searchTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    searchTitle:SetPoint("TOPLEFT", sortDropdown, "BOTTOMLEFT", 16, -SECTION_GAP)
-    searchTitle:SetText("Search")
-
-    local searchHelp = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    searchHelp:SetPoint("TOPLEFT", searchTitle, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    searchHelp:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
+    local searchHelp = content:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     searchHelp:SetJustifyH("LEFT")
     searchHelp:SetWordWrap(true)
+    searchHelp:SetSpacing(LINE_SPACING)
     searchHelp:SetText("Filter by quest name, zone name, or NPC name (when NPC display is on).")
+    stack(searchHelp, ELEMENT_GAP)
 
-    local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", frame, "SearchBoxTemplate")
+    local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", content, "SearchBoxTemplate")
     searchBox:SetHeight(20)
-    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    searchBox:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
     searchBox:SetAutoFocus(false)
     searchBox:HookScript("OnTextChanged", function(self)
         local newText = string.lower(self:GetText() or "")
-        if newText == searchText then
-            return
-        end
+        if newText == searchText then return end
         searchText = newText
         renderList()
     end)
+    stack(searchBox, ELEMENT_GAP)
     frame.searchBox = searchBox
 
-    -- Quests header row: title on the left, Collapse + Refresh on the right.
+    -- 6) Quests area: toolbar + scroll list. Anchored top (below previous
+    -- section) AND bottom (to content's bottom) so it fills the remainder.
+    local questsArea = CreateFrame("Frame", nil, content)
+    questsArea:ClearAllPoints()
+    questsArea:SetPoint("TOPLEFT", lastInStack, "BOTTOMLEFT", 0, -SECTION_GAP)
+    questsArea:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 0)
 
-    local questsRow = CreateFrame("Frame", nil, frame)
-    questsRow:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -SECTION_GAP)
-    questsRow:SetPoint("RIGHT", frame, "RIGHT", -PAD_X, 0)
-    questsRow:SetHeight(22)
+    local toolbar = CreateFrame("Frame", nil, questsArea)
+    toolbar:SetHeight(SPACING.LG)
+    toolbar:SetPoint("TOPLEFT", questsArea, "TOPLEFT", 0, 0)
+    toolbar:SetPoint("RIGHT", questsArea, "RIGHT", 0, 0)
 
-    local questsTitle = questsRow:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    questsTitle:SetPoint("LEFT", questsRow, "LEFT", 0, 0)
+    local questsTitle = toolbar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    questsTitle:SetPoint("LEFT", toolbar, "LEFT", 0, 0)
     questsTitle:SetText("Quests")
 
-    local refreshButton = CreateFrame("Button", nil, questsRow, "UIPanelButtonTemplate")
-    refreshButton:SetSize(80, 22)
-    refreshButton:SetPoint("RIGHT", questsRow, "RIGHT", 0, 0)
+    local refreshButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
+    refreshButton:SetSize(SPACING.LG * 3 + SPACING.SM, SPACING.LG)
+    refreshButton:SetPoint("RIGHT", toolbar, "RIGHT", 0, 0)
     refreshButton:SetText("Refresh")
     refreshButton:SetScript("OnClick", function()
         invalidateScan()
@@ -1594,18 +1685,15 @@ local function buildMainFrame()
     end)
     frame.refreshButton = refreshButton
 
-    local toggleAllButton = CreateFrame("Button", nil, questsRow, "UIPanelButtonTemplate")
-    toggleAllButton:SetSize(90, 22)
+    local toggleAllButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
+    toggleAllButton:SetSize(SPACING.LG * 4, SPACING.LG)
     toggleAllButton:SetPoint("RIGHT", refreshButton, "LEFT", -ELEMENT_GAP, 0)
     toggleAllButton:SetText("Collapse")
     toggleAllButton:SetScript("OnClick", function()
         local zc = getZoneCollapsed()
         local anyExpanded = false
         for _, zoneName in ipairs(lastZoneOrder) do
-            if not zc[zoneName] then
-                anyExpanded = true
-                break
-            end
+            if not zc[zoneName] then anyExpanded = true; break end
         end
         for _, zoneName in ipairs(lastZoneOrder) do
             zc[zoneName] = anyExpanded
@@ -1614,23 +1702,27 @@ local function buildMainFrame()
     end)
     frame.toggleAllButton = toggleAllButton
 
-    local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", questsRow, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -(PAD_X + SCROLLBAR_RESERVE), PAD_BOTTOM)
+    local scroll = CreateFrame("ScrollFrame", nil, questsArea, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    scroll:SetPoint("BOTTOMRIGHT", questsArea, "BOTTOMRIGHT", -SCROLLBAR_RESERVE, 0)
 
+    -- Scroll child: explicit width via SetSize, kept in sync with the scroll
+    -- viewport in scroll's own OnSizeChanged. No anchors so SetScrollChild's
+    -- internal positioning runs normally (which is what makes the list scroll
+    -- vertically when content overflows).
     local child = CreateFrame("Frame", nil, scroll)
-    child:SetSize(savedSize.w - (PAD_X * 2) - SCROLLBAR_RESERVE, 1)
+    child:SetSize(math.max(1, scroll:GetWidth()), 1)
     scroll:SetScrollChild(child)
     scrollChild = child
     frame.scroll = scroll
 
-    local function updateScrollChildWidth()
-        child:SetWidth(frame:GetWidth() - (PAD_X * 2) - SCROLLBAR_RESERVE)
-    end
-    frame:HookScript("OnSizeChanged", function(self)
-        updateScrollChildWidth()
-        WhereToQuestDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
+    scroll:HookScript("OnSizeChanged", function(self)
+        child:SetWidth(math.max(1, self:GetWidth()))
         renderList()
+    end)
+
+    frame:HookScript("OnSizeChanged", function(self)
+        WhereToQuestDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
     end)
 
     local resizeGrip = CreateFrame("Button", nil, frame)
@@ -1660,11 +1752,10 @@ local function renderLoadingPlaceholder()
         row:SetScript("OnLeave", nil)
     end
     local row = acquireRow(1)
-    row:SetHeight(ROW_HEIGHT)
     row:ClearAllPoints()
-    row:SetPoint("LEFT", scrollChild, "LEFT", 0, 0)
-    row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
-    row:SetPoint("TOP", scrollChild, "TOP", 0, -ROW_HEIGHT)
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -ROW_HEIGHT)
+    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -ROW_HEIGHT)
+    row:SetHeight(ROW_HEIGHT)
     row.text:SetText("|cff7f7f7fScanning quest database\226\128\166|r")
     scrollChild:SetHeight(ROW_HEIGHT * 3)
 end
@@ -1684,22 +1775,17 @@ local function showFrame()
         frame.refreshRangeSliders()
     end
     frame:Show()
-    if frame.relayoutFilters then
-        frame.relayoutFilters()
-    end
-    if frame.relayoutView then
-        frame.relayoutView()
-    end
-    if scanCache.valid then
+    renderLoadingPlaceholder()
+    -- Defer the first real layout pass to the next tick. The dropdown template
+    -- and flow containers don't finalize their positions until after the first
+    -- paint, so running relayout + renderList synchronously here would lock in
+    -- stale anchor positions for the search box, Quests row, and scroll child.
+    C_Timer.After(0, function()
+        if not frame:IsShown() then return end
+        if frame.relayoutFilters then frame.relayoutFilters() end
+        if frame.relayoutView then frame.relayoutView() end
         renderList()
-    else
-        renderLoadingPlaceholder()
-        C_Timer.After(0, function()
-            if frame:IsShown() then
-                renderList()
-            end
-        end)
-    end
+    end)
 end
 
 local function toggleFrame()
