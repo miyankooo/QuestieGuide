@@ -20,6 +20,7 @@ local DEFAULTS = {
     zoneCollapsed = {},
     groupCollapsed = {},
     minimap = { hide = false, minimapPos = 215 },
+    useQuestieLevelRange = false,
     levelBelow = 5,
     levelAbove = 5,
 }
@@ -157,10 +158,15 @@ local function loadQuestie()
     return QuestieDB ~= nil and QuestieDB.QuestPointers ~= nil
 end
 
+-- The catch-all bucket for quests whose zoneOrSort is a sort category rather
+-- than a real area id. Pinned to the bottom of the list by sortZones because
+-- it's mostly noise (class quests, faction quests, profession quests, ...).
+local OTHER_ZONE_NAME = "Other"
+
 -- zoneOrSort > 0 is a Blizzard area ID; <= 0 is a sort category we collapse into "Other".
 local function getZoneName(zoneOrSort)
     if not zoneOrSort or zoneOrSort <= 0 then
-        return "Other"
+        return OTHER_ZONE_NAME
     end
     if C_Map and C_Map.GetAreaInfo then
         local name = C_Map.GetAreaInfo(zoneOrSort)
@@ -427,6 +433,17 @@ local function isLevelInBand(questLevel, playerLevel, below, above)
     return true
 end
 
+-- True when the quest would render grey on the player (below Blizzard's
+-- difficulty floor). Used when the slider band is bypassed so the list still
+-- spans green to red instead of including every trivial quest in the DB.
+local function isQuestTrivialForPlayer(questLevel, playerLevel)
+    if not playerLevel or not questLevel or questLevel <= 0 then
+        return false
+    end
+    local greenRange = (GetQuestGreenRange and GetQuestGreenRange("player")) or 5
+    return (playerLevel - questLevel) > greenRange
+end
+
 -- QuestieDB.IsDoable does not enforce requiredLevel, so we gate it explicitly.
 local function meetsRequiredLevel(requiredLevel, playerLevel)
     if not playerLevel then
@@ -543,7 +560,18 @@ local function scanQuestsByZone()
     end
     local playerLevel = UnitLevel("player")
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
+    local useQuestieLevelRange = WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false
     local below, above = getLevelRange()
+
+    -- Slider on: explicit band. Slider bypassed: defer to Questie's green-to-red
+    -- range by only excluding trivial (grey) quests; everything green and above
+    -- passes through to the doability checks below.
+    local function passesLevelGate(level)
+        if useQuestieLevelRange then
+            return not isQuestTrivialForPlayer(level, playerLevel)
+        end
+        return isLevelInBand(level, playerLevel, below, above)
+    end
 
     local byZone = {}
 
@@ -588,7 +616,7 @@ local function scanQuestsByZone()
         if not currentLog[questId] and not isQuestCompleted(questId) then
             local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
             if passesClassicCaps(level, requiredLevel)
-                and isLevelInBand(level, playerLevel, below, above)
+                and passesLevelGate(level)
                 and meetsRequiredLevel(requiredLevel, playerLevel) then
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
@@ -719,6 +747,18 @@ local function sortZones(zoneOrder, byZone)
             table.sort(zoneOrder, function(a, b) return a > b end)
         else
             table.sort(zoneOrder)
+        end
+    end
+
+    -- "Other" holds the sort-category catch-all (class/faction/profession
+    -- quests with no real zoneOrSort). Pin it to the bottom regardless of the
+    -- selected mode or direction since it's almost always noise compared to
+    -- the real zones above it.
+    for i, name in ipairs(zoneOrder) do
+        if name == OTHER_ZONE_NAME then
+            table.remove(zoneOrder, i)
+            zoneOrder[#zoneOrder + 1] = name
+            break
         end
     end
 end
@@ -1522,13 +1562,26 @@ local function buildMainFrame()
         return section
     end
 
-    -- 1) Quest Level Range section: slider row (fixed height).
+    -- 1) Quest Level Range section: a "Use Questie Level Ranges" checkbox sits
+    -- above the slider pair. When the checkbox is ticked, the sliders disable
+    -- and the scan bypasses the band filter (see passesLevelGate).
     local rangeSection = makeSection("Quest Level Range")
-    rangeSection:SetHeight(SPACING.LG * 2 + SECTION_INNER_PAD * 2)
+    local RANGE_CHECKBOX_HEIGHT = 22
+    local RANGE_CHECKBOX_GAP = 6
+    local RANGE_SLIDER_LABEL_PAD = 4
+    -- Original slider top offset (14) plus space cleared by the checkbox row above it.
+    local RANGE_SLIDER_TOP_OFFSET = RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP + 14
+    rangeSection:SetHeight(SPACING.LG * 2 + SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP)
     local rangeRow = rangeSection.body
 
-    local RANGE_SLIDER_LABEL_PAD = 4
-    local RANGE_SLIDER_TOP_OFFSET = 14
+    local useQuestieCheckbox = CreateFrame("CheckButton", "WhereToQuestUseQuestieLevelRange", rangeRow, "UICheckButtonTemplate")
+    useQuestieCheckbox:SetSize(RANGE_CHECKBOX_HEIGHT, RANGE_CHECKBOX_HEIGHT)
+    useQuestieCheckbox:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", ROW_EDGE_PAD, 0)
+    local useQuestieLabel = _G[useQuestieCheckbox:GetName() .. "Text"]
+    if useQuestieLabel then
+        useQuestieLabel:SetFontObject("GameFontNormal")
+        useQuestieLabel:SetText("Use Questie Level Ranges")
+    end
 
     local sliderCounter = 0
     local function buildRangeSlider(parent, labelPrefix, dbKey)
@@ -1581,7 +1634,33 @@ local function buildMainFrame()
 
     frame.belowSlider = belowSlider
     frame.aboveSlider = aboveSlider
+
+    -- Sliders are visually locked (greyed out) when Questie's range governs.
+    local function applySliderLock(locked)
+        if locked then
+            belowSlider:Disable()
+            aboveSlider:Disable()
+        else
+            belowSlider:Enable()
+            aboveSlider:Enable()
+        end
+    end
+
+    useQuestieCheckbox:SetChecked(WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false)
+    applySliderLock(useQuestieCheckbox:GetChecked())
+    useQuestieCheckbox:SetScript("OnClick", function(self)
+        local checked = self:GetChecked() and true or false
+        WhereToQuestDB.useQuestieLevelRange = checked
+        applySliderLock(checked)
+        invalidateScan()
+        renderList()
+    end)
+    frame.useQuestieCheckbox = useQuestieCheckbox
+
     frame.refreshRangeSliders = function()
+        local useQuestie = WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false
+        useQuestieCheckbox:SetChecked(useQuestie)
+        applySliderLock(useQuestie)
         local below, above = getLevelRange()
         belowSlider:SetValue(below)
         if belowSlider._text then belowSlider._text:SetText(belowSlider._labelPrefix .. below) end
@@ -2003,6 +2082,9 @@ loader:SetScript("OnEvent", function(self, event, name)
         WhereToQuestDB.maxAbove = nil
         WhereToQuestDB.levelBelow = clampRange(WhereToQuestDB.levelBelow) or DEFAULTS.levelBelow
         WhereToQuestDB.levelAbove = clampRange(WhereToQuestDB.levelAbove) or DEFAULTS.levelAbove
+        if type(WhereToQuestDB.useQuestieLevelRange) ~= "boolean" then
+            WhereToQuestDB.useQuestieLevelRange = DEFAULTS.useQuestieLevelRange
+        end
         local validSort = false
         for _, opt in ipairs(SORT_BY_OPTIONS) do
             if WhereToQuestDB.sortMode == opt.value then
