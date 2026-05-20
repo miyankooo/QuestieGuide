@@ -4,6 +4,7 @@ local ADDON_NAME = ...
 
 local DEFAULTS = {
     sortMode = "count",
+    sortDir = "desc",
     filters = {
         inLog = true,
         available = true,
@@ -28,11 +29,15 @@ local LEVEL_RANGE_MAX = 5
 
 local INTRO_PREFIX = "|cffffff00[WhereToQuest]:|r "
 
-local SORT_OPTIONS = {
-    { value = "count",    label = "Number of Quests" },
+local SORT_BY_OPTIONS = {
+    { value = "count",    label = "Quest Count" },
     { value = "xp",       label = "Total XP" },
     { value = "avgLevel", label = "Average Quest Level" },
-    { value = "name",     label = "Alphabetical Zone Names" },
+    { value = "name",     label = "Alphabetical" },
+}
+local SORT_DIR_OPTIONS = {
+    { value = "asc",  label = "Ascending" },
+    { value = "desc", label = "Descending" },
 }
 
 local SUBCAT_ORDER = { "inLog", "available", "missingPre" }
@@ -55,11 +60,25 @@ local FRAME_HEIGHT = 620
 
 -- Outer frame padding and section rhythm.
 local PAD_X = SPACING.MD
-local PAD_TOP = SPACING.LG + SPACING.SM  -- 32, clears BasicFrame TitleBg.
+local PAD_TOP = 52               -- clears the dialog-box-header banner above the first section.
 local PAD_BOTTOM = SPACING.LG
-local SECTION_GAP = SPACING.MD
+local SECTION_GAP = 22           -- clears the floating section label above the next box.
 local ELEMENT_GAP = SPACING.SM
 local SCROLLBAR_RESERVE = SPACING.LG
+local SECTION_INNER_PAD = 12     -- inner padding for nested section boxes.
+local SECTION_LABEL_LIFT = 7     -- lift of section label above its box's top edge.
+
+-- Slider / dropdown alignment within a row. The "edge" margin and "center gap"
+-- mirror the existing slider layout so dropdown rows visually match slider
+-- rows. UIDropDownMenu sizing constant from the template
+-- (UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2 == 50): UIDropDownMenu_SetWidth(d, W)
+-- sets the Middle texture to W and frame width to W + 50 (left cap 25 + right
+-- cap 25 are added on top of the requested width).
+local ROW_EDGE_PAD = 4
+local SLIDER_CENTER_HALF_GAP = 8           -- each slider sits this far from the row's centerline.
+local DROPDOWN_CAP_TOTAL = 50              -- frame width = middle width + 50; matches Blizzard's UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2.
+local DROPDOWN_VISIBLE_GAP = SLIDER_CENTER_HALF_GAP * 2  -- visible gap between adjacent dropdown frames (16, matching the sliders' total center gap).
+local DROPDOWN_ROW_H = 28                  -- vertical room a dropdown row occupies.
 
 -- List rhythm (rows use the 4px sub-grid for density).
 local ROW_HEIGHT = SPACING.MD
@@ -670,38 +689,37 @@ local function scanQuestsByZone()
     return byZone, zoneOrder
 end
 
--- Apply the user's sort mode in place. Cheap; safe to call every render.
+-- Apply the user's sort mode + direction in place. Cheap; safe to call every render.
+-- Zones without a value for the chosen metric sort to the END regardless of
+-- direction (so the player sees only zones with available quests at the top).
 local function sortZones(zoneOrder, byZone)
     local mode = (WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode
+    local dir = (WhereToQuestDB and WhereToQuestDB.sortDir) or DEFAULTS.sortDir
+    local desc = (dir == "desc")
+
+    local function compareNumeric(getValue)
+        local missing = desc and -math.huge or math.huge
+        return function(a, b)
+            local va = getValue(a) or missing
+            local vb = getValue(b) or missing
+            if va == vb then return a < b end
+            if desc then return va > vb end
+            return va < vb
+        end
+    end
+
     if mode == "count" then
-        table.sort(zoneOrder, function(a, b)
-            local ca, cb = byZone[a].stats.count, byZone[b].stats.count
-            if ca == cb then
-                return a < b
-            end
-            return ca > cb
-        end)
+        table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.count end))
     elseif mode == "xp" then
-        table.sort(zoneOrder, function(a, b)
-            local xa, xb = byZone[a].stats.xp or 0, byZone[b].stats.xp or 0
-            if xa == xb then
-                return a < b
-            end
-            return xa > xb
-        end)
+        table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.xp end))
     elseif mode == "avgLevel" then
-        -- Zones without an average sort to the end, so the player sees only
-        -- zones with available quests at the top.
-        local hi = math.huge
-        table.sort(zoneOrder, function(a, b)
-            local la, lb = byZone[a].stats.avgLevel or hi, byZone[b].stats.avgLevel or hi
-            if la == lb then
-                return a < b
-            end
-            return la < lb
-        end)
+        table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.avgLevel end))
     else
-        table.sort(zoneOrder)
+        if desc then
+            table.sort(zoneOrder, function(a, b) return a > b end)
+        else
+            table.sort(zoneOrder)
+        end
     end
 end
 
@@ -1315,26 +1333,129 @@ function renderList()
     end
 end
 
+-- Native Blizzard dialog-frame backdrop (matches AceGUI Frame, which is what
+-- Questie's options panel uses). DialogBox-Border has the metallic look with
+-- decorative corners; DialogBox-Background is the standard tan parchment.
+local function applyPanelBackdrop(frame)
+    frame:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true,
+        tileSize = 32,
+        edgeSize = 32,
+        insets = { left = 8, right = 8, top = 8, bottom = 8 },
+    })
+end
+
+-- Native Blizzard dialog-box header banner (Interface\DialogFrame\UI-DialogBox-Header)
+-- composed as three texture pieces (left cap, repeating middle, right cap),
+-- centered at the parent's top edge and overlapping into the frame interior.
+-- Same texture coords AceGUI uses for its Frame title.
+local function buildTitleHeader(parent, text)
+    local HEADER_TEXTURE = "Interface\\DialogFrame\\UI-DialogBox-Header"
+
+    local mid = parent:CreateTexture(nil, "OVERLAY")
+    mid:SetTexture(HEADER_TEXTURE)
+    mid:SetTexCoord(0.31, 0.67, 0, 0.63)
+    mid:SetPoint("TOP", parent, "TOP", 0, 12)
+    mid:SetHeight(40)
+
+    local left = parent:CreateTexture(nil, "OVERLAY")
+    left:SetTexture(HEADER_TEXTURE)
+    left:SetTexCoord(0.21, 0.31, 0, 0.63)
+    left:SetPoint("RIGHT", mid, "LEFT")
+    left:SetWidth(30)
+    left:SetHeight(40)
+
+    local right = parent:CreateTexture(nil, "OVERLAY")
+    right:SetTexture(HEADER_TEXTURE)
+    right:SetTexCoord(0.67, 0.77, 0, 0.63)
+    right:SetPoint("LEFT", mid, "RIGHT")
+    right:SetWidth(30)
+    right:SetHeight(40)
+
+    local title = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", mid, "TOP", 0, -14)
+    title:SetText(text)
+
+    mid:SetWidth((title:GetStringWidth() or 0) + 10)
+
+    return mid
+end
+
+-- Lays out N native UIDropDownMenuTemplate dropdowns side by side inside `row`,
+-- with ROW_EDGE_PAD on each end and DROPDOWN_VISIBLE_GAP between adjacent
+-- dropdowns. Every dropdown frame fits entirely inside the row, so nothing
+-- spills past the subcontainer's right edge regardless of how narrow the row
+-- gets. Call from row:HookScript("OnSizeChanged", ...) so the row stays
+-- responsive to frame resizes.
+local function layoutDropdownRow(dropdowns, row)
+    local n = #dropdowns
+    if n == 0 then return end
+    local w = row:GetWidth()
+    if w <= 1 then return end
+
+    local contentW = w - 2 * ROW_EDGE_PAD
+    local frameW = math.max(80, (contentW - (n - 1) * DROPDOWN_VISIBLE_GAP) / n)
+    -- UIDropDownMenu_SetWidth(d, middleW) yields a frame of (middleW + DROPDOWN_CAP_TOTAL).
+    local middleW = math.max(30, frameW - DROPDOWN_CAP_TOTAL)
+
+    local x = ROW_EDGE_PAD
+    for _, d in ipairs(dropdowns) do
+        UIDropDownMenu_SetWidth(d, middleW)
+        d:ClearAllPoints()
+        d:SetPoint("TOPLEFT", row, "TOPLEFT", x, 0)
+        x = x + frameW + DROPDOWN_VISIBLE_GAP
+    end
+end
+
+-- Nested section box (matches AceGUI InlineGroup): flat dark bg + tooltip border.
+local function buildSection(parent, labelText)
+    local section = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+    section:SetBackdrop({
+        bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 16,
+        insets = { left = 3, right = 3, top = 5, bottom = 3 },
+    })
+    section:SetBackdropColor(0.1, 0.1, 0.1, 0.5)
+    section:SetBackdropBorderColor(0.4, 0.4, 0.4)
+
+    local label = section:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    label:SetPoint("BOTTOMLEFT", section, "TOPLEFT", 12, SECTION_LABEL_LIFT)
+    label:SetText(labelText)
+    section.label = label
+
+    local body = CreateFrame("Frame", nil, section)
+    body:SetPoint("TOPLEFT", section, "TOPLEFT", SECTION_INNER_PAD, -SECTION_INNER_PAD)
+    body:SetPoint("BOTTOMRIGHT", section, "BOTTOMRIGHT", -SECTION_INNER_PAD, SECTION_INNER_PAD)
+    section.body = body
+
+    return section
+end
+
 -- Layout model
 -- ------------
 -- The frame contains exactly one `content` container, inset from the frame by
--- PAD_X on the sides, PAD_TOP at the top (clears the title bar), PAD_BOTTOM at
--- the bottom. Every section lives inside `content` and is anchored via a
--- single helper, `stack(element, gap)`, which pins TOPLEFT to the previous
--- element's BOTTOMLEFT and RIGHT to `content`'s RIGHT. This keeps the layout
--- one-dimensional: each section determines its own height; vertical position
--- follows automatically.
+-- PAD_X on the sides, PAD_TOP at the top (clears the title banner), PAD_BOTTOM
+-- at the bottom. Every section is a `buildSection` box (a bordered child with
+-- a floating label and an inner `body` frame) and is anchored via a single
+-- helper, `stack(element, gap)`, which pins TOPLEFT to the previous element's
+-- BOTTOMLEFT and RIGHT to `content`'s RIGHT. Each section determines its own
+-- height; vertical position follows automatically.
 --
--- The quest list lives in the final section (`questsArea`), which is anchored
--- both TOP (below the previous section) and BOTTOM (to content), so it fills
--- the remaining vertical space regardless of frame size.
+-- The quest list lives in the final section (`questsSection`), which is
+-- anchored both TOP (below the previous section) and BOTTOM (to content), so
+-- it fills the remaining vertical space regardless of frame size.
 
 local function buildMainFrame()
     if mainFrame then
         return mainFrame
     end
 
-    local frame = CreateFrame("Frame", "WhereToQuestFrame", UIParent, "BasicFrameTemplateWithInset")
+    local frame = CreateFrame("Frame", "WhereToQuestFrame", UIParent, "BackdropTemplate")
     local savedSize = (WhereToQuestDB and WhereToQuestDB.frameSize) or DEFAULTS.frameSize
     frame:SetSize(savedSize.w or FRAME_WIDTH, savedSize.h or FRAME_HEIGHT)
     frame:SetFrameStrata("DIALOG")
@@ -1354,6 +1475,7 @@ local function buildMainFrame()
         local point, _, relPoint, x, y = self:GetPoint(1)
         WhereToQuestDB.framePos = { point = point, relPoint = relPoint, x = x, y = y }
     end)
+    applyPanelBackdrop(frame)
 
     local savedPos = WhereToQuestDB and WhereToQuestDB.framePos
     if type(savedPos) == "table" and savedPos.point then
@@ -1364,9 +1486,10 @@ local function buildMainFrame()
     end
     frame:Hide()
 
-    frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    frame.title:SetPoint("TOP", frame.TitleBg, "TOP", 0, -3)
-    frame.title:SetText("WhereToQuest")
+    buildTitleHeader(frame, "WhereToQuest")
+
+    local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
 
     -- The single content container. Every section anchors inside this; nothing
     -- outside this is sized by the section chain.
@@ -1388,76 +1511,22 @@ local function buildMainFrame()
         lastInStack = element
     end
 
-    local function sectionTitle(text)
-        local fs = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-        fs:SetText(text)
-        fs:SetJustifyH("LEFT")
-        return fs
+    -- Creates a nested section box, stacks it inside `content`, and returns
+    -- the section frame so callers can parent widgets to `section.body` and
+    -- set the section's height once its content is sized. Nil gap falls back
+    -- to `stack`'s SECTION_GAP default; the first section ignores the gap
+    -- because there is no previous element to anchor below.
+    local function makeSection(text, gap)
+        local section = buildSection(content, text)
+        stack(section, gap)
+        return section
     end
 
-    -- Measures the checkbox + label width at layout time, since GetStringWidth
-    -- only reports accurately once the fontstring has been drawn.
-    local function measureCheckboxWidth(cb)
-        local cbText = cb._cbText
-        local textW = 0
-        if cbText then
-            textW = math.ceil(cbText:GetStringWidth())
-            if textW == 0 and cb._labelLen then
-                textW = cb._labelLen * 7
-            end
-        end
-        return 22 + 4 + textW + 6
-    end
+    -- 1) Quest Level Range section: slider row (fixed height).
+    local rangeSection = makeSection("Quest Level Range")
+    rangeSection:SetHeight(SPACING.LG * 2 + SECTION_INNER_PAD * 2)
+    local rangeRow = rangeSection.body
 
-    -- Position items left-to-right, wrap when the next one would overflow.
-    -- Returns the total height used so callers can size the container.
-    local function layoutFlow(container, items)
-        local width = container:GetWidth()
-        if width <= 1 then
-            return SPACING.LG
-        end
-        local x, y = 0, 0
-        for _, item in ipairs(items) do
-            local w = measureCheckboxWidth(item.frame)
-            if x > 0 and (x + w) > width then
-                x = 0
-                y = y + SPACING.LG + SPACING.SM
-            end
-            item.frame:ClearAllPoints()
-            item.frame:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
-            x = x + w + SPACING.SM
-        end
-        local total = y + SPACING.LG
-        container:SetHeight(total)
-        return total
-    end
-
-    local cbCounter = 0
-    local function buildCheckbox(parent, label, onClick)
-        cbCounter = cbCounter + 1
-        local name = "WhereToQuestCB" .. cbCounter
-        local cb = CreateFrame("CheckButton", name, parent, "UICheckButtonTemplate")
-        cb:SetSize(22, 22)
-        local cbText = _G[name .. "Text"]
-        if cbText then
-            cbText:SetText(label)
-            cbText:SetFontObject("GameFontNormalSmall")
-        end
-        cb:SetScript("OnClick", onClick)
-        cb._cbText = cbText
-        cb._labelLen = #label
-        return cb
-    end
-
-    -- 1) Quest Level Range section: title + slider row (fixed height).
-    local rangeTitle = sectionTitle("Quest Level Range")
-    stack(rangeTitle, 0)
-
-    local rangeRow = CreateFrame("Frame", nil, content)
-    rangeRow:SetHeight(SPACING.LG * 2)
-    stack(rangeRow, ELEMENT_GAP + SPACING.SM)
-
-    local RANGE_SLIDER_WIDTH = 120
     local RANGE_SLIDER_LABEL_PAD = 4
     local RANGE_SLIDER_TOP_OFFSET = 14
 
@@ -1466,7 +1535,8 @@ local function buildMainFrame()
         sliderCounter = sliderCounter + 1
         local name = "WhereToQuestRangeSlider" .. sliderCounter
         local slider = CreateFrame("Slider", name, parent, "OptionsSliderTemplate")
-        slider:SetWidth(RANGE_SLIDER_WIDTH)
+        -- Width is determined by the caller's TOPLEFT/TOPRIGHT anchors so the
+        -- two sliders fill the row.
         slider:SetHeight(18)
         slider:SetMinMaxValues(LEVEL_RANGE_MIN, LEVEL_RANGE_MAX)
         slider:SetValueStep(1)
@@ -1502,10 +1572,12 @@ local function buildMainFrame()
     end
 
     local belowSlider = buildRangeSlider(rangeRow, "Quest Level Below: -", "levelBelow")
-    belowSlider:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", 4, -RANGE_SLIDER_TOP_OFFSET)
+    belowSlider:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", ROW_EDGE_PAD, -RANGE_SLIDER_TOP_OFFSET)
+    belowSlider:SetPoint("TOPRIGHT", rangeRow, "TOP", -SLIDER_CENTER_HALF_GAP, -RANGE_SLIDER_TOP_OFFSET)
 
     local aboveSlider = buildRangeSlider(rangeRow, "Quest Level Above: +", "levelAbove")
-    aboveSlider:SetPoint("TOPRIGHT", rangeRow, "TOPRIGHT", -4, -RANGE_SLIDER_TOP_OFFSET)
+    aboveSlider:SetPoint("TOPLEFT", rangeRow, "TOP", SLIDER_CENTER_HALF_GAP, -RANGE_SLIDER_TOP_OFFSET)
+    aboveSlider:SetPoint("TOPRIGHT", rangeRow, "TOPRIGHT", -ROW_EDGE_PAD, -RANGE_SLIDER_TOP_OFFSET)
 
     frame.belowSlider = belowSlider
     frame.aboveSlider = aboveSlider
@@ -1517,138 +1589,210 @@ local function buildMainFrame()
         if aboveSlider._text then aboveSlider._text:SetText(aboveSlider._labelPrefix .. above) end
     end
 
-    -- 2) Filters section: title + wrap-flow of checkboxes.
-    local filtersTitle = sectionTitle("Filters")
-    stack(filtersTitle)
+    -- 2) Filters section: three native multi-select dropdowns laid out in a
+    -- 2+1 grid (Availability + Quest Types on the top row, Zone & NPCs full
+    -- width on the bottom row) so each dropdown stays wide enough to be
+    -- readable inside the default panel width. Opening a dropdown lists its
+    -- toggles as checkboxes (`info.isNotRadio` + `info.keepShownOnClick`).
+    -- Quest-tag filters live under `WhereToQuestDB.filters`; display toggles
+    -- live as top-level keys, so each group declares its own get/set.
+    local filtersSection = makeSection("Filters")
+    local filtersBody = filtersSection.body
 
-    local filterFlow = CreateFrame("Frame", nil, content)
-    filterFlow:SetHeight(SPACING.LG)
-    stack(filterFlow, ELEMENT_GAP)
+    local function getFilterValue(key)
+        local f = WhereToQuestDB and WhereToQuestDB.filters
+        if f and f[key] ~= nil then return f[key] and true or false end
+        return DEFAULTS.filters[key] and true or false
+    end
+    local function setFilterValue(key, value)
+        WhereToQuestDB.filters = WhereToQuestDB.filters or {}
+        WhereToQuestDB.filters[key] = value and true or false
+    end
 
-    local FILTER_KEYS = {
-        { key = "inLog",      label = "In Quest Log" },
-        { key = "available",  label = "Available" },
-        { key = "missingPre", label = "Show Chain Prerequisites" },
-        { key = "dungeons",   label = "Show Dungeons" },
-        { key = "eliteGroup", label = "Show Elite/Group Quests" },
+    local function getToggleValue(key)
+        local v = WhereToQuestDB and WhereToQuestDB[key]
+        if v == nil then v = DEFAULTS[key] end
+        return v and true or false
+    end
+    local function setToggleValue(key, value)
+        WhereToQuestDB[key] = value and true or false
+    end
+
+    local FILTER_GROUPS = {
+        {
+            title = "Availability",
+            get = getFilterValue,
+            set = setFilterValue,
+            specs = {
+                { key = "inLog",      label = "In Quest Log" },
+                { key = "available",  label = "Available" },
+                { key = "missingPre", label = "Show Chain Prerequisites" },
+            },
+        },
+        {
+            title = "Quest Types",
+            get = getFilterValue,
+            set = setFilterValue,
+            specs = {
+                { key = "dungeons",   label = "Dungeons" },
+                { key = "eliteGroup", label = "Elite/Group Quests" },
+            },
+        },
+        {
+            title = "Zone & NPCs",
+            get = getToggleValue,
+            set = setToggleValue,
+            specs = {
+                { key = "showNpcName",    label = "Show NPC Name and Location" },
+                { key = "showCoords",     label = "Show NPC Coordinates" },
+                { key = "pinCurrentZone", label = "Pin Current Zone" },
+            },
+        },
     }
 
-    local filterItems = {}
-    for _, spec in ipairs(FILTER_KEYS) do
-        local cb = buildCheckbox(filterFlow, spec.label, function(self)
-            WhereToQuestDB.filters = WhereToQuestDB.filters or {}
-            WhereToQuestDB.filters[spec.key] = self:GetChecked() and true or false
-            renderList()
+    -- Two row frames inside the section body so the dropdowns can flow as 2+1.
+    local FILTER_ROW_GAP = SPACING.SM
+    local filtersTopRow = CreateFrame("Frame", nil, filtersBody)
+    filtersTopRow:SetHeight(DROPDOWN_ROW_H)
+    filtersTopRow:SetPoint("TOPLEFT", filtersBody, "TOPLEFT", 0, 0)
+    filtersTopRow:SetPoint("RIGHT", filtersBody, "RIGHT", 0, 0)
+
+    local filtersBottomRow = CreateFrame("Frame", nil, filtersBody)
+    filtersBottomRow:SetHeight(DROPDOWN_ROW_H)
+    filtersBottomRow:SetPoint("TOPLEFT", filtersTopRow, "BOTTOMLEFT", 0, -FILTER_ROW_GAP)
+    filtersBottomRow:SetPoint("RIGHT", filtersBody, "RIGHT", 0, 0)
+
+    local filterDropdowns = {}
+    local function buildFilterDropdown(parent, i, group)
+        local dd = CreateFrame("Frame", "WhereToQuestFilterDropdown" .. i, parent, "UIDropDownMenuTemplate")
+        UIDropDownMenu_Initialize(dd, function(self, level)
+            for _, spec in ipairs(group.specs) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = spec.label
+                info.isNotRadio = true
+                info.keepShownOnClick = true
+                info.checked = group.get(spec.key)
+                info.func = function(btn)
+                    group.set(spec.key, btn.checked and true or false)
+                    invalidateScan()
+                    renderList()
+                end
+                UIDropDownMenu_AddButton(info, level)
+            end
         end)
-        cb.filterKey = spec.key
-        filterItems[#filterItems + 1] = { frame = cb }
-    end
-    frame.filterItems = filterItems
-
-    frame.relayoutFilters = function() layoutFlow(filterFlow, filterItems) end
-    filterFlow:SetScript("OnSizeChanged", frame.relayoutFilters)
-
-    frame.refreshFilters = function()
-        local fs = (WhereToQuestDB and WhereToQuestDB.filters) or DEFAULTS.filters
-        for _, item in ipairs(filterItems) do
-            local v = fs[item.frame.filterKey]
-            if v == nil then v = DEFAULTS.filters[item.frame.filterKey] end
-            item.frame:SetChecked(v and true or false)
-        end
+        UIDropDownMenu_SetText(dd, group.title)
+        return dd
     end
 
-    -- 3) View section: title + wrap-flow of checkboxes.
-    local viewTitle = sectionTitle("View")
-    stack(viewTitle)
+    filterDropdowns[1] = buildFilterDropdown(filtersTopRow, 1, FILTER_GROUPS[1])
+    filterDropdowns[2] = buildFilterDropdown(filtersTopRow, 2, FILTER_GROUPS[2])
+    filterDropdowns[3] = buildFilterDropdown(filtersBottomRow, 3, FILTER_GROUPS[3])
+    frame.filterDropdowns = filterDropdowns
 
-    local viewFlow = CreateFrame("Frame", nil, content)
-    viewFlow:SetHeight(SPACING.LG)
-    stack(viewFlow, ELEMENT_GAP)
-
-    local VIEW_KEYS = {
-        { key = "showNpcName",    label = "Show NPC Name and Location" },
-        { key = "showCoords",     label = "Show NPC Coordinates" },
-        { key = "pinCurrentZone", label = "Pin Current Zone" },
-    }
-
-    local viewItems = {}
-    for _, spec in ipairs(VIEW_KEYS) do
-        local cb = buildCheckbox(viewFlow, spec.label, function(self)
-            WhereToQuestDB[spec.key] = self:GetChecked() and true or false
-            renderList()
-        end)
-        cb.toggleKey = spec.key
-        viewItems[#viewItems + 1] = { frame = cb }
+    local function layoutFilterRows()
+        layoutDropdownRow({ filterDropdowns[1], filterDropdowns[2] }, filtersTopRow)
+        layoutDropdownRow({ filterDropdowns[3] }, filtersBottomRow)
     end
-    frame.viewItems = viewItems
+    filtersTopRow:HookScript("OnSizeChanged", layoutFilterRows)
 
-    frame.relayoutView = function() layoutFlow(viewFlow, viewItems) end
-    viewFlow:SetScript("OnSizeChanged", frame.relayoutView)
+    filtersSection:SetHeight(DROPDOWN_ROW_H * 2 + FILTER_ROW_GAP + SECTION_INNER_PAD * 2)
 
-    frame.refreshToggles = function()
-        for _, item in ipairs(viewItems) do
-            local v = WhereToQuestDB and WhereToQuestDB[item.frame.toggleKey]
-            if v == nil then v = DEFAULTS[item.frame.toggleKey] end
-            item.frame:SetChecked(v and true or false)
-        end
-    end
+    -- The dropdowns reread their `checked` state from the DB each time the
+    -- menu opens (init runs per-open), so no per-checkbox refresh is needed.
+    -- These hooks are no-ops kept to preserve the public refresh contract.
+    frame.refreshFilters = function() end
+    frame.refreshToggles = function() end
 
-    -- 4) Sorting section: title + dropdown wrapped in a fixed-height container
-    -- so the dropdown's lazy positioning can't pull downstream sections out of
-    -- alignment.
-    local sortingTitle = sectionTitle("Sorting")
-    stack(sortingTitle)
+    -- 3) Sorting section: sort-by dropdown + direction dropdown, side by side
+    -- filling the row, matching the Quest Level Range sliders' layout.
+    local sortingSection = makeSection("Sorting")
+    sortingSection:SetHeight(DROPDOWN_ROW_H + SECTION_INNER_PAD * 2)
+    local sortRow = sortingSection.body
 
-    local sortRow = CreateFrame("Frame", nil, content)
-    sortRow:SetHeight(SPACING.LG + SPACING.SM)
-    stack(sortRow, ELEMENT_GAP)
-
-    local sortDropdown = CreateFrame("Frame", "WhereToQuestSortDropdown", sortRow, "UIDropDownMenuTemplate")
-    sortDropdown:SetPoint("TOPLEFT", sortRow, "TOPLEFT", -16, 0)
-    UIDropDownMenu_SetWidth(sortDropdown, 200)
-
-    local function getSortLabel(value)
-        for _, opt in ipairs(SORT_OPTIONS) do
+    local function getSortByLabel(value)
+        for _, opt in ipairs(SORT_BY_OPTIONS) do
             if opt.value == value then return opt.label end
         end
-        return SORT_OPTIONS[1].label
+        return SORT_BY_OPTIONS[1].label
+    end
+    local function getSortDirLabel(value)
+        for _, opt in ipairs(SORT_DIR_OPTIONS) do
+            if opt.value == value then return opt.label end
+        end
+        return SORT_DIR_OPTIONS[2].label
     end
 
-    local function initSortDropdown(self, level)
+    local sortByDropdown = CreateFrame("Frame", "WhereToQuestSortByDropdown", sortRow, "UIDropDownMenuTemplate")
+    UIDropDownMenu_Initialize(sortByDropdown, function(self, level)
         local current = (WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode
-        for _, opt in ipairs(SORT_OPTIONS) do
+        for _, opt in ipairs(SORT_BY_OPTIONS) do
             local info = UIDropDownMenu_CreateInfo()
             info.text = opt.label
             info.value = opt.value
             info.checked = current == opt.value
             info.func = function(btn)
                 WhereToQuestDB.sortMode = btn.value
-                UIDropDownMenu_SetText(sortDropdown, getSortLabel(btn.value))
+                UIDropDownMenu_SetText(sortByDropdown, getSortByLabel(btn.value))
                 renderList()
                 CloseDropDownMenus()
             end
             UIDropDownMenu_AddButton(info, level)
         end
-    end
-    UIDropDownMenu_Initialize(sortDropdown, initSortDropdown)
-    frame.sortDropdown = sortDropdown
+    end)
+
+    local sortDirDropdown = CreateFrame("Frame", "WhereToQuestSortDirDropdown", sortRow, "UIDropDownMenuTemplate")
+    UIDropDownMenu_Initialize(sortDirDropdown, function(self, level)
+        local current = (WhereToQuestDB and WhereToQuestDB.sortDir) or DEFAULTS.sortDir
+        for _, opt in ipairs(SORT_DIR_OPTIONS) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = opt.label
+            info.value = opt.value
+            info.checked = current == opt.value
+            info.func = function(btn)
+                WhereToQuestDB.sortDir = btn.value
+                UIDropDownMenu_SetText(sortDirDropdown, getSortDirLabel(btn.value))
+                renderList()
+                CloseDropDownMenus()
+            end
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    local function layoutSortRow() layoutDropdownRow({ sortByDropdown, sortDirDropdown }, sortRow) end
+    sortRow:HookScript("OnSizeChanged", layoutSortRow)
+
+    frame.sortByDropdown = sortByDropdown
+    frame.sortDirDropdown = sortDirDropdown
     frame.refreshSortDropdown = function()
-        UIDropDownMenu_SetText(sortDropdown, getSortLabel((WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode))
+        UIDropDownMenu_SetText(sortByDropdown, getSortByLabel((WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode))
+        UIDropDownMenu_SetText(sortDirDropdown, getSortDirLabel((WhereToQuestDB and WhereToQuestDB.sortDir) or DEFAULTS.sortDir))
     end
 
-    -- 5) Search section: title + help text + search box.
-    local searchTitle = sectionTitle("Search")
-    stack(searchTitle)
+    -- 4) Quests section: search row (label + helper + edit box) at the top,
+    -- then toolbar and scroll list. Anchored top (below previous section) AND
+    -- bottom (to content's bottom) so it fills the remainder.
+    local questsSection = buildSection(content, "Quests")
+    questsSection:ClearAllPoints()
+    questsSection:SetPoint("TOPLEFT", lastInStack, "BOTTOMLEFT", 0, -SECTION_GAP)
+    questsSection:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 0)
+    lastInStack = questsSection
 
-    local searchHelp = content:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    local searchLabel = questsSection.body:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    searchLabel:SetPoint("TOPLEFT", questsSection.body, "TOPLEFT", 0, 0)
+    searchLabel:SetText("Search")
+
+    local searchHelp = questsSection.body:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    searchHelp:SetPoint("TOPLEFT", searchLabel, "BOTTOMLEFT", 0, -2)
+    searchHelp:SetPoint("RIGHT", questsSection.body, "RIGHT", 0, 0)
     searchHelp:SetJustifyH("LEFT")
     searchHelp:SetWordWrap(true)
     searchHelp:SetSpacing(LINE_SPACING)
     searchHelp:SetText("Filter by quest name, zone name, or NPC name (when NPC display is on).")
-    stack(searchHelp, ELEMENT_GAP)
 
-    local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", content, "SearchBoxTemplate")
+    local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", questsSection.body, "SearchBoxTemplate")
     searchBox:SetHeight(20)
+    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", SPACING.SM, -ELEMENT_GAP)
+    searchBox:SetPoint("RIGHT", questsSection.body, "RIGHT", -SPACING.SM, 0)
     searchBox:SetAutoFocus(false)
     searchBox:HookScript("OnTextChanged", function(self)
         local newText = string.lower(self:GetText() or "")
@@ -1656,24 +1800,12 @@ local function buildMainFrame()
         searchText = newText
         renderList()
     end)
-    stack(searchBox, ELEMENT_GAP)
     frame.searchBox = searchBox
 
-    -- 6) Quests area: toolbar + scroll list. Anchored top (below previous
-    -- section) AND bottom (to content's bottom) so it fills the remainder.
-    local questsArea = CreateFrame("Frame", nil, content)
-    questsArea:ClearAllPoints()
-    questsArea:SetPoint("TOPLEFT", lastInStack, "BOTTOMLEFT", 0, -SECTION_GAP)
-    questsArea:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 0)
-
-    local toolbar = CreateFrame("Frame", nil, questsArea)
+    local toolbar = CreateFrame("Frame", nil, questsSection.body)
     toolbar:SetHeight(SPACING.LG)
-    toolbar:SetPoint("TOPLEFT", questsArea, "TOPLEFT", 0, 0)
-    toolbar:SetPoint("RIGHT", questsArea, "RIGHT", 0, 0)
-
-    local questsTitle = toolbar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    questsTitle:SetPoint("LEFT", toolbar, "LEFT", 0, 0)
-    questsTitle:SetText("Quests")
+    toolbar:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    toolbar:SetPoint("RIGHT", questsSection.body, "RIGHT", 0, 0)
 
     local refreshButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
     refreshButton:SetSize(SPACING.LG * 3 + SPACING.SM, SPACING.LG)
@@ -1702,9 +1834,9 @@ local function buildMainFrame()
     end)
     frame.toggleAllButton = toggleAllButton
 
-    local scroll = CreateFrame("ScrollFrame", nil, questsArea, "UIPanelScrollFrameTemplate")
+    local scroll = CreateFrame("ScrollFrame", nil, questsSection.body, "UIPanelScrollFrameTemplate")
     scroll:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    scroll:SetPoint("BOTTOMRIGHT", questsArea, "BOTTOMRIGHT", -SCROLLBAR_RESERVE, 0)
+    scroll:SetPoint("BOTTOMRIGHT", questsSection.body, "BOTTOMRIGHT", -SCROLLBAR_RESERVE, 0)
 
     -- Scroll child: explicit width via SetSize, kept in sync with the scroll
     -- viewport in scroll's own OnSizeChanged. No anchors so SetScrollChild's
@@ -1776,14 +1908,12 @@ local function showFrame()
     end
     frame:Show()
     renderLoadingPlaceholder()
-    -- Defer the first real layout pass to the next tick. The dropdown template
-    -- and flow containers don't finalize their positions until after the first
-    -- paint, so running relayout + renderList synchronously here would lock in
-    -- stale anchor positions for the search box, Quests row, and scroll child.
+    -- Defer the first real layout pass to the next tick. Dropdown rows get
+    -- their final width from the section body's OnSizeChanged hook, but that
+    -- hook may not have fired yet on the first paint; renderList itself also
+    -- relies on the scroll child's resolved width.
     C_Timer.After(0, function()
         if not frame:IsShown() then return end
-        if frame.relayoutFilters then frame.relayoutFilters() end
-        if frame.relayoutView then frame.relayoutView() end
         renderList()
     end)
 end
@@ -1874,7 +2004,7 @@ loader:SetScript("OnEvent", function(self, event, name)
         WhereToQuestDB.levelBelow = clampRange(WhereToQuestDB.levelBelow) or DEFAULTS.levelBelow
         WhereToQuestDB.levelAbove = clampRange(WhereToQuestDB.levelAbove) or DEFAULTS.levelAbove
         local validSort = false
-        for _, opt in ipairs(SORT_OPTIONS) do
+        for _, opt in ipairs(SORT_BY_OPTIONS) do
             if WhereToQuestDB.sortMode == opt.value then
                 validSort = true
                 break
@@ -1882,6 +2012,16 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         if not validSort then
             WhereToQuestDB.sortMode = DEFAULTS.sortMode
+        end
+        local validDir = false
+        for _, opt in ipairs(SORT_DIR_OPTIONS) do
+            if WhereToQuestDB.sortDir == opt.value then
+                validDir = true
+                break
+            end
+        end
+        if not validDir then
+            WhereToQuestDB.sortDir = DEFAULTS.sortDir
         end
         if type(WhereToQuestDB.filters) ~= "table" then
             WhereToQuestDB.filters = {}
