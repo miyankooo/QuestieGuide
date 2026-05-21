@@ -30,10 +30,10 @@ local LEVEL_RANGE_MAX = 10
 local INTRO_PREFIX = "|cffffff00[WhereToQuest]:|r "
 
 local SORT_BY_OPTIONS = {
-    { value = "count",    label = "Quest Count" },
     { value = "xp",       label = "Total XP" },
+    { value = "count",    label = "Total Quest Count" },
     { value = "avgLevel", label = "Average Quest Level" },
-    { value = "name",     label = "Alphabetical" },
+    { value = "name",     label = "Alphabetical by Zone" },
 }
 local SORT_DIR_OPTIONS = {
     { value = "asc",  label = "Ascending" },
@@ -43,9 +43,9 @@ local SORT_DIR_OPTIONS = {
 local SUBCAT_ORDER = { "inLog", "available", "pickedUpElsewhere", "missingPre" }
 local SUBCAT_LABEL = {
     inLog = "In Quest Log",
-    available = "Available",
-    pickedUpElsewhere = "Picked Up Elsewhere",
-    missingPre = "Missing Prerequisite",
+    available = "Available in Zone",
+    pickedUpElsewhere = "Available Elsewhere",
+    missingPre = "Missing Pre-Quest",
 }
 
 -- Layout grid: 8px outer chrome, 4px sub-grid for compact list rows.
@@ -71,13 +71,10 @@ local SECTION_LABEL_LIFT = 7     -- lift of section label above its box's top ed
 
 -- Slider / dropdown alignment within a row. The "edge" margin and "center gap"
 -- mirror the existing slider layout so dropdown rows visually match slider
--- rows. UIDropDownMenu sizing constant from the template
--- (UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2 == 50): UIDropDownMenu_SetWidth(d, W)
--- sets the Middle texture to W and frame width to W + 50 (left cap 25 + right
--- cap 25 are added on top of the requested width).
+-- rows. The new Menu API dropdowns are sized directly via SetWidth, so the
+-- old UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING math is no longer needed.
 local ROW_EDGE_PAD = 0
 local SLIDER_CENTER_HALF_GAP = 8           -- each slider sits this far from the row's centerline.
-local DROPDOWN_CAP_TOTAL = 50              -- frame width = middle width + 50; matches Blizzard's UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING * 2.
 local DROPDOWN_VISIBLE_GAP = SLIDER_CENTER_HALF_GAP * 2  -- visible gap between adjacent dropdown frames (16, matching the sliders' total center gap).
 local DROPDOWN_ROW_H = 28                  -- vertical room a dropdown row occupies.
 
@@ -623,29 +620,25 @@ local function scanQuestsByZone()
         return level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
     end
 
-    -- Quests already in the player's log bypass the level band: if the player
+    -- Quests already in the player's log bypass the level band (if they
     -- accepted it, they want to see it regardless of how far it has drifted
-    -- from their current level. Split by where the giver lives: NPC in the
-    -- bucketed zone -> "In Quest Log"; NPC in a different (or unknown) zone
-    -- -> "Picked Up Elsewhere".
+    -- from their current level) and ALWAYS go into "In Quest Log" for their
+    -- zone. We deliberately do NOT split log quests by giver zone any more
+    -- -- if it's in the log, it's in the log, period. "Picked Up Elsewhere"
+    -- below is for the inverse case: quests not in the log whose giver sits
+    -- outside the quest's own zone.
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
         if zoneOrSort and passesClassicCaps(level, requiredLevel) then
-            local questZoneName = getZoneName(zoneOrSort)
-            local _, giverZoneName = getQuestStartInfo(questId)
-            local entry = ensureZone(questZoneName)
-            local quest = {
+            local entry = ensureZone(getZoneName(zoneOrSort))
+            entry.inLog[#entry.inLog + 1] = {
                 id = questId,
                 level = level,
                 name = getQuestName(questId),
                 xp = getQuestXp(questId),
                 tag = getQuestTagLabel(questId),
             }
-            local bucket = (giverZoneName and giverZoneName ~= questZoneName)
-                and entry.pickedUpElsewhere
-                or entry.inLog
-            bucket[#bucket + 1] = quest
             entry.count = entry.count + 1
         end
     end
@@ -653,20 +646,37 @@ local function scanQuestsByZone()
     for questId in pairs(QuestieDB.QuestPointers) do
         if not currentLog[questId] and not isQuestCompleted(questId) then
             local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
+            -- The user's level slider (passesLevelGate) used to hard-filter
+            -- here. We now keep out-of-range quests in the list and tag them
+            -- so renderList can fade their rows; only the hard caps and the
+            -- required-level gate still exclude quests entirely.
             if passesClassicCaps(level, requiredLevel)
-                and passesLevelGate(level)
                 and meetsRequiredLevel(requiredLevel, playerLevel) then
+                local outOfRange = not passesLevelGate(level)
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
-                        local entry = ensureZone(getZoneName(zoneOrSort))
-                        entry.available[#entry.available + 1] = {
+                        local questZoneName = getZoneName(zoneOrSort)
+                        local _, giverZoneName = getQuestStartInfo(questId)
+                        local entry = ensureZone(questZoneName)
+                        local quest = {
                             id = questId,
                             level = level,
                             name = getQuestName(questId),
                             xp = getQuestXp(questId),
                             tag = getQuestTagLabel(questId),
+                            outOfRange = outOfRange,
                         }
+                        -- Non-log quests where the giver NPC lives in another
+                        -- zone go to "Picked Up Elsewhere" as a navigation
+                        -- hint: the quest is set here but you'd need to go
+                        -- somewhere else to start it. Quests with a giver in
+                        -- this zone (or with no resolvable giver location)
+                        -- stay under "Available".
+                        local bucket = (giverZoneName and giverZoneName ~= questZoneName)
+                            and entry.pickedUpElsewhere
+                            or entry.available
+                        bucket[#bucket + 1] = quest
                         entry.count = entry.count + 1
                     end
                 elseif isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
@@ -691,6 +701,7 @@ local function scanQuestsByZone()
                                 name = getQuestName(questId),
                                 tag = getQuestTagLabel(questId),
                                 chain = bestChain,
+                                outOfRange = outOfRange,
                             }
                             entry.missingPre.order[#entry.missingPre.order + 1] = questId
                             entry.count = entry.count + 1
@@ -701,8 +712,14 @@ local function scanQuestsByZone()
         end
     end
 
+    -- In-range quests sort above out-of-range so the actionable rows stay
+    -- at the top of each bucket; faded rows sink below within the same
+    -- level/name ordering.
     local function sortQuests(list)
         table.sort(list, function(a, b)
+            if (a.outOfRange and true or false) ~= (b.outOfRange and true or false) then
+                return not a.outOfRange
+            end
             if a.level == b.level then
                 return a.name < b.name
             end
@@ -718,6 +735,9 @@ local function scanQuestsByZone()
         sortQuests(entry.pickedUpElsewhere)
         table.sort(entry.missingPre.order, function(a, b)
             local ea, eb = entry.missingPre.entries[a], entry.missingPre.entries[b]
+            if (ea.outOfRange and true or false) ~= (eb.outOfRange and true or false) then
+                return not ea.outOfRange
+            end
             if ea.level ~= eb.level then return ea.level < eb.level end
             return ea.name < eb.name
         end)
@@ -1006,6 +1026,11 @@ local function acquireRow(index)
     local row = rowPool[index]
     if row then
         row:Show()
+        -- Pool rows persist across renders; reset alpha so a row that was
+        -- previously used for an out-of-range quest doesn't carry the
+        -- dimmed look forward when it's reused for a header or in-range
+        -- quest. renderQuestRow overrides this for actual fading rows.
+        row:SetAlpha(1)
         return row
     end
     row = CreateFrame("Button", nil, scrollChild)
@@ -1088,23 +1113,18 @@ local function linkQuestInChat(quest)
     end
 end
 
-local contextMenuFrame
-
-local function ensureContextMenuFrame()
-    if not contextMenuFrame then
-        contextMenuFrame = CreateFrame("Frame", "WhereToQuestContextMenu", UIParent, "UIDropDownMenuTemplate")
-    end
-    return contextMenuFrame
-end
-
+-- Context menus use the modern Menu API (MenuUtil.CreateContextMenu). The
+-- legacy UIDropDownMenu/EasyMenu path was replaced because it shared globals
+-- (UIDROPDOWNMENU_INIT_MENU, UIDROPDOWNMENU_OPEN_MENU, DropDownList1/2) with
+-- Blizzard's secure dropdowns; opening one from our insecure code tainted
+-- Blizzard_GroupFinder_VanillaStyle's category dropdown init in
+-- LFGBrowseMixin:SearchActiveEntry, blocking the subsequent C_LFGList.Search.
 function showQuestContextMenu(anchor, quest)
-    local items = {
-        { text = quest.name, isTitle = true, notCheckable = true },
-        { text = "Show on map", notCheckable = true, func = function() openMapForQuest(quest) end },
-        { text = "Link in chat", notCheckable = true, func = function() linkQuestInChat(quest) end },
-        { text = "Close", notCheckable = true, func = function() end },
-    }
-    EasyMenu(items, ensureContextMenuFrame(), "cursor", 0, 0, "MENU")
+    MenuUtil.CreateContextMenu(anchor, function(_, rootDescription)
+        rootDescription:CreateTitle(quest.name)
+        rootDescription:CreateButton("Show on map", function() openMapForQuest(quest) end)
+        rootDescription:CreateButton("Link in chat", function() linkQuestInChat(quest) end)
+    end)
 end
 
 function showChainContextMenu(anchor, mpe)
@@ -1112,13 +1132,11 @@ function showChainContextMenu(anchor, mpe)
     -- since the blocked quest itself isn't pickup-able yet. "Link in chat"
     -- links the blocked quest (the row the player is hovering).
     local initial = { id = mpe.chain and mpe.chain[1] }
-    local items = {
-        { text = mpe.name, isTitle = true, notCheckable = true },
-        { text = "Show next step on map", notCheckable = true, func = function() openMapForQuest(initial) end },
-        { text = "Link in chat", notCheckable = true, func = function() linkQuestInChat(mpe) end },
-        { text = "Close", notCheckable = true, func = function() end },
-    }
-    EasyMenu(items, ensureContextMenuFrame(), "cursor", 0, 0, "MENU")
+    MenuUtil.CreateContextMenu(anchor, function(_, rootDescription)
+        rootDescription:CreateTitle(mpe.name)
+        rootDescription:CreateButton("Show next step on map", function() openMapForQuest(initial) end)
+        rootDescription:CreateButton("Link in chat", function() linkQuestInChat(mpe) end)
+    end)
 end
 
 function getQuestTagLabel(questId)
@@ -1191,10 +1209,13 @@ function renderList()
         GameTooltip:Hide()
     end
 
-    local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick)
+    local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha)
         y = y + ROW_GAP
         local row = acquireRow(index)
         placeRow(row, INDENT_STEP * 2)
+        -- Rows are pooled and reused across renders, so always reset alpha
+        -- explicitly. Out-of-range quests pass 0.5 to dim the row.
+        row:SetAlpha(alpha or 1)
         row.text:SetText(label)
         row:SetScript("OnEnter", onEnter)
         row:SetScript("OnLeave", hideGameTooltip)
@@ -1409,7 +1430,8 @@ function renderList()
                                             function(self) showChainTooltip(self, mpe) end,
                                             function() openMapForQuest(initial) end,
                                             function(self) if showChainContextMenu then showChainContextMenu(self, mpe) end end,
-                                            function() linkQuestInChat(mpe) end)
+                                            function() linkQuestInChat(mpe) end,
+                                            mpe.outOfRange and 0.5 or 1)
                                     end
                                 else
                                     for _, quest in ipairs(list) do
@@ -1418,7 +1440,8 @@ function renderList()
                                             function(self) showQuestTooltip(self, quest.id) end,
                                             function() openMapForQuest(quest) end,
                                             function(self) if showQuestContextMenu then showQuestContextMenu(self, quest) end end,
-                                            function() linkQuestInChat(quest) end)
+                                            function() linkQuestInChat(quest) end,
+                                            quest.outOfRange and 0.5 or 1)
                                     end
                                 end
                             end
@@ -1514,7 +1537,7 @@ local function buildTitleHeader(parent, text)
     return mid
 end
 
--- Lays out N native UIDropDownMenuTemplate dropdowns side by side inside `row`,
+-- Lays out N WowStyle2DropdownTemplate dropdowns side by side inside `row`,
 -- flush with the row edges, with DROPDOWN_VISIBLE_GAP between adjacent
 -- dropdowns. The section body already provides symmetric padding around the
 -- row, so no extra edge inset is added here. Call from row:HookScript(
@@ -1526,12 +1549,10 @@ local function layoutDropdownRow(dropdowns, row)
     if w <= 1 then return end
 
     local frameW = math.max(80, (w - (n - 1) * DROPDOWN_VISIBLE_GAP) / n)
-    -- UIDropDownMenu_SetWidth(d, middleW) yields a frame of (middleW + DROPDOWN_CAP_TOTAL).
-    local middleW = math.max(30, frameW - DROPDOWN_CAP_TOTAL)
 
     local x = 0
     for _, d in ipairs(dropdowns) do
-        UIDropDownMenu_SetWidth(d, middleW)
+        d:SetWidth(frameW)
         d:ClearAllPoints()
         d:SetPoint("TOPLEFT", row, "TOPLEFT", x, 0)
         x = x + frameW + DROPDOWN_VISIBLE_GAP
@@ -1800,9 +1821,9 @@ local function buildMainFrame()
             set = setFilterValue,
             specs = {
                 { key = "inLog",             label = "In Quest Log" },
-                { key = "available",         label = "Available" },
-                { key = "pickedUpElsewhere", label = "Picked Up Elsewhere" },
-                { key = "missingPre",        label = "Missing Prerequisite" },
+                { key = "available",         label = "Available in Zone" },
+                { key = "pickedUpElsewhere", label = "Available Elsewhere" },
+                { key = "missingPre",        label = "Missing Pre-Quest" },
             },
         },
         {
@@ -1838,23 +1859,25 @@ local function buildMainFrame()
 
     local filterDropdowns = {}
     local function buildFilterDropdown(parent, i, group)
-        local dd = CreateFrame("Frame", "WhereToQuestFilterDropdown" .. i, parent, "UIDropDownMenuTemplate")
-        UIDropDownMenu_Initialize(dd, function(self, level)
+        local dd = CreateFrame("DropdownButton", "WhereToQuestFilterDropdown" .. i, parent, "WowStyle2DropdownTemplate")
+        -- Keep the button text fixed at the group title; the multi-select
+        -- nature of these dropdowns means we'd otherwise show a long
+        -- comma-separated list of every enabled subfilter, which doesn't fit
+        -- the narrow column. OverrideText sets disableSelectionText, so the
+        -- DropdownSelectionTextMixin won't replace it as checkboxes toggle.
+        dd:OverrideText(group.title)
+        dd:SetupMenu(function(_, rootDescription)
             for _, spec in ipairs(group.specs) do
-                local info = UIDropDownMenu_CreateInfo()
-                info.text = spec.label
-                info.isNotRadio = true
-                info.keepShownOnClick = true
-                info.checked = group.get(spec.key)
-                info.func = function(btn)
-                    group.set(spec.key, btn.checked and true or false)
-                    invalidateScan()
-                    renderList()
-                end
-                UIDropDownMenu_AddButton(info, level)
+                rootDescription:CreateCheckbox(
+                    spec.label,
+                    function() return group.get(spec.key) end,
+                    function()
+                        group.set(spec.key, not group.get(spec.key))
+                        invalidateScan()
+                        renderList()
+                    end)
             end
         end)
-        UIDropDownMenu_SetText(dd, group.title)
         return dd
     end
 
@@ -1883,63 +1906,41 @@ local function buildMainFrame()
     sortingSection:SetHeight(DROPDOWN_ROW_H + SECTION_INNER_PAD * 2)
     local sortRow = sortingSection.body
 
-    local function getSortByLabel(value)
-        for _, opt in ipairs(SORT_BY_OPTIONS) do
-            if opt.value == value then return opt.label end
-        end
-        return SORT_BY_OPTIONS[1].label
-    end
-    local function getSortDirLabel(value)
-        for _, opt in ipairs(SORT_DIR_OPTIONS) do
-            if opt.value == value then return opt.label end
-        end
-        return SORT_DIR_OPTIONS[2].label
+    -- Builds a single-select dropdown that reads/writes one DB key. The
+    -- button text reflects the currently selected option via the
+    -- DropdownSelectionTextMixin (defaultText shows when nothing matches).
+    local function buildSortDropdown(parent, name, dbKey, options, defaultLabel)
+        local dd = CreateFrame("DropdownButton", name, parent, "WowStyle2DropdownTemplate")
+        dd:SetDefaultText(defaultLabel)
+        dd:SetupMenu(function(_, rootDescription)
+            for _, opt in ipairs(options) do
+                rootDescription:CreateRadio(
+                    opt.label,
+                    function()
+                        return ((WhereToQuestDB and WhereToQuestDB[dbKey]) or DEFAULTS[dbKey]) == opt.value
+                    end,
+                    function()
+                        WhereToQuestDB[dbKey] = opt.value
+                        renderList()
+                    end)
+            end
+        end)
+        return dd
     end
 
-    local sortByDropdown = CreateFrame("Frame", "WhereToQuestSortByDropdown", sortRow, "UIDropDownMenuTemplate")
-    UIDropDownMenu_Initialize(sortByDropdown, function(self, level)
-        local current = (WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode
-        for _, opt in ipairs(SORT_BY_OPTIONS) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = opt.label
-            info.value = opt.value
-            info.checked = current == opt.value
-            info.func = function(btn)
-                WhereToQuestDB.sortMode = btn.value
-                UIDropDownMenu_SetText(sortByDropdown, getSortByLabel(btn.value))
-                renderList()
-                CloseDropDownMenus()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
-
-    local sortDirDropdown = CreateFrame("Frame", "WhereToQuestSortDirDropdown", sortRow, "UIDropDownMenuTemplate")
-    UIDropDownMenu_Initialize(sortDirDropdown, function(self, level)
-        local current = (WhereToQuestDB and WhereToQuestDB.sortDir) or DEFAULTS.sortDir
-        for _, opt in ipairs(SORT_DIR_OPTIONS) do
-            local info = UIDropDownMenu_CreateInfo()
-            info.text = opt.label
-            info.value = opt.value
-            info.checked = current == opt.value
-            info.func = function(btn)
-                WhereToQuestDB.sortDir = btn.value
-                UIDropDownMenu_SetText(sortDirDropdown, getSortDirLabel(btn.value))
-                renderList()
-                CloseDropDownMenus()
-            end
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    local sortByDropdown = buildSortDropdown(sortRow, "WhereToQuestSortByDropdown", "sortMode", SORT_BY_OPTIONS, "Sort By")
+    local sortDirDropdown = buildSortDropdown(sortRow, "WhereToQuestSortDirDropdown", "sortDir", SORT_DIR_OPTIONS, "Direction")
 
     local function layoutSortRow() layoutDropdownRow({ sortByDropdown, sortDirDropdown }, sortRow) end
     sortRow:HookScript("OnSizeChanged", layoutSortRow)
 
     frame.sortByDropdown = sortByDropdown
     frame.sortDirDropdown = sortDirDropdown
+    -- The button text is driven by DropdownSelectionTextMixin via the
+    -- per-option `isSelected` callbacks, so no manual refresh is required.
     frame.refreshSortDropdown = function()
-        UIDropDownMenu_SetText(sortByDropdown, getSortByLabel((WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode))
-        UIDropDownMenu_SetText(sortDirDropdown, getSortDirLabel((WhereToQuestDB and WhereToQuestDB.sortDir) or DEFAULTS.sortDir))
+        sortByDropdown:GenerateMenu()
+        sortDirDropdown:GenerateMenu()
     end
 
     -- 4) Quests section: search row (label + helper + edit box) at the top,
@@ -2158,13 +2159,385 @@ local function scheduleRefresh()
     end)
 end
 
+-- Item tooltip enrichment shared state.
+local questStatusCache = {}
+local activeQuestIdSet
+
+local function invalidateActiveQuestCaches()
+    wipe(questStatusCache)
+    activeQuestIdSet = nil
+end
+
+-- Set of quest IDs currently in the player's quest log. C_QuestLog is the
+-- canonical API in Classic Era 1.15; we fall back to the legacy
+-- GetQuestLogTitle if Blizzard ever drops it.
+local function getActiveQuestIdSet()
+    if activeQuestIdSet then
+        return activeQuestIdSet
+    end
+    local set = {}
+    if C_QuestLog and C_QuestLog.GetNumQuestLogEntries and C_QuestLog.GetInfo then
+        for i = 1, C_QuestLog.GetNumQuestLogEntries() do
+            local info = C_QuestLog.GetInfo(i)
+            if info and not info.isHeader and info.questID and info.questID > 0 then
+                set[info.questID] = true
+            end
+        end
+    elseif GetNumQuestLogEntries and GetQuestLogTitle then
+        for i = 1, GetNumQuestLogEntries() do
+            local _, _, _, isHeader, _, _, _, qid = GetQuestLogTitle(i)
+            if not isHeader and qid and qid > 0 then
+                set[qid] = true
+            end
+        end
+    end
+    activeQuestIdSet = set
+    return set
+end
+
+-- Tooltip: extend Questie's item tooltip with quest-relevance lines for the
+-- cases Questie does not already cover.
+--
+-- Questie shows objective progress + "(Complete)" only for quests currently
+-- in the player's log. We add lines for every OTHER quest that references
+-- this item -- past, future, available, locked -- so the player can decide
+-- whether to keep, trade, or discard the item. Applies to any item type:
+-- quest items, trade goods, reagents, anything Questie has linkage data on.
+--
+-- Lines mirror Questie's format: the colored "[level] Quest Name" title from
+-- QuestieLib:GetColoredQuestName, followed by an explicit status badge.
+-- Status badges use Questie's own color values (red/yellow/green) so the
+-- lines blend with Questie's existing tooltip block.
+
+-- Status priority drives sort order. Colors match Questie's palette in
+-- Questie.lua so the lines visually match Questie's quest-name rendering.
+--
+--   Available           -- doable right now (includes repeatable redo)
+--   Upcoming            -- player can't do it yet (level/prereqs); future
+--   Previously Completed-- already turned in; past relevance
+--   Past                -- quest level is grey for this player; outgrown
+local STATUS_AVAILABLE  = { label = "(Available)",            color = "|cFFffff00", order = 1 }
+local STATUS_UPCOMING   = { label = "(Upcoming)",             color = "|cFFff6f22", order = 2 }
+local STATUS_COMPLETED  = { label = "(Previously Completed)", color = "|cFF00ff00", order = 3 }
+local STATUS_PAST       = { label = "(Past)",                 color = "|cFFa6a6a6", order = 4 }
+
+local TOOLTIP_LINE_CAP = 10
+local INDEX_BUILD_DELAY = 5
+
+-- Per-tooltip guards keyed by tooltip frame so GameTooltip and ItemRefTooltip
+-- track their state independently. Weak keys so tooltips can still be GC'd.
+local tooltipLastItem = setmetatable({}, { __mode = "k" })
+-- NumLines() snapshot taken right AFTER we appended our lines. On the next
+-- OnTooltipSetItem fire, if NumLines is now smaller, the tooltip was rebuilt
+-- under us (e.g. by an async GET_ITEM_INFO_RECEIVED refresh) and our lines
+-- need to be re-added — this is the fix for the ~200ms flicker users saw.
+local tooltipLastLineCount = setmetatable({}, { __mode = "k" })
+
+-- Global objective index: itemId -> array of every quest id where this item
+-- appears in the quest's item-objective list (questKeys.objectives[3]).
+-- Built once per session from Questie's compiled quest DB.
+--
+-- Scope is intentionally narrow: only true objectives count. Quest starters,
+-- source items (sourceItemId), required-but-not-objective items
+-- (requiredSourceItems), rewards, and triggers are excluded. If an item
+-- isn't something the quest text says "Bring N to ..." for, we don't show
+-- it as quest-related. This matches the user's intent: tooltip lines should
+-- only point at quests where the item is an actual goal.
+local globalItemObjectiveIndex
+local indexBuildScheduled = false
+
+local function buildGlobalItemObjectiveIndex()
+    if globalItemObjectiveIndex then
+        return
+    end
+    if not loadQuestie() or not QuestieDB.QuestPointers then
+        return
+    end
+    local index = {}
+    local function add(itemId, questId)
+        if type(itemId) ~= "number" or itemId <= 0 then
+            return
+        end
+        local list = index[itemId]
+        if not list then
+            list = {}
+            index[itemId] = list
+        end
+        list[#list + 1] = questId
+    end
+    for questId in pairs(QuestieDB.QuestPointers) do
+        local objectives = QuestieDB.QueryQuestSingle(questId, "objectives")
+        if type(objectives) == "table" and type(objectives[3]) == "table" then
+            for _, obj in ipairs(objectives[3]) do
+                local iid = (type(obj) == "table" and obj[1]) or (type(obj) == "number" and obj) or nil
+                add(iid, questId)
+            end
+        end
+    end
+    globalItemObjectiveIndex = index
+end
+
+local function scheduleGlobalIndexBuild()
+    if indexBuildScheduled or globalItemObjectiveIndex then
+        return
+    end
+    indexBuildScheduled = true
+    -- A few seconds after login so Questie has finished compiling its DB
+    -- and the player isn't sharing a frame with our quest-DB walk.
+    C_Timer.After(INDEX_BUILD_DELAY, buildGlobalItemObjectiveIndex)
+end
+
+-- Returns the list of quest ids that have this item as an objective, or nil
+-- if the global index hasn't been built yet. There is intentionally no
+-- relatedQuests fallback: relatedQuests mixes objectives with rewards /
+-- starters / required-source items, and the user wants objectives only.
+local function getObjectiveQuestsForItem(itemId)
+    if globalItemObjectiveIndex then
+        return globalItemObjectiveIndex[itemId]
+    end
+    scheduleGlobalIndexBuild()
+    return nil
+end
+
+-- Questie-styled colored quest title with level prefix. Falls back to a
+-- difficulty-tinted "[level] Name" if Questie's helper isn't accessible.
+local function styledQuestName(qid)
+    if QuestieLib and QuestieLib.GetColoredQuestName then
+        local ok, str = pcall(QuestieLib.GetColoredQuestName, QuestieLib, qid, true, false)
+        if ok and str and str ~= "" then
+            return str
+        end
+    end
+    local name = (QuestieDB and QuestieDB.QueryQuestSingle and QuestieDB.QueryQuestSingle(qid, "name")) or ("Quest " .. qid)
+    local level = QuestieDB and QuestieDB.QueryQuestSingle and QuestieDB.QueryQuestSingle(qid, "questLevel")
+    if type(level) == "number" and level > 0 then
+        return getDifficultyColorCode(level) .. "[" .. level .. "] " .. name .. "|r"
+    end
+    return name
+end
+
+-- Returns a STATUS_* table for the quest, or nil when the line should be
+-- suppressed: the quest is in the active log (Questie handles those with
+-- live progress) or it's race/class-locked so the player can never do it.
+--
+-- Priority order matters:
+--   1. Previously Completed wins over "doable / outgrown" only when the quest
+--      is one-time done (NOT doable any more). Repeatable quests already
+--      turned in once are still IsDoable, so they fall through to Available.
+--   2. Past beats Available for trivial-level quests: the player has
+--      outgrown the quest, so flagging it as Available misleadingly suggests
+--      they should bother picking it up.
+--   3. Available next (covers repeatables and never-done-but-doable).
+--   4. Upcoming catches everything else (too high level, prereqs missing).
+local function getQuestTooltipStatus(qid)
+    local cached = questStatusCache[qid]
+    if cached ~= nil then
+        if cached == false then return nil end
+        return cached
+    end
+
+    -- Active log: Questie shows it with live objective progress, skip.
+    if getActiveQuestIdSet()[qid] then
+        questStatusCache[qid] = false
+        return nil
+    end
+
+    -- Race/class lock: the player can NEVER do this quest, so the item is
+    -- not relevant to them. Hide rather than label as Upcoming.
+    if not matchesPlayerFaction(qid) then
+        questStatusCache[qid] = false
+        return nil
+    end
+
+    local doable = QuestieDB.IsDoable and QuestieDB.IsDoable(qid)
+    local completed = isQuestCompleted(qid)
+    local status
+    if completed and not doable then
+        status = STATUS_COMPLETED
+    else
+        local playerLevel = UnitLevel("player")
+        local level = QuestieLib and getEffectiveLevel(qid, playerLevel) or 0
+        if isQuestTrivialForPlayer(level, playerLevel) then
+            status = STATUS_PAST
+        elseif doable then
+            status = STATUS_AVAILABLE
+        else
+            status = STATUS_UPCOMING
+        end
+    end
+    questStatusCache[qid] = status
+    return status
+end
+
+-- Gathers every quest where this item is an actual objective. Quest
+-- starters, source items, required-source items, rewards and triggers are
+-- deliberately excluded -- the tooltip should only call out quests where
+-- collecting this item is the goal. Active-log quests are filtered out by
+-- getQuestTooltipStatus so Questie's own progress lines stay authoritative.
+--
+-- Quests that share a name across factions/cities (e.g. "A Donation of
+-- Silk" exists once per capital) collapse into a single line. The kept
+-- entry is the one with the most actionable status (lowest order value), so
+-- if any version of the quest is still Available the player sees that
+-- rather than a misleading "Previously Completed" from another version.
+local function collectItemQuestEntries(itemId)
+    local related = getObjectiveQuestsForItem(itemId)
+    if type(related) ~= "table" then
+        return {}
+    end
+
+    local seenQids = {}
+    local byName = {}
+    for _, qid in ipairs(related) do
+        if type(qid) == "number" and qid > 0 and not seenQids[qid] then
+            seenQids[qid] = true
+            local status = getQuestTooltipStatus(qid)
+            if status then
+                local name = QuestieDB.QueryQuestSingle(qid, "name") or ("Quest " .. qid)
+                local level = QuestieDB.QueryQuestSingle(qid, "questLevel")
+                local entry = {
+                    qid = qid,
+                    level = (type(level) == "number" and level) or 0,
+                    status = status,
+                }
+                local existing = byName[name]
+                if not existing or status.order < existing.status.order then
+                    byName[name] = entry
+                end
+            end
+        end
+    end
+
+    local entries = {}
+    for _, e in pairs(byName) do
+        entries[#entries + 1] = e
+    end
+
+    table.sort(entries, function(a, b)
+        if a.status.order ~= b.status.order then
+            return a.status.order < b.status.order
+        end
+        if a.level ~= b.level then
+            return a.level < b.level
+        end
+        return a.qid < b.qid
+    end)
+
+    return entries
+end
+
+-- Returns true when at least one line was appended so the caller can size the
+-- tooltip. Lines are inserted directly under whatever Questie already wrote;
+-- a single blank separator goes above ours so it visually groups together.
+local function appendQuestItemTooltipLines(tooltip, itemId)
+    if not loadQuestie() then
+        return false
+    end
+    local entries = collectItemQuestEntries(itemId)
+    if #entries == 0 then
+        return false
+    end
+
+    tooltip:AddLine(" ")
+
+    local shown = 0
+    for _, entry in ipairs(entries) do
+        if shown >= TOOLTIP_LINE_CAP then break end
+        local line = styledQuestName(entry.qid) .. " " .. entry.status.color .. entry.status.label .. "|r"
+        tooltip:AddLine(line, 1, 1, 1, true)
+        shown = shown + 1
+    end
+    local remaining = #entries - shown
+    if remaining > 0 then
+        tooltip:AddLine(string.format("|cff7f7f7f... and %d more|r", remaining), 1, 1, 1, true)
+    end
+
+    return true
+end
+
+local function extractItemIdFromTooltip(tooltip)
+    if not tooltip.GetItem then
+        return nil
+    end
+    local _, link = tooltip:GetItem()
+    if not link then
+        return nil
+    end
+    return tonumber(link:match("item:(%d+)"))
+end
+
+-- OnTooltipSetItem can fire multiple times for the same tooltip display:
+-- Blizzard refires it when async data lands (GET_ITEM_INFO_RECEIVED) and on
+-- some setter paths the tooltip is internally cleared and rebuilt. Both
+-- modes used to wipe our appended lines while the cache still claimed
+-- "already added", which produced the ~200ms flicker. We now also compare
+-- the tooltip's current NumLines against the count we recorded right after
+-- our last append: any drop means the tooltip was rebuilt and we re-add.
+local function onItemTooltipShow(self)
+    if self.IsForbidden and self:IsForbidden() then
+        return
+    end
+    if not self.NumLines then
+        return
+    end
+    local itemId = extractItemIdFromTooltip(self)
+    if not itemId then
+        return
+    end
+
+    local sameItem = tooltipLastItem[self] == itemId
+    local lastCount = tooltipLastLineCount[self]
+    if sameItem and lastCount and self:NumLines() >= lastCount then
+        -- Our lines are still in place, nothing to do.
+        return
+    end
+
+    tooltipLastItem[self] = itemId
+    local added = appendQuestItemTooltipLines(self, itemId)
+    tooltipLastLineCount[self] = self:NumLines()
+    if added then
+        self:Show()
+    end
+end
+
+local function onItemTooltipCleared(self)
+    tooltipLastItem[self] = nil
+    tooltipLastLineCount[self] = nil
+end
+
+local tooltipHooksInstalled = false
+local function installTooltipHooks()
+    if tooltipHooksInstalled then
+        return
+    end
+    if GameTooltip then
+        GameTooltip:HookScript("OnTooltipSetItem", onItemTooltipShow)
+        GameTooltip:HookScript("OnHide", onItemTooltipCleared)
+    end
+    if ItemRefTooltip then
+        ItemRefTooltip:HookScript("OnTooltipSetItem", onItemTooltipShow)
+        ItemRefTooltip:HookScript("OnHide", onItemTooltipCleared)
+    end
+    tooltipHooksInstalled = true
+end
+
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED")
 loader:RegisterEvent("PLAYER_LOGIN")
 loader:RegisterEvent("QUEST_LOG_UPDATE")
 loader:RegisterEvent("PLAYER_LEVEL_UP")
+loader:RegisterEvent("QUEST_ACCEPTED")
+loader:RegisterEvent("QUEST_REMOVED")
+loader:RegisterEvent("QUEST_TURNED_IN")
 loader:SetScript("OnEvent", function(self, event, name)
+    if event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN" then
+        invalidateActiveQuestCaches()
+        invalidateScan()
+        scheduleRefresh()
+        return
+    end
     if event == "QUEST_LOG_UPDATE" or event == "PLAYER_LEVEL_UP" then
+        invalidateActiveQuestCaches()
         invalidateScan()
         scheduleRefresh()
         return
@@ -2229,6 +2602,7 @@ loader:SetScript("OnEvent", function(self, event, name)
         WhereToQuestDB.hiddenQuests = nil
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
+        installTooltipHooks()
         print(INTRO_PREFIX .. "Loaded. Type /wtq for available commands.")
     end
 end)
