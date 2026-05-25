@@ -1,4 +1,4 @@
-# WhereToQuest
+# Where To Quest?
 
 A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest currently available to your character. Trivial (grey) quests are hidden automatically. It relies on [Questie](https://github.com/Questie/Questie) for its quest database and eligibility logic.
 
@@ -20,7 +20,7 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 ## Requirements
 
 - World of Warcraft Classic Era 1.15.x.
-- Questie installed and enabled. WhereToQuest declares Questie as an optional dependency but will refuse to open without it.
+- Questie installed and enabled. Where To Quest? declares Questie as an optional dependency but will refuse to open without it.
 
 ## Installation
 
@@ -51,7 +51,7 @@ The embedded libraries (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIc
 
 ## How it integrates with Questie
 
-WhereToQuest imports a small set of Questie modules through `QuestieLoader`:
+Where To Quest? imports a small set of Questie modules through `QuestieLoader`:
 
 - `QuestieDB` — `QuestPointers`, `IsDoable`, `GetQuest`, `QueryQuestSingle`, `GetQuestTagInfo`, `IsRepeatable`, `GetNPC`, `IsPreQuestSingleFulfilled`, `IsPreQuestGroupFulfilled`.
 - `QuestieLib` — `GetTbcLevel`, `GetColoredQuestName`, `GetDifficultyColorPercent`.

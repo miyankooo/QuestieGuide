@@ -1,5 +1,5 @@
 ## Interface: 11508
-## Title: WhereToQuest
+## Title: Where To Quest?
 ## Notes: Find currently available quests within a level range around your character level.
 ## Author: miyanko
 ## Version: 1.0.0

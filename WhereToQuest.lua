@@ -27,7 +27,7 @@ local DEFAULTS = {
 local LEVEL_RANGE_MIN = 0
 local LEVEL_RANGE_MAX = 10
 
-local INTRO_PREFIX = "|cffffff00[WhereToQuest]:|r "
+local INTRO_PREFIX = "|cffffff00[Where To Quest?]:|r "
 
 local SORT_BY_OPTIONS = {
     { value = "xp",       label = "Total XP" },
@@ -82,9 +82,13 @@ local DROPDOWN_ROW_H = 28                  -- vertical room a dropdown row occup
 local ROW_HEIGHT = SPACING.MD
 local SUBHEADER_HEIGHT = SPACING.MD
 local HEADER_HEIGHT = SPACING.LG
+-- Vertical rhythm inside the quest list. Three tiers, each tier visibly
+-- looser than the one nested below it: 4px between quest rows inside a
+-- subcategory, 8px between subcategory headers within a zone, 12px between
+-- zones.
 local ROW_GAP = SPACING.XS
 local GROUP_GAP = SPACING.SM
-local ZONE_GAP = SPACING.MD
+local ZONE_GAP = 12
 local INDENT_STEP = SPACING.MD
 
 -- Wrapping: row height grows with wrapped text; LINE_SPACING tunes legibility.
@@ -460,14 +464,35 @@ local function isLevelInBand(questLevel, playerLevel, below, above)
 end
 
 -- True when the quest would render grey on the player (below Blizzard's
--- difficulty floor). Used when the slider band is bypassed so the list still
--- spans green to red instead of including every trivial quest in the DB.
+-- difficulty floor — quest level is more than greenRange below the player).
+-- Used by the item-tooltip enrichment to label outgrown quests as Past.
 local function isQuestTrivialForPlayer(questLevel, playerLevel)
     if not playerLevel or not questLevel or questLevel <= 0 then
         return false
     end
     local greenRange = (GetQuestGreenRange and GetQuestGreenRange("player")) or 5
     return (playerLevel - questLevel) > greenRange
+end
+
+-- True when the quest's difficulty color for the player is yellow or green.
+-- Mirrors GetRelativeDifficultyColor in Classic Era's Vanilla/UIParent.lua:
+-- yellow covers levelDiff -2..+2, green covers -greenRange..-3. Orange/red
+-- (levelDiff >= 3) and grey (below -greenRange) are excluded.
+local function isQuestYellowOrGreen(questLevel, playerLevel)
+    if not playerLevel then
+        return true
+    end
+    if not questLevel or questLevel <= 0 then
+        return true
+    end
+    local greenRange = (GetQuestGreenRange and GetQuestGreenRange("player")) or 5
+    if (playerLevel - questLevel) > greenRange then
+        return false
+    end
+    if (questLevel - playerLevel) >= 3 then
+        return false
+    end
+    return true
 end
 
 -- QuestieDB.IsDoable does not enforce requiredLevel, so we gate it explicitly.
@@ -589,12 +614,13 @@ local function scanQuestsByZone()
     local useQuestieLevelRange = WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false
     local below, above = getLevelRange()
 
-    -- Slider on: explicit band. Slider bypassed: defer to Questie's green-to-red
-    -- range by only excluding trivial (grey) quests; everything green and above
-    -- passes through to the doability checks below.
+    -- Slider on: explicit ± band centered on player level. Slider bypassed
+    -- (useQuestieLevelRange): consider only quests Blizzard would color
+    -- yellow or green for the player — the "worth doing now" tier. Orange,
+    -- red and grey quests are out of range and render dimmed downstream.
     local function passesLevelGate(level)
         if useQuestieLevelRange then
-            return not isQuestTrivialForPlayer(level, playerLevel)
+            return isQuestYellowOrGreen(level, playerLevel)
         end
         return isLevelInBand(level, playerLevel, below, above)
     end
@@ -742,19 +768,40 @@ local function scanQuestsByZone()
             return ea.name < eb.name
         end)
 
+        -- Stats power both the zone header summary and the zone sort. Count
+        -- only in-range quests so the figures match what a player would
+        -- consider when choosing where to level. inLog quests bypass the
+        -- level band entirely and are always counted.
+        local countInRange = #entry.inLog
         local xpTotal = 0
         for _, q in ipairs(entry.inLog) do xpTotal = xpTotal + (q.xp or 0) end
-        for _, q in ipairs(entry.available) do xpTotal = xpTotal + (q.xp or 0) end
-        for _, q in ipairs(entry.pickedUpElsewhere) do xpTotal = xpTotal + (q.xp or 0) end
+        for _, q in ipairs(entry.available) do
+            if not q.outOfRange then
+                countInRange = countInRange + 1
+                xpTotal = xpTotal + (q.xp or 0)
+            end
+        end
+        for _, q in ipairs(entry.pickedUpElsewhere) do
+            if not q.outOfRange then
+                countInRange = countInRange + 1
+                xpTotal = xpTotal + (q.xp or 0)
+            end
+        end
+        for _, qid in ipairs(entry.missingPre.order) do
+            local mpe = entry.missingPre.entries[qid]
+            if mpe and not mpe.outOfRange then
+                countInRange = countInRange + 1
+            end
+        end
         local levelSum, levelCount = 0, 0
         for _, q in ipairs(entry.available) do
-            if q.level and q.level > 0 then
+            if not q.outOfRange and q.level and q.level > 0 then
                 levelSum = levelSum + q.level
                 levelCount = levelCount + 1
             end
         end
         entry.stats = {
-            count = entry.count,
+            count = countInRange,
             xp = xpTotal,
             avgLevel = levelCount > 0 and (levelSum / levelCount) or nil,
         }
@@ -1031,6 +1078,7 @@ local function acquireRow(index)
         -- dimmed look forward when it's reused for a header or in-range
         -- quest. renderQuestRow overrides this for actual fading rows.
         row:SetAlpha(1)
+        row.highlight:Hide()
         return row
     end
     row = CreateFrame("Button", nil, scrollChild)
@@ -1038,6 +1086,16 @@ local function acquireRow(index)
     row:SetPoint("LEFT", scrollChild, "LEFT", 0, 0)
     row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    -- Native quest-list hover: UI-QuestTitleHighlight in ADD blend mode, sat on
+    -- BACKGROUND so the row text (ARTWORK) stays on top. Same combo Blizzard
+    -- uses for the quest log, friends list, addon list, and gossip rows.
+    -- Driven manually in renderQuestRow so headers/subheaders (nil OnEnter)
+    -- stay flat.
+    row.highlight = row:CreateTexture(nil, "BACKGROUND")
+    row.highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+    row.highlight:SetBlendMode("ADD")
+    row.highlight:SetAllPoints(true)
+    row.highlight:Hide()
     row.text = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     -- Anchor text from the top so wrapped lines grow downward; row height is
     -- sized to fit the measured text + ROW_PAD_V padding (see renderList).
@@ -1047,9 +1105,6 @@ local function acquireRow(index)
     row.text:SetJustifyV("TOP")
     row.text:SetWordWrap(true)
     row.text:SetSpacing(LINE_SPACING)
-    row.highlight = row:CreateTexture(nil, "HIGHLIGHT")
-    row.highlight:SetAllPoints(true)
-    row.highlight:SetColorTexture(1, 1, 1, 0.08)
     rowPool[index] = row
     return row
 end
@@ -1217,8 +1272,14 @@ function renderList()
         -- explicitly. Out-of-range quests pass 0.5 to dim the row.
         row:SetAlpha(alpha or 1)
         row.text:SetText(label)
-        row:SetScript("OnEnter", onEnter)
-        row:SetScript("OnLeave", hideGameTooltip)
+        row:SetScript("OnEnter", function(self)
+            row.highlight:Show()
+            if onEnter then onEnter(self) end
+        end)
+        row:SetScript("OnLeave", function()
+            row.highlight:Hide()
+            hideGameTooltip()
+        end)
         if onLeftClick or onRightClick or onShiftClick then
             row:SetScript("OnClick", function(self, btn)
                 if btn == "LeftButton" and IsModifiedClick and IsModifiedClick("CHATLINK") then
@@ -1349,9 +1410,26 @@ function renderList()
                 end
             end
 
+            -- visibleTotal gates whether the zone renders at all (so a search
+            -- match against an out-of-range quest still surfaces its zone),
+            -- while inRangeTotal / inRangeXp / subInRangeCount drive the
+            -- count and XP shown in the zone and subcategory headers.
+            -- Out-of-range quests still render below as dimmed rows.
             local visibleTotal = 0
+            local inRangeTotal = 0
+            local inRangeXp = 0
+            local subInRangeCount = {}
             for _, subKey in ipairs(SUBCAT_ORDER) do
-                visibleTotal = visibleTotal + #visible[subKey]
+                local subRangeN = 0
+                for _, q in ipairs(visible[subKey]) do
+                    visibleTotal = visibleTotal + 1
+                    if not q.outOfRange then
+                        subRangeN = subRangeN + 1
+                        inRangeTotal = inRangeTotal + 1
+                        inRangeXp = inRangeXp + (q.xp or 0)
+                    end
+                end
+                subInRangeCount[subKey] = subRangeN
             end
             if visibleTotal > 0 then
                 if renderedZones > 0 then
@@ -1359,29 +1437,34 @@ function renderList()
                 end
                 renderedZones = renderedZones + 1
 
-                local visibleXp = 0
-                for _, q in ipairs(visible.available) do visibleXp = visibleXp + (q.xp or 0) end
-                for _, q in ipairs(visible.inLog) do visibleXp = visibleXp + (q.xp or 0) end
-                for _, q in ipairs(visible.pickedUpElsewhere) do visibleXp = visibleXp + (q.xp or 0) end
-
                 local header = acquireRow(index)
                 placeRow(header, 0)
                 local arrow = collapsed and "|cffffd200[+]|r " or "|cffffd200[-]|r "
-                local summary = " (" .. visibleTotal .. ")"
-                if visibleXp > 0 then
+                local summary = " (" .. inRangeTotal .. ")"
+                if inRangeXp > 0 then
                     local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
                     if xpMax > 0 then
-                        local pct = math.floor(visibleXp / xpMax * 100 + 0.5)
+                        local pct = math.floor(inRangeXp / xpMax * 100 + 0.5)
                         summary = summary .. string.format(" %s%s total XP (%d%% of current level)|r",
-                            COLOR.GREY, formatNumber(visibleXp), pct)
+                            COLOR.GREY, formatNumber(inRangeXp), pct)
                     else
                         summary = summary .. string.format(" %s%s total XP|r",
-                            COLOR.GREY, formatNumber(visibleXp))
+                            COLOR.GREY, formatNumber(inRangeXp))
                     end
                 end
                 header.text:SetText(arrow .. zoneName .. summary)
                 header:SetScript("OnClick", function()
+                    local expanding = collapsed
                     zoneCollapsedDB[zoneName] = not collapsed
+                    -- Auto-expand the actionable subcategories so a freshly
+                    -- expanded zone shows its quests without a second click.
+                    -- missingPre stays under user control because it's a
+                    -- noisier, mostly-informational section.
+                    if expanding then
+                        groupCollapsedDB[zoneName .. "||inLog"] = false
+                        groupCollapsedDB[zoneName .. "||available"] = false
+                        groupCollapsedDB[zoneName .. "||pickedUpElsewhere"] = false
+                    end
                     renderList()
                 end)
                 header:SetScript("OnEnter", nil)
@@ -1404,7 +1487,7 @@ function renderList()
                             placeRow(sub, INDENT_STEP)
                             local subArrow = groupHidden and "[+]" or "[-]"
                             sub.text:SetText(string.format("|cff9d9d9d%s %s (%d)|r",
-                                subArrow, SUBCAT_LABEL[subKey], #list))
+                                subArrow, SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0))
                             sub:SetScript("OnClick", function()
                                 groupCollapsedDB[groupKey] = not groupHidden
                                 renderList()
@@ -1483,7 +1566,7 @@ function renderList()
                 break
             end
         end
-        mainFrame.toggleAllButton:SetText(allCollapsed and "Expand" or "Collapse")
+        mainFrame.toggleAllButton:SetText(allCollapsed and "Expand All" or "Collapse All")
     end
 end
 
@@ -1636,7 +1719,7 @@ local function buildMainFrame()
     end
     frame:Hide()
 
-    buildTitleHeader(frame, "WhereToQuest")
+    buildTitleHeader(frame, "Where To Quest?")
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
@@ -1678,10 +1761,12 @@ local function buildMainFrame()
     local rangeSection = makeSection("Quest Level Range")
     local RANGE_CHECKBOX_HEIGHT = 22
     local RANGE_CHECKBOX_GAP = 6
-    local RANGE_SLIDER_LABEL_PAD = 4
-    -- Original slider top offset (14) plus space cleared by the checkbox row above it.
-    local RANGE_SLIDER_TOP_OFFSET = RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP + 14
-    local RANGE_HEIGHT_EXPANDED = SPACING.LG * 2 + SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP
+    -- MinimalSliderWithSteppersTemplate is a Frame at 40px tall (top label,
+    -- track + steppers, min/max labels). Section height clears checkbox + gap
+    -- + slider frame + a small bottom margin.
+    local RANGE_SLIDER_FRAME_H = 40
+    local RANGE_SLIDER_TOP_OFFSET = RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP
+    local RANGE_HEIGHT_EXPANDED = SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP + RANGE_SLIDER_FRAME_H + SPACING.SM
     local RANGE_HEIGHT_COLLAPSED = SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT
     rangeSection:SetHeight(RANGE_HEIGHT_EXPANDED)
     local rangeRow = rangeSection.body
@@ -1693,46 +1778,43 @@ local function buildMainFrame()
     if useQuestieLabel then
         useQuestieLabel:SetFontObject("GameFontNormal")
         useQuestieLabel:SetText("Use Questie Level Ranges")
+        -- Native template anchors LEFT→RIGHT x=-2 calibrated for the 32px
+        -- default size, where the texture's built-in whitespace yields the
+        -- standard gap. We're at 22px, so re-anchor with the explicit 4px
+        -- offset to keep the same visual rhythm.
+        useQuestieLabel:ClearAllPoints()
+        useQuestieLabel:SetPoint("LEFT", useQuestieCheckbox, "RIGHT", 4, 0)
     end
 
     local sliderCounter = 0
     local function buildRangeSlider(parent, labelPrefix, dbKey)
         sliderCounter = sliderCounter + 1
         local name = "WhereToQuestRangeSlider" .. sliderCounter
-        local slider = CreateFrame("Slider", name, parent, "OptionsSliderTemplate")
-        -- Width is determined by the caller's TOPLEFT/TOPRIGHT anchors so the
-        -- two sliders fill the row.
-        slider:SetHeight(18)
-        slider:SetMinMaxValues(LEVEL_RANGE_MIN, LEVEL_RANGE_MAX)
-        slider:SetValueStep(1)
-        slider:SetObeyStepOnDrag(true)
-        local low = _G[name .. "Low"]
-        local high = _G[name .. "High"]
-        local text = _G[name .. "Text"]
-        if low then low:SetText(tostring(LEVEL_RANGE_MIN)) end
-        if high then high:SetText(tostring(LEVEL_RANGE_MAX)) end
-        if text then
-            text:ClearAllPoints()
-            text:SetPoint("BOTTOM", slider, "TOP", 0, RANGE_SLIDER_LABEL_PAD)
-        end
-        slider._labelPrefix = labelPrefix
+        -- MinimalSliderWithSteppersTemplate is a Frame wrapping a Slider with
+        -- - / + stepper buttons, a top label, and min/max labels — the same
+        -- widget Blizzard's Settings panel uses. Width flows from the caller's
+        -- TOPLEFT/TOPRIGHT anchors; the template anchors its slider track 19px
+        -- in from each side, leaving room for the steppers.
+        local slider = CreateFrame("Frame", name, parent, "MinimalSliderWithSteppersTemplate")
         slider._dbKey = dbKey
-        slider._text = text
         local initial = clampRange(WhereToQuestDB and WhereToQuestDB[dbKey]) or DEFAULTS[dbKey]
-        slider:SetValue(initial)
-        if text then text:SetText(labelPrefix .. initial) end
-        slider:SetScript("OnValueChanged", function(self, value)
+        local steps = LEVEL_RANGE_MAX - LEVEL_RANGE_MIN
+        local Label = MinimalSliderWithSteppersMixin.Label
+        local formatters = {
+            [Label.Top] = function(v) return labelPrefix .. v end,
+            [Label.Min] = function() return tostring(LEVEL_RANGE_MIN) end,
+            [Label.Max] = function() return tostring(LEVEL_RANGE_MAX) end,
+        }
+        slider:Init(initial, LEVEL_RANGE_MIN, LEVEL_RANGE_MAX, steps, formatters)
+        slider:RegisterCallback(MinimalSliderWithSteppersMixin.Event.OnValueChanged, function(_, value)
             local v = clampRange(value)
             if not v then return end
-            if self._text then
-                self._text:SetText(self._labelPrefix .. v)
-            end
-            local cur = WhereToQuestDB and WhereToQuestDB[self._dbKey]
+            local cur = WhereToQuestDB and WhereToQuestDB[dbKey]
             if cur == v then return end
-            WhereToQuestDB[self._dbKey] = v
+            WhereToQuestDB[dbKey] = v
             invalidateScan()
             renderList()
-        end)
+        end, slider)
         return slider
     end
 
@@ -1757,8 +1839,8 @@ local function buildMainFrame()
         else
             belowSlider:Show()
             aboveSlider:Show()
-            belowSlider:Enable()
-            aboveSlider:Enable()
+            belowSlider:SetEnabled(true)
+            aboveSlider:SetEnabled(true)
             rangeSection:SetHeight(RANGE_HEIGHT_EXPANDED)
         end
     end
@@ -1780,9 +1862,7 @@ local function buildMainFrame()
         applySliderLock(useQuestie)
         local below, above = getLevelRange()
         belowSlider:SetValue(below)
-        if belowSlider._text then belowSlider._text:SetText(belowSlider._labelPrefix .. below) end
         aboveSlider:SetValue(above)
-        if aboveSlider._text then aboveSlider._text:SetText(aboveSlider._labelPrefix .. above) end
     end
 
     -- 2) Filters section: three native multi-select dropdowns laid out in a
@@ -1832,7 +1912,7 @@ local function buildMainFrame()
             set = setFilterValue,
             specs = {
                 { key = "dungeons",   label = "Dungeons" },
-                { key = "eliteGroup", label = "Elite/Group Quests" },
+                { key = "eliteGroup", label = "Elite (Group)" },
             },
         },
         {
@@ -1966,7 +2046,12 @@ local function buildMainFrame()
 
     local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", questsSection.body, "SearchBoxTemplate")
     searchBox:SetHeight(20)
-    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    -- InputBoxVisualTemplate (inherited via SearchBoxTemplate) anchors its
+    -- Left border texture at x=-5 from the frame's LEFT, so the visible box
+    -- extends 5px beyond the frame on the left while staying flush on the
+    -- right. Shift the frame's left anchor by +5 so the visible texture
+    -- lines up with the section body's left edge, matching the right.
+    searchBox:SetPoint("TOPLEFT", searchHelp, "BOTTOMLEFT", 5, -ELEMENT_GAP)
     searchBox:SetPoint("RIGHT", questsSection.body, "RIGHT", 0, 0)
     searchBox:SetAutoFocus(false)
     searchBox:HookScript("OnTextChanged", function(self)
@@ -1993,17 +2078,24 @@ local function buildMainFrame()
     frame.refreshButton = refreshButton
 
     local toggleAllButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
-    toggleAllButton:SetSize(SPACING.LG * 4, SPACING.LG)
+    toggleAllButton:SetSize(SPACING.LG * 5, SPACING.LG)
     toggleAllButton:SetPoint("RIGHT", refreshButton, "LEFT", -ELEMENT_GAP, 0)
-    toggleAllButton:SetText("Collapse")
+    toggleAllButton:SetText("Collapse All")
     toggleAllButton:SetScript("OnClick", function()
         local zc = getZoneCollapsed()
+        local gc = getGroupCollapsed()
         local anyExpanded = false
         for _, zoneName in ipairs(lastZoneOrder) do
             if not zc[zoneName] then anyExpanded = true; break end
         end
+        -- anyExpanded -> collapse everything; otherwise expand everything.
+        -- Subcategory state mirrors the zone toggle so the button acts as a
+        -- single "show me everything / nothing" control.
         for _, zoneName in ipairs(lastZoneOrder) do
             zc[zoneName] = anyExpanded
+            for _, subKey in ipairs(SUBCAT_ORDER) do
+                gc[zoneName .. "||" .. subKey] = anyExpanded
+            end
         end
         renderList()
     end)
@@ -2117,13 +2209,13 @@ end
 local function setupMinimapButton()
     local LDB = LibStub("LibDataBroker-1.1")
     local LDBIcon = LibStub("LibDBIcon-1.0")
-    if LDBIcon:IsRegistered("WhereToQuest") then
+    if LDBIcon:IsRegistered("Where To Quest?") then
         return
     end
 
-    local dataObject = LDB:NewDataObject("WhereToQuest", {
+    local dataObject = LDB:NewDataObject("Where To Quest?", {
         type = "launcher",
-        text = "WhereToQuest",
+        text = "Where To Quest?",
         icon = "Interface\\Icons\\INV_Misc_Map02",
         OnClick = function(_, button)
             if button == "LeftButton" then
@@ -2131,7 +2223,7 @@ local function setupMinimapButton()
             end
         end,
         OnTooltipShow = function(tt)
-            tt:AddLine("WhereToQuest")
+            tt:AddLine("Where To Quest?")
             tt:AddLine("|cffffffffClick|r to toggle.", 1, 1, 1)
         end,
     })
@@ -2142,7 +2234,7 @@ local function setupMinimapButton()
     end
     WhereToQuestDB.minimap.angle = nil
 
-    LDBIcon:Register("WhereToQuest", dataObject, WhereToQuestDB.minimap)
+    LDBIcon:Register("Where To Quest?", dataObject, WhereToQuestDB.minimap)
 end
 
 local refreshTimer
