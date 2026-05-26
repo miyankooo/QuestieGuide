@@ -674,10 +674,12 @@ local function scanQuestsByZone()
             local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
             -- The user's level slider (passesLevelGate) used to hard-filter
             -- here. We now keep out-of-range quests in the list and tag them
-            -- so renderList can fade their rows; only the hard caps and the
-            -- required-level gate still exclude quests entirely.
+            -- so renderList can fade their rows; only the hard caps, the
+            -- required-level gate, and grey (trivial) quests still exclude
+            -- quests entirely from the discovery sections.
             if passesClassicCaps(level, requiredLevel)
-                and meetsRequiredLevel(requiredLevel, playerLevel) then
+                and meetsRequiredLevel(requiredLevel, playerLevel)
+                and not isQuestTrivialForPlayer(level, playerLevel) then
                 local outOfRange = not passesLevelGate(level)
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
@@ -2101,7 +2103,7 @@ local function buildMainFrame()
     end)
     frame.toggleAllButton = toggleAllButton
 
-    local scroll = CreateFrame("ScrollFrame", nil, questsSection.body, "UIPanelScrollFrameTemplate")
+    local scroll = CreateFrame("ScrollFrame", nil, questsSection.body)
     scroll:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -ELEMENT_GAP)
     scroll:SetPoint("BOTTOMRIGHT", questsSection.body, "BOTTOMRIGHT", -SCROLLBAR_RESERVE, 0)
 
@@ -2115,10 +2117,42 @@ local function buildMainFrame()
     scrollChild = child
     frame.scroll = scroll
 
+    -- Native minimal scrollbar from the in-game Options panel (MinimalScrollBar).
+    local scrollBar = CreateFrame("EventFrame", nil, questsSection.body, "MinimalScrollBar")
+    scrollBar:SetPoint("TOPLEFT", scroll, "TOPRIGHT", 4, -4)
+    scrollBar:SetPoint("BOTTOMLEFT", scroll, "BOTTOMRIGHT", 4, 7)
+    scrollBar:SetHideIfUnscrollable(true)
+    scrollBar:Init(1, 0.25)
+    frame.scrollBar = scrollBar
+
+    local function refreshScrollBar()
+        local viewport = scroll:GetHeight()
+        local content = math.max(child:GetHeight(), 1)
+        local visiblePct = math.min(1, viewport / content)
+        scrollBar:SetVisibleExtentPercentage(visiblePct)
+        local range = math.max(0, content - viewport)
+        scroll:SetVerticalScroll(range * scrollBar:GetScrollPercentage())
+    end
+
+    scrollBar:RegisterCallback("OnScroll", function(_, scrollPercentage)
+        local range = math.max(0, child:GetHeight() - scroll:GetHeight())
+        scroll:SetVerticalScroll(range * scrollPercentage)
+    end, scroll)
+
+    scroll:EnableMouseWheel(true)
+    scroll:SetScript("OnMouseWheel", function(_, delta)
+        if not scrollBar:HasScrollableExtent() then return end
+        local pct = scrollBar:GetScrollPercentage() - delta * 0.1
+        scrollBar:SetScrollPercentage(math.max(0, math.min(1, pct)))
+    end)
+
     scroll:HookScript("OnSizeChanged", function(self)
         child:SetWidth(math.max(1, self:GetWidth()))
         renderList()
+        refreshScrollBar()
     end)
+
+    child:HookScript("OnSizeChanged", refreshScrollBar)
 
     frame:HookScript("OnSizeChanged", function(self)
         WhereToQuestDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
@@ -2194,16 +2228,6 @@ local function toggleFrame()
     end
 end
 
-SLASH_WHERETOQUEST1 = "/wtq"
-SLASH_WHERETOQUEST2 = "/wheretoquest"
-SlashCmdList["WHERETOQUEST"] = function()
-    if not loadQuestie() then
-        print(INTRO_PREFIX .. "Questie is not loaded. Enable Questie to use this addon.")
-        return
-    end
-    toggleFrame()
-end
-
 -- Registers the launcher with LibDBIcon so any addon-manager UI (CleanUI's
 -- edge-snap refresh, Titan Panel, ChocolateBar, etc.) can manage it consistently.
 local function setupMinimapButton()
@@ -2219,12 +2243,15 @@ local function setupMinimapButton()
         icon = "Interface\\Icons\\INV_Misc_Map02",
         OnClick = function(_, button)
             if button == "LeftButton" then
-                SlashCmdList["WHERETOQUEST"]()
+                if not loadQuestie() then
+                    return
+                end
+                toggleFrame()
             end
         end,
         OnTooltipShow = function(tt)
             tt:AddLine("Where To Quest?")
-            tt:AddLine("|cffffffffClick|r to toggle.", 1, 1, 1)
+            tt:AddLine("|cffffd200Left-click|r to open the quest panel.", 1, 1, 1)
         end,
     })
 
@@ -2695,6 +2722,5 @@ loader:SetScript("OnEvent", function(self, event, name)
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
         installTooltipHooks()
-        print(INTRO_PREFIX .. "Loaded. Type /wtq for available commands.")
     end
 end)

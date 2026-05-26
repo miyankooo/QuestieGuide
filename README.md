@@ -4,7 +4,7 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 
 ## Features
 
-- `/wtq` slash command or minimap button opens a movable, resizable dialog.
+- Minimap button opens a movable, resizable dialog.
 - Search box with helper text that matches against quest names, zone names, and (when **Show NPC Name and Location** or **Show NPC Coordinates** is on) NPC names.
 - Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone header shows the visible-quest count, total reward XP, and how much of your current level that represents.
 - **Quest Level Range** sliders configure how many levels below and above the player to include (each 0–5, default 5/5). Quests already in your log are always shown regardless of the range.
@@ -43,7 +43,7 @@ The embedded libraries (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIc
 ## Usage
 
 1. Log into a Classic Era character.
-2. Open the window with `/wtq` or the minimap button.
+2. Open the window with the minimap button.
 3. Type in the search box to narrow by quest, zone, or NPC name.
 4. Toggle filters at the top to include or exclude categories and quest types.
 5. Click a quest to open the map at its start NPC; right-click for more options.
