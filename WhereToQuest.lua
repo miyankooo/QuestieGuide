@@ -91,6 +91,18 @@ local GROUP_GAP = SPACING.SM
 local ZONE_GAP = 12
 local INDENT_STEP = SPACING.MD
 
+-- Native quest log header treatment, mirroring Classic Era's QuestLogFrame
+-- (Blizzard_UIPanels_Game/Vanilla/QuestLogFrame.xml + .lua): a 16x16 red
+-- plus/minus toggle at x=3 with the additive hilight on hover, text 20px in
+-- from the row's left edge, header grey text that whitens on mouse-over
+-- (QuestDifficultyColors / QuestDifficultyHighlightColors "header").
+local HEADER_TEXT_INSET = 20
+local HEADER_TOGGLE_INSET = 3
+local HEADER_R, HEADER_G, HEADER_B = 0.7, 0.7, 0.7
+local TOGGLE_PLUS = "Interface\\Buttons\\UI-PlusButton-Up"
+local TOGGLE_MINUS = "Interface\\Buttons\\UI-MinusButton-Up"
+local TOGGLE_HILIGHT = "Interface\\Buttons\\UI-PlusButton-Hilight"
+
 -- Wrapping: row height grows with wrapped text; LINE_SPACING tunes legibility.
 local ROW_PAD_V = 2
 local LINE_SPACING = 3
@@ -465,7 +477,7 @@ end
 
 -- True when the quest would render grey on the player (below Blizzard's
 -- difficulty floor — quest level is more than greenRange below the player).
--- Used by the item-tooltip enrichment to label outgrown quests as Past.
+-- Used to exclude outgrown quests from the discovery sections.
 local function isQuestTrivialForPlayer(questLevel, playerLevel)
     if not playerLevel or not questLevel or questLevel <= 0 then
         return false
@@ -1081,6 +1093,12 @@ local function acquireRow(index)
         -- quest. renderQuestRow overrides this for actual fading rows.
         row:SetAlpha(1)
         row.highlight:Hide()
+        -- Reset the header dressing so a row reused for a quest or message
+        -- doesn't keep the toggle, text inset, or grey header color.
+        row.toggle:Hide()
+        row.toggleHighlight:SetTexture("")
+        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", SPACING.XS, -ROW_PAD_V)
+        row.text:SetTextColor(1, 1, 1)
         return row
     end
     row = CreateFrame("Button", nil, scrollChild)
@@ -1107,8 +1125,36 @@ local function acquireRow(index)
     row.text:SetJustifyV("TOP")
     row.text:SetWordWrap(true)
     row.text:SetSpacing(LINE_SPACING)
+    row.text:SetTextColor(1, 1, 1)
+    -- Native expand/collapse toggle for header rows. The hilight sits on the
+    -- HIGHLIGHT layer so the button shows it automatically on mouse-over;
+    -- quest rows keep its texture empty so nothing renders there.
+    row.toggle = row:CreateTexture(nil, "ARTWORK")
+    row.toggle:SetSize(16, 16)
+    row.toggle:SetPoint("TOPLEFT", row, "TOPLEFT", HEADER_TOGGLE_INSET, 0)
+    row.toggle:Hide()
+    row.toggleHighlight = row:CreateTexture(nil, "HIGHLIGHT")
+    row.toggleHighlight:SetBlendMode("ADD")
+    row.toggleHighlight:SetAllPoints(row.toggle)
     rowPool[index] = row
     return row
+end
+
+-- Dresses a pooled row as a native quest log header: plus/minus toggle,
+-- indented text, and header grey that whitens while hovered (the same
+-- swap Blizzard gets from NormalFont/HighlightFont on QuestLogTitleButton).
+local function styleHeaderRow(row, collapsed)
+    row.toggle:SetTexture(collapsed and TOGGLE_PLUS or TOGGLE_MINUS)
+    row.toggle:Show()
+    row.toggleHighlight:SetTexture(TOGGLE_HILIGHT)
+    row.text:SetPoint("TOPLEFT", row, "TOPLEFT", HEADER_TEXT_INSET, -ROW_PAD_V)
+    row.text:SetTextColor(HEADER_R, HEADER_G, HEADER_B)
+    row:SetScript("OnEnter", function(self)
+        self.text:SetTextColor(1, 1, 1)
+    end)
+    row:SetScript("OnLeave", function(self)
+        self.text:SetTextColor(HEADER_R, HEADER_G, HEADER_B)
+    end)
 end
 
 local function hideUnusedRows(fromIndex)
@@ -1441,7 +1487,7 @@ function renderList()
 
                 local header = acquireRow(index)
                 placeRow(header, 0)
-                local arrow = collapsed and "|cffffd200[+]|r " or "|cffffd200[-]|r "
+                styleHeaderRow(header, collapsed)
                 local summary = " (" .. inRangeTotal .. ")"
                 if inRangeXp > 0 then
                     local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
@@ -1454,7 +1500,7 @@ function renderList()
                             COLOR.GREY, formatNumber(inRangeXp))
                     end
                 end
-                header.text:SetText(arrow .. zoneName .. summary)
+                header.text:SetText(zoneName .. summary)
                 header:SetScript("OnClick", function()
                     local expanding = collapsed
                     zoneCollapsedDB[zoneName] = not collapsed
@@ -1469,8 +1515,6 @@ function renderList()
                     end
                     renderList()
                 end)
-                header:SetScript("OnEnter", nil)
-                header:SetScript("OnLeave", nil)
                 y = y + sizeRow(header, HEADER_HEIGHT)
                 index = index + 1
 
@@ -1487,15 +1531,13 @@ function renderList()
 
                             local sub = acquireRow(index)
                             placeRow(sub, INDENT_STEP)
-                            local subArrow = groupHidden and "[+]" or "[-]"
-                            sub.text:SetText(string.format("|cff9d9d9d%s %s (%d)|r",
-                                subArrow, SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0))
+                            styleHeaderRow(sub, groupHidden)
+                            sub.text:SetText(string.format("%s (%d)",
+                                SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0))
                             sub:SetScript("OnClick", function()
                                 groupCollapsedDB[groupKey] = not groupHidden
                                 renderList()
                             end)
-                            sub:SetScript("OnEnter", nil)
-                            sub:SetScript("OnLeave", nil)
                             y = y + sizeRow(sub, SUBHEADER_HEIGHT)
                             index = index + 1
 
@@ -2278,368 +2320,6 @@ local function scheduleRefresh()
     end)
 end
 
--- Item tooltip enrichment shared state.
-local questStatusCache = {}
-local activeQuestIdSet
-
-local function invalidateActiveQuestCaches()
-    wipe(questStatusCache)
-    activeQuestIdSet = nil
-end
-
--- Set of quest IDs currently in the player's quest log. C_QuestLog is the
--- canonical API in Classic Era 1.15; we fall back to the legacy
--- GetQuestLogTitle if Blizzard ever drops it.
-local function getActiveQuestIdSet()
-    if activeQuestIdSet then
-        return activeQuestIdSet
-    end
-    local set = {}
-    if C_QuestLog and C_QuestLog.GetNumQuestLogEntries and C_QuestLog.GetInfo then
-        for i = 1, C_QuestLog.GetNumQuestLogEntries() do
-            local info = C_QuestLog.GetInfo(i)
-            if info and not info.isHeader and info.questID and info.questID > 0 then
-                set[info.questID] = true
-            end
-        end
-    elseif GetNumQuestLogEntries and GetQuestLogTitle then
-        for i = 1, GetNumQuestLogEntries() do
-            local _, _, _, isHeader, _, _, _, qid = GetQuestLogTitle(i)
-            if not isHeader and qid and qid > 0 then
-                set[qid] = true
-            end
-        end
-    end
-    activeQuestIdSet = set
-    return set
-end
-
--- Tooltip: extend Questie's item tooltip with quest-relevance lines for the
--- cases Questie does not already cover.
---
--- Questie shows objective progress + "(Complete)" only for quests currently
--- in the player's log. We add lines for every OTHER quest that references
--- this item -- past, future, available, locked -- so the player can decide
--- whether to keep, trade, or discard the item. Applies to any item type:
--- quest items, trade goods, reagents, anything Questie has linkage data on.
---
--- Lines mirror Questie's format: the colored "[level] Quest Name" title from
--- QuestieLib:GetColoredQuestName, followed by an explicit status badge.
--- Status badges use Questie's own color values (red/yellow/green) so the
--- lines blend with Questie's existing tooltip block.
-
--- Status priority drives sort order. Colors match Questie's palette in
--- Questie.lua so the lines visually match Questie's quest-name rendering.
---
---   Available           -- doable right now (includes repeatable redo)
---   Upcoming            -- player can't do it yet (level/prereqs); future
---   Previously Completed-- already turned in; past relevance
---   Past                -- quest level is grey for this player; outgrown
-local STATUS_AVAILABLE  = { label = "(Available)",            color = "|cFFffff00", order = 1 }
-local STATUS_UPCOMING   = { label = "(Upcoming)",             color = "|cFFff6f22", order = 2 }
-local STATUS_COMPLETED  = { label = "(Previously Completed)", color = "|cFF00ff00", order = 3 }
-local STATUS_PAST       = { label = "(Past)",                 color = "|cFFa6a6a6", order = 4 }
-
-local TOOLTIP_LINE_CAP = 10
-local INDEX_BUILD_DELAY = 5
-
--- Per-tooltip guards keyed by tooltip frame so GameTooltip and ItemRefTooltip
--- track their state independently. Weak keys so tooltips can still be GC'd.
-local tooltipLastItem = setmetatable({}, { __mode = "k" })
--- NumLines() snapshot taken right AFTER we appended our lines. On the next
--- OnTooltipSetItem fire, if NumLines is now smaller, the tooltip was rebuilt
--- under us (e.g. by an async GET_ITEM_INFO_RECEIVED refresh) and our lines
--- need to be re-added — this is the fix for the ~200ms flicker users saw.
-local tooltipLastLineCount = setmetatable({}, { __mode = "k" })
-
--- Global objective index: itemId -> array of every quest id where this item
--- appears in the quest's item-objective list (questKeys.objectives[3]).
--- Built once per session from Questie's compiled quest DB.
---
--- Scope is intentionally narrow: only true objectives count. Quest starters,
--- source items (sourceItemId), required-but-not-objective items
--- (requiredSourceItems), rewards, and triggers are excluded. If an item
--- isn't something the quest text says "Bring N to ..." for, we don't show
--- it as quest-related. This matches the user's intent: tooltip lines should
--- only point at quests where the item is an actual goal.
-local globalItemObjectiveIndex
-local indexBuildScheduled = false
-
-local function buildGlobalItemObjectiveIndex()
-    if globalItemObjectiveIndex then
-        return
-    end
-    if not loadQuestie() or not QuestieDB.QuestPointers then
-        return
-    end
-    local index = {}
-    local function add(itemId, questId)
-        if type(itemId) ~= "number" or itemId <= 0 then
-            return
-        end
-        local list = index[itemId]
-        if not list then
-            list = {}
-            index[itemId] = list
-        end
-        list[#list + 1] = questId
-    end
-    for questId in pairs(QuestieDB.QuestPointers) do
-        local objectives = QuestieDB.QueryQuestSingle(questId, "objectives")
-        if type(objectives) == "table" and type(objectives[3]) == "table" then
-            for _, obj in ipairs(objectives[3]) do
-                local iid = (type(obj) == "table" and obj[1]) or (type(obj) == "number" and obj) or nil
-                add(iid, questId)
-            end
-        end
-    end
-    globalItemObjectiveIndex = index
-end
-
-local function scheduleGlobalIndexBuild()
-    if indexBuildScheduled or globalItemObjectiveIndex then
-        return
-    end
-    indexBuildScheduled = true
-    -- A few seconds after login so Questie has finished compiling its DB
-    -- and the player isn't sharing a frame with our quest-DB walk.
-    C_Timer.After(INDEX_BUILD_DELAY, buildGlobalItemObjectiveIndex)
-end
-
--- Returns the list of quest ids that have this item as an objective, or nil
--- if the global index hasn't been built yet. There is intentionally no
--- relatedQuests fallback: relatedQuests mixes objectives with rewards /
--- starters / required-source items, and the user wants objectives only.
-local function getObjectiveQuestsForItem(itemId)
-    if globalItemObjectiveIndex then
-        return globalItemObjectiveIndex[itemId]
-    end
-    scheduleGlobalIndexBuild()
-    return nil
-end
-
--- Questie-styled colored quest title with level prefix. Falls back to a
--- difficulty-tinted "[level] Name" if Questie's helper isn't accessible.
-local function styledQuestName(qid)
-    if QuestieLib and QuestieLib.GetColoredQuestName then
-        local ok, str = pcall(QuestieLib.GetColoredQuestName, QuestieLib, qid, true, false)
-        if ok and str and str ~= "" then
-            return str
-        end
-    end
-    local name = (QuestieDB and QuestieDB.QueryQuestSingle and QuestieDB.QueryQuestSingle(qid, "name")) or ("Quest " .. qid)
-    local level = QuestieDB and QuestieDB.QueryQuestSingle and QuestieDB.QueryQuestSingle(qid, "questLevel")
-    if type(level) == "number" and level > 0 then
-        return getDifficultyColorCode(level) .. "[" .. level .. "] " .. name .. "|r"
-    end
-    return name
-end
-
--- Returns a STATUS_* table for the quest, or nil when the line should be
--- suppressed: the quest is in the active log (Questie handles those with
--- live progress) or it's race/class-locked so the player can never do it.
---
--- Priority order matters:
---   1. Previously Completed wins over "doable / outgrown" only when the quest
---      is one-time done (NOT doable any more). Repeatable quests already
---      turned in once are still IsDoable, so they fall through to Available.
---   2. Past beats Available for trivial-level quests: the player has
---      outgrown the quest, so flagging it as Available misleadingly suggests
---      they should bother picking it up.
---   3. Available next (covers repeatables and never-done-but-doable).
---   4. Upcoming catches everything else (too high level, prereqs missing).
-local function getQuestTooltipStatus(qid)
-    local cached = questStatusCache[qid]
-    if cached ~= nil then
-        if cached == false then return nil end
-        return cached
-    end
-
-    -- Active log: Questie shows it with live objective progress, skip.
-    if getActiveQuestIdSet()[qid] then
-        questStatusCache[qid] = false
-        return nil
-    end
-
-    -- Race/class lock: the player can NEVER do this quest, so the item is
-    -- not relevant to them. Hide rather than label as Upcoming.
-    if not matchesPlayerFaction(qid) then
-        questStatusCache[qid] = false
-        return nil
-    end
-
-    local doable = QuestieDB.IsDoable and QuestieDB.IsDoable(qid)
-    local completed = isQuestCompleted(qid)
-    local status
-    if completed and not doable then
-        status = STATUS_COMPLETED
-    else
-        local playerLevel = UnitLevel("player")
-        local level = QuestieLib and getEffectiveLevel(qid, playerLevel) or 0
-        if isQuestTrivialForPlayer(level, playerLevel) then
-            status = STATUS_PAST
-        elseif doable then
-            status = STATUS_AVAILABLE
-        else
-            status = STATUS_UPCOMING
-        end
-    end
-    questStatusCache[qid] = status
-    return status
-end
-
--- Gathers every quest where this item is an actual objective. Quest
--- starters, source items, required-source items, rewards and triggers are
--- deliberately excluded -- the tooltip should only call out quests where
--- collecting this item is the goal. Active-log quests are filtered out by
--- getQuestTooltipStatus so Questie's own progress lines stay authoritative.
---
--- Quests that share a name across factions/cities (e.g. "A Donation of
--- Silk" exists once per capital) collapse into a single line. The kept
--- entry is the one with the most actionable status (lowest order value), so
--- if any version of the quest is still Available the player sees that
--- rather than a misleading "Previously Completed" from another version.
-local function collectItemQuestEntries(itemId)
-    local related = getObjectiveQuestsForItem(itemId)
-    if type(related) ~= "table" then
-        return {}
-    end
-
-    local seenQids = {}
-    local byName = {}
-    for _, qid in ipairs(related) do
-        if type(qid) == "number" and qid > 0 and not seenQids[qid] then
-            seenQids[qid] = true
-            local status = getQuestTooltipStatus(qid)
-            if status then
-                local name = QuestieDB.QueryQuestSingle(qid, "name") or ("Quest " .. qid)
-                local level = QuestieDB.QueryQuestSingle(qid, "questLevel")
-                local entry = {
-                    qid = qid,
-                    level = (type(level) == "number" and level) or 0,
-                    status = status,
-                }
-                local existing = byName[name]
-                if not existing or status.order < existing.status.order then
-                    byName[name] = entry
-                end
-            end
-        end
-    end
-
-    local entries = {}
-    for _, e in pairs(byName) do
-        entries[#entries + 1] = e
-    end
-
-    table.sort(entries, function(a, b)
-        if a.status.order ~= b.status.order then
-            return a.status.order < b.status.order
-        end
-        if a.level ~= b.level then
-            return a.level < b.level
-        end
-        return a.qid < b.qid
-    end)
-
-    return entries
-end
-
--- Returns true when at least one line was appended so the caller can size the
--- tooltip. Lines are inserted directly under whatever Questie already wrote;
--- a single blank separator goes above ours so it visually groups together.
-local function appendQuestItemTooltipLines(tooltip, itemId)
-    if not loadQuestie() then
-        return false
-    end
-    local entries = collectItemQuestEntries(itemId)
-    if #entries == 0 then
-        return false
-    end
-
-    tooltip:AddLine(" ")
-
-    local shown = 0
-    for _, entry in ipairs(entries) do
-        if shown >= TOOLTIP_LINE_CAP then break end
-        local line = styledQuestName(entry.qid) .. " " .. entry.status.color .. entry.status.label .. "|r"
-        tooltip:AddLine(line, 1, 1, 1, true)
-        shown = shown + 1
-    end
-    local remaining = #entries - shown
-    if remaining > 0 then
-        tooltip:AddLine(string.format("|cff7f7f7f... and %d more|r", remaining), 1, 1, 1, true)
-    end
-
-    return true
-end
-
-local function extractItemIdFromTooltip(tooltip)
-    if not tooltip.GetItem then
-        return nil
-    end
-    local _, link = tooltip:GetItem()
-    if not link then
-        return nil
-    end
-    return tonumber(link:match("item:(%d+)"))
-end
-
--- OnTooltipSetItem can fire multiple times for the same tooltip display:
--- Blizzard refires it when async data lands (GET_ITEM_INFO_RECEIVED) and on
--- some setter paths the tooltip is internally cleared and rebuilt. Both
--- modes used to wipe our appended lines while the cache still claimed
--- "already added", which produced the ~200ms flicker. We now also compare
--- the tooltip's current NumLines against the count we recorded right after
--- our last append: any drop means the tooltip was rebuilt and we re-add.
-local function onItemTooltipShow(self)
-    if self.IsForbidden and self:IsForbidden() then
-        return
-    end
-    if not self.NumLines then
-        return
-    end
-    local itemId = extractItemIdFromTooltip(self)
-    if not itemId then
-        return
-    end
-
-    local sameItem = tooltipLastItem[self] == itemId
-    local lastCount = tooltipLastLineCount[self]
-    if sameItem and lastCount and self:NumLines() >= lastCount then
-        -- Our lines are still in place, nothing to do.
-        return
-    end
-
-    tooltipLastItem[self] = itemId
-    local added = appendQuestItemTooltipLines(self, itemId)
-    tooltipLastLineCount[self] = self:NumLines()
-    if added then
-        self:Show()
-    end
-end
-
-local function onItemTooltipCleared(self)
-    tooltipLastItem[self] = nil
-    tooltipLastLineCount[self] = nil
-end
-
-local tooltipHooksInstalled = false
-local function installTooltipHooks()
-    if tooltipHooksInstalled then
-        return
-    end
-    if GameTooltip then
-        GameTooltip:HookScript("OnTooltipSetItem", onItemTooltipShow)
-        GameTooltip:HookScript("OnHide", onItemTooltipCleared)
-    end
-    if ItemRefTooltip then
-        ItemRefTooltip:HookScript("OnTooltipSetItem", onItemTooltipShow)
-        ItemRefTooltip:HookScript("OnHide", onItemTooltipCleared)
-    end
-    tooltipHooksInstalled = true
-end
-
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED")
 loader:RegisterEvent("PLAYER_LOGIN")
@@ -2649,14 +2329,8 @@ loader:RegisterEvent("QUEST_ACCEPTED")
 loader:RegisterEvent("QUEST_REMOVED")
 loader:RegisterEvent("QUEST_TURNED_IN")
 loader:SetScript("OnEvent", function(self, event, name)
-    if event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN" then
-        invalidateActiveQuestCaches()
-        invalidateScan()
-        scheduleRefresh()
-        return
-    end
-    if event == "QUEST_LOG_UPDATE" or event == "PLAYER_LEVEL_UP" then
-        invalidateActiveQuestCaches()
+    if event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN"
+        or event == "QUEST_LOG_UPDATE" or event == "PLAYER_LEVEL_UP" then
         invalidateScan()
         scheduleRefresh()
         return
@@ -2721,6 +2395,5 @@ loader:SetScript("OnEvent", function(self, event, name)
         WhereToQuestDB.hiddenQuests = nil
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
-        installTooltipHooks()
     end
 end)
