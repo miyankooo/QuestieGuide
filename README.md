@@ -1,4 +1,4 @@
-# Where To Quest?
+# Questie Guide
 
 A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest currently available to your character. Trivial (grey) quests are hidden automatically. It relies on [Questie](https://github.com/Questie/Questie) for its quest database and eligibility logic.
 
@@ -20,16 +20,16 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 ## Requirements
 
 - World of Warcraft Classic Era 1.15.x.
-- Questie installed and enabled. Where To Quest? declares Questie as an optional dependency but will refuse to open without it.
+- Questie installed and enabled. Questie Guide declares Questie as an optional dependency but will refuse to open without it.
 
 ## Installation
 
 The add-on folder must live directly inside `Interface/AddOns/`, like any other WoW add-on:
 
 ```
-Interface/AddOns/WhereToQuest/
-├── WhereToQuest.toc
-├── WhereToQuest.lua
+Interface/AddOns/QuestieGuide/
+├── QuestieGuide.toc
+├── QuestieGuide.lua
 ├── Libs/
 │   ├── LibStub/
 │   ├── CallbackHandler-1.0/
@@ -51,7 +51,7 @@ The embedded libraries (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIc
 
 ## How it integrates with Questie
 
-Where To Quest? imports a small set of Questie modules through `QuestieLoader`:
+Questie Guide imports a small set of Questie modules through `QuestieLoader`:
 
 - `QuestieDB` — `QuestPointers`, `IsDoable`, `GetQuest`, `QueryQuestSingle`, `GetQuestTagInfo`, `IsRepeatable`, `GetNPC`, `IsPreQuestSingleFulfilled`, `IsPreQuestGroupFulfilled`.
 - `QuestieLib` — `GetTbcLevel`, `GetColoredQuestName`, `GetDifficultyColorPercent`.
@@ -72,7 +72,7 @@ Zone names come from `C_Map.GetAreaInfo` using `zoneOrSort`, with `ZoneDB:GetLoc
 
 ## Saved Variables
 
-`WhereToQuestDB` stores the sort mode, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account.
+`QuestieGuideDB` stores the sort mode, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account.
 
 ## Notes and assumptions
 

@@ -1,13 +1,13 @@
 ## Interface: 11508
-## Title: Where To Quest?
+## Title: Questie Guide
 ## Notes: Find currently available quests within a level range around your character level.
 ## Author: miyanko
 ## Version: 1.0.0
 ## OptionalDeps: Questie
-## SavedVariables: WhereToQuestDB
+## SavedVariables: QuestieGuideDB
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
-WhereToQuest.lua
+QuestieGuide.lua

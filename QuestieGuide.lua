@@ -1,4 +1,4 @@
--- WhereToQuest: zone-bucketed quest browser sourced from Questie.
+-- QuestieGuide: zone-bucketed quest browser sourced from Questie.
 
 local ADDON_NAME = ...
 
@@ -27,7 +27,7 @@ local DEFAULTS = {
 local LEVEL_RANGE_MIN = 0
 local LEVEL_RANGE_MAX = 10
 
-local INTRO_PREFIX = "|cffffff00[Where To Quest?]:|r "
+local INTRO_PREFIX = "|cffffff00[Questie Guide]:|r "
 
 local SORT_BY_OPTIONS = {
     { value = "xp",       label = "Total XP" },
@@ -158,11 +158,11 @@ local COLOR = {
 }
 
 local function getZoneCollapsed()
-    return (WhereToQuestDB and WhereToQuestDB.zoneCollapsed) or {}
+    return (QuestieGuideDB and QuestieGuideDB.zoneCollapsed) or {}
 end
 
 local function getGroupCollapsed()
-    return (WhereToQuestDB and WhereToQuestDB.groupCollapsed) or {}
+    return (QuestieGuideDB and QuestieGuideDB.groupCollapsed) or {}
 end
 
 local function loadQuestie()
@@ -452,7 +452,7 @@ local function clampRange(value)
 end
 
 local function getLevelRange()
-    local db = WhereToQuestDB or {}
+    local db = QuestieGuideDB or {}
     local below = clampRange(db.levelBelow) or DEFAULTS.levelBelow
     local above = clampRange(db.levelAbove) or DEFAULTS.levelAbove
     return below, above
@@ -623,7 +623,7 @@ local function scanQuestsByZone()
     end
     local playerLevel = UnitLevel("player")
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
-    local useQuestieLevelRange = WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false
+    local useQuestieLevelRange = QuestieGuideDB and QuestieGuideDB.useQuestieLevelRange and true or false
     local below, above = getLevelRange()
 
     -- Slider on: explicit ± band centered on player level. Slider bypassed
@@ -829,8 +829,8 @@ end
 -- Zones without a value for the chosen metric sort to the END regardless of
 -- direction (so the player sees only zones with available quests at the top).
 local function sortZones(zoneOrder, byZone)
-    local mode = (WhereToQuestDB and WhereToQuestDB.sortMode) or DEFAULTS.sortMode
-    local dir = (WhereToQuestDB and WhereToQuestDB.sortDir) or DEFAULTS.sortDir
+    local mode = (QuestieGuideDB and QuestieGuideDB.sortMode) or DEFAULTS.sortMode
+    local dir = (QuestieGuideDB and QuestieGuideDB.sortDir) or DEFAULTS.sortDir
     local desc = (dir == "desc")
 
     local function compareNumeric(getValue)
@@ -1281,7 +1281,7 @@ function renderList()
     local byZone, zoneOrder = ensureScan()
     sortZones(zoneOrder, byZone)
     lastZoneOrder = zoneOrder
-    local filters = (WhereToQuestDB and WhereToQuestDB.filters) or DEFAULTS.filters
+    local filters = (QuestieGuideDB and QuestieGuideDB.filters) or DEFAULTS.filters
     local index = 1
     local y = 0
     local renderedZones = 0
@@ -1347,7 +1347,7 @@ function renderList()
 
     local zoneCollapsedDB = getZoneCollapsed()
     local groupCollapsedDB = getGroupCollapsed()
-    local pinCurrentZone = WhereToQuestDB and WhereToQuestDB.pinCurrentZone
+    local pinCurrentZone = QuestieGuideDB and QuestieGuideDB.pinCurrentZone
     local playerZone = pinCurrentZone and getPlayerZoneName() or nil
     local showDungeons = filters.dungeons ~= false
     local showEliteGroup = filters.eliteGroup ~= false
@@ -1732,8 +1732,8 @@ local function buildMainFrame()
         return mainFrame
     end
 
-    local frame = CreateFrame("Frame", "WhereToQuestFrame", UIParent, "BackdropTemplate")
-    local savedSize = (WhereToQuestDB and WhereToQuestDB.frameSize) or DEFAULTS.frameSize
+    local frame = CreateFrame("Frame", "QuestieGuideFrame", UIParent, "BackdropTemplate")
+    local savedSize = (QuestieGuideDB and QuestieGuideDB.frameSize) or DEFAULTS.frameSize
     frame:SetSize(savedSize.w or FRAME_WIDTH, savedSize.h or FRAME_HEIGHT)
     frame:SetFrameStrata("DIALOG")
     frame:SetMovable(true)
@@ -1750,11 +1750,11 @@ local function buildMainFrame()
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         local point, _, relPoint, x, y = self:GetPoint(1)
-        WhereToQuestDB.framePos = { point = point, relPoint = relPoint, x = x, y = y }
+        QuestieGuideDB.framePos = { point = point, relPoint = relPoint, x = x, y = y }
     end)
     applyPanelBackdrop(frame)
 
-    local savedPos = WhereToQuestDB and WhereToQuestDB.framePos
+    local savedPos = QuestieGuideDB and QuestieGuideDB.framePos
     if type(savedPos) == "table" and savedPos.point then
         frame:ClearAllPoints()
         frame:SetPoint(savedPos.point, UIParent, savedPos.relPoint or savedPos.point, savedPos.x or 0, savedPos.y or 0)
@@ -1763,7 +1763,7 @@ local function buildMainFrame()
     end
     frame:Hide()
 
-    buildTitleHeader(frame, "Where To Quest?")
+    buildTitleHeader(frame, "Questie Guide")
 
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     closeButton:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -2)
@@ -1815,7 +1815,7 @@ local function buildMainFrame()
     rangeSection:SetHeight(RANGE_HEIGHT_EXPANDED)
     local rangeRow = rangeSection.body
 
-    local useQuestieCheckbox = CreateFrame("CheckButton", "WhereToQuestUseQuestieLevelRange", rangeRow, "UICheckButtonTemplate")
+    local useQuestieCheckbox = CreateFrame("CheckButton", "QuestieGuideUseQuestieLevelRange", rangeRow, "UICheckButtonTemplate")
     useQuestieCheckbox:SetSize(RANGE_CHECKBOX_HEIGHT, RANGE_CHECKBOX_HEIGHT)
     useQuestieCheckbox:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", ROW_EDGE_PAD, 0)
     local useQuestieLabel = _G[useQuestieCheckbox:GetName() .. "Text"]
@@ -1833,7 +1833,7 @@ local function buildMainFrame()
     local sliderCounter = 0
     local function buildRangeSlider(parent, labelPrefix, dbKey)
         sliderCounter = sliderCounter + 1
-        local name = "WhereToQuestRangeSlider" .. sliderCounter
+        local name = "QuestieGuideRangeSlider" .. sliderCounter
         -- MinimalSliderWithSteppersTemplate is a Frame wrapping a Slider with
         -- - / + stepper buttons, a top label, and min/max labels — the same
         -- widget Blizzard's Settings panel uses. Width flows from the caller's
@@ -1841,7 +1841,7 @@ local function buildMainFrame()
         -- in from each side, leaving room for the steppers.
         local slider = CreateFrame("Frame", name, parent, "MinimalSliderWithSteppersTemplate")
         slider._dbKey = dbKey
-        local initial = clampRange(WhereToQuestDB and WhereToQuestDB[dbKey]) or DEFAULTS[dbKey]
+        local initial = clampRange(QuestieGuideDB and QuestieGuideDB[dbKey]) or DEFAULTS[dbKey]
         local steps = LEVEL_RANGE_MAX - LEVEL_RANGE_MIN
         local Label = MinimalSliderWithSteppersMixin.Label
         local formatters = {
@@ -1853,9 +1853,9 @@ local function buildMainFrame()
         slider:RegisterCallback(MinimalSliderWithSteppersMixin.Event.OnValueChanged, function(_, value)
             local v = clampRange(value)
             if not v then return end
-            local cur = WhereToQuestDB and WhereToQuestDB[dbKey]
+            local cur = QuestieGuideDB and QuestieGuideDB[dbKey]
             if cur == v then return end
-            WhereToQuestDB[dbKey] = v
+            QuestieGuideDB[dbKey] = v
             invalidateScan()
             renderList()
         end, slider)
@@ -1889,11 +1889,11 @@ local function buildMainFrame()
         end
     end
 
-    useQuestieCheckbox:SetChecked(WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false)
+    useQuestieCheckbox:SetChecked(QuestieGuideDB and QuestieGuideDB.useQuestieLevelRange and true or false)
     applySliderLock(useQuestieCheckbox:GetChecked())
     useQuestieCheckbox:SetScript("OnClick", function(self)
         local checked = self:GetChecked() and true or false
-        WhereToQuestDB.useQuestieLevelRange = checked
+        QuestieGuideDB.useQuestieLevelRange = checked
         applySliderLock(checked)
         invalidateScan()
         renderList()
@@ -1901,7 +1901,7 @@ local function buildMainFrame()
     frame.useQuestieCheckbox = useQuestieCheckbox
 
     frame.refreshRangeSliders = function()
-        local useQuestie = WhereToQuestDB and WhereToQuestDB.useQuestieLevelRange and true or false
+        local useQuestie = QuestieGuideDB and QuestieGuideDB.useQuestieLevelRange and true or false
         useQuestieCheckbox:SetChecked(useQuestie)
         applySliderLock(useQuestie)
         local below, above = getLevelRange()
@@ -1914,28 +1914,28 @@ local function buildMainFrame()
     -- width on the bottom row) so each dropdown stays wide enough to be
     -- readable inside the default panel width. Opening a dropdown lists its
     -- toggles as checkboxes (`info.isNotRadio` + `info.keepShownOnClick`).
-    -- Quest-tag filters live under `WhereToQuestDB.filters`; display toggles
+    -- Quest-tag filters live under `QuestieGuideDB.filters`; display toggles
     -- live as top-level keys, so each group declares its own get/set.
     local filtersSection = makeSection("Filters")
     local filtersBody = filtersSection.body
 
     local function getFilterValue(key)
-        local f = WhereToQuestDB and WhereToQuestDB.filters
+        local f = QuestieGuideDB and QuestieGuideDB.filters
         if f and f[key] ~= nil then return f[key] and true or false end
         return DEFAULTS.filters[key] and true or false
     end
     local function setFilterValue(key, value)
-        WhereToQuestDB.filters = WhereToQuestDB.filters or {}
-        WhereToQuestDB.filters[key] = value and true or false
+        QuestieGuideDB.filters = QuestieGuideDB.filters or {}
+        QuestieGuideDB.filters[key] = value and true or false
     end
 
     local function getToggleValue(key)
-        local v = WhereToQuestDB and WhereToQuestDB[key]
+        local v = QuestieGuideDB and QuestieGuideDB[key]
         if v == nil then v = DEFAULTS[key] end
         return v and true or false
     end
     local function setToggleValue(key, value)
-        WhereToQuestDB[key] = value and true or false
+        QuestieGuideDB[key] = value and true or false
     end
 
     local FILTER_GROUPS = {
@@ -1983,7 +1983,7 @@ local function buildMainFrame()
 
     local filterDropdowns = {}
     local function buildFilterDropdown(parent, i, group)
-        local dd = CreateFrame("DropdownButton", "WhereToQuestFilterDropdown" .. i, parent, "WowStyle2DropdownTemplate")
+        local dd = CreateFrame("DropdownButton", "QuestieGuideFilterDropdown" .. i, parent, "WowStyle2DropdownTemplate")
         -- Keep the button text fixed at the group title; the multi-select
         -- nature of these dropdowns means we'd otherwise show a long
         -- comma-separated list of every enabled subfilter, which doesn't fit
@@ -2041,10 +2041,10 @@ local function buildMainFrame()
                 rootDescription:CreateRadio(
                     opt.label,
                     function()
-                        return ((WhereToQuestDB and WhereToQuestDB[dbKey]) or DEFAULTS[dbKey]) == opt.value
+                        return ((QuestieGuideDB and QuestieGuideDB[dbKey]) or DEFAULTS[dbKey]) == opt.value
                     end,
                     function()
-                        WhereToQuestDB[dbKey] = opt.value
+                        QuestieGuideDB[dbKey] = opt.value
                         renderList()
                     end)
             end
@@ -2052,8 +2052,8 @@ local function buildMainFrame()
         return dd
     end
 
-    local sortByDropdown = buildSortDropdown(sortRow, "WhereToQuestSortByDropdown", "sortMode", SORT_BY_OPTIONS, "Sort By")
-    local sortDirDropdown = buildSortDropdown(sortRow, "WhereToQuestSortDirDropdown", "sortDir", SORT_DIR_OPTIONS, "Direction")
+    local sortByDropdown = buildSortDropdown(sortRow, "QuestieGuideSortByDropdown", "sortMode", SORT_BY_OPTIONS, "Sort By")
+    local sortDirDropdown = buildSortDropdown(sortRow, "QuestieGuideSortDirDropdown", "sortDir", SORT_DIR_OPTIONS, "Direction")
 
     local function layoutSortRow() layoutDropdownRow({ sortByDropdown, sortDirDropdown }, sortRow) end
     sortRow:HookScript("OnSizeChanged", layoutSortRow)
@@ -2088,7 +2088,7 @@ local function buildMainFrame()
     searchHelp:SetSpacing(LINE_SPACING)
     searchHelp:SetText("Filter by quest name, zone name, or NPC name.")
 
-    local searchBox = CreateFrame("EditBox", "WhereToQuestSearchBox", questsSection.body, "SearchBoxTemplate")
+    local searchBox = CreateFrame("EditBox", "QuestieGuideSearchBox", questsSection.body, "SearchBoxTemplate")
     searchBox:SetHeight(20)
     -- InputBoxVisualTemplate (inherited via SearchBoxTemplate) anchors its
     -- Left border texture at x=-5 from the frame's LEFT, so the visible box
@@ -2197,7 +2197,7 @@ local function buildMainFrame()
     child:HookScript("OnSizeChanged", refreshScrollBar)
 
     frame:HookScript("OnSizeChanged", function(self)
-        WhereToQuestDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
+        QuestieGuideDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
     end)
 
     local resizeGrip = CreateFrame("Button", nil, frame)
@@ -2210,7 +2210,7 @@ local function buildMainFrame()
     resizeGrip:SetScript("OnMouseUp", function() frame:StopMovingOrSizing() end)
 
     -- Lets ESC close the window like a Blizzard panel.
-    tinsert(UISpecialFrames, "WhereToQuestFrame")
+    tinsert(UISpecialFrames, "QuestieGuideFrame")
 
     mainFrame = frame
     return frame
@@ -2275,13 +2275,13 @@ end
 local function setupMinimapButton()
     local LDB = LibStub("LibDataBroker-1.1")
     local LDBIcon = LibStub("LibDBIcon-1.0")
-    if LDBIcon:IsRegistered("Where To Quest?") then
+    if LDBIcon:IsRegistered("Questie Guide") then
         return
     end
 
-    local dataObject = LDB:NewDataObject("Where To Quest?", {
+    local dataObject = LDB:NewDataObject("Questie Guide", {
         type = "launcher",
-        text = "Where To Quest?",
+        text = "Questie Guide",
         icon = "Interface\\Icons\\INV_Misc_Map02",
         OnClick = function(_, button)
             if button == "LeftButton" then
@@ -2292,18 +2292,18 @@ local function setupMinimapButton()
             end
         end,
         OnTooltipShow = function(tt)
-            tt:AddLine("Where To Quest?")
+            tt:AddLine("Questie Guide")
             tt:AddLine("|cffffd200Left-click|r to open the quest panel.", 1, 1, 1)
         end,
     })
 
     -- Migrate legacy angle field to LibDBIcon's minimapPos.
-    if WhereToQuestDB.minimap.angle and not WhereToQuestDB.minimap.minimapPos then
-        WhereToQuestDB.minimap.minimapPos = WhereToQuestDB.minimap.angle
+    if QuestieGuideDB.minimap.angle and not QuestieGuideDB.minimap.minimapPos then
+        QuestieGuideDB.minimap.minimapPos = QuestieGuideDB.minimap.angle
     end
-    WhereToQuestDB.minimap.angle = nil
+    QuestieGuideDB.minimap.angle = nil
 
-    LDBIcon:Register("Where To Quest?", dataObject, WhereToQuestDB.minimap)
+    LDBIcon:Register("Questie Guide", dataObject, QuestieGuideDB.minimap)
 end
 
 local refreshTimer
@@ -2318,6 +2318,258 @@ local function scheduleRefresh()
         refreshTimer = nil
         renderList()
     end)
+end
+
+-- Item tooltip: list every quest the hovered item appears in -- as an item
+-- objective, a spell-objective item, a quest-provided item (sourceItemId), or
+-- a required source item -- styled with Questie's own quest-name rendering so
+-- the lines read as one feature with Questie's tooltip block.
+--
+-- Questie natively renders active-log quests (with live objective progress)
+-- and "starts a quest" lines on item tooltips, so both are skipped here: this
+-- section covers the quests Questie stays silent about -- not yet accepted,
+-- prereq-locked, outleveled, or already turned in.
+
+local TOOLTIP_LINE_CAP = 10
+local INDEX_BUILD_DELAY = 5
+
+-- itemId -> array of quest ids referencing the item. Built once per session
+-- from Questie's compiled quest DB; the DB is static, so no invalidation.
+local itemQuestIndex
+local indexBuildScheduled = false
+
+local ITEM_QUEST_KEYS = { "objectives", "sourceItemId", "requiredSourceItems" }
+
+local function buildItemQuestIndex()
+    if itemQuestIndex then
+        return
+    end
+    if not loadQuestie() then
+        -- Questie hasn't compiled its DB yet; let a later hover reschedule.
+        indexBuildScheduled = false
+        return
+    end
+    local index = {}
+    local function add(itemId, questId)
+        if type(itemId) ~= "number" or itemId <= 0 then
+            return
+        end
+        local list = index[itemId]
+        if not list then
+            list = {}
+            index[itemId] = list
+        end
+        -- Each quest is processed in one go, so a repeat of the previous
+        -- entry is the same quest referencing the item in a second role.
+        if list[#list] ~= questId then
+            list[#list + 1] = questId
+        end
+    end
+    for questId in pairs(QuestieDB.QuestPointers) do
+        local fields = QuestieDB.QueryQuest(questId, ITEM_QUEST_KEYS)
+        if fields then
+            local objectives = fields[1]
+            if type(objectives) == "table" then
+                if type(objectives[3]) == "table" then
+                    for _, objective in ipairs(objectives[3]) do
+                        add((type(objective) == "table" and objective[1]) or objective, questId)
+                    end
+                end
+                if type(objectives[6]) == "table" then
+                    for _, objective in ipairs(objectives[6]) do
+                        if type(objective) == "table" then
+                            add(objective[3], questId)
+                        end
+                    end
+                end
+            end
+            add(fields[2], questId)
+            if type(fields[3]) == "table" then
+                for _, itemId in ipairs(fields[3]) do
+                    add(itemId, questId)
+                end
+            end
+        end
+    end
+    itemQuestIndex = index
+end
+
+local function scheduleItemQuestIndexBuild()
+    if indexBuildScheduled or itemQuestIndex then
+        return
+    end
+    indexBuildScheduled = true
+    -- A few seconds after login so Questie has finished compiling its DB and
+    -- the player isn't sharing a frame with the quest-DB walk.
+    C_Timer.After(INDEX_BUILD_DELAY, buildItemQuestIndex)
+end
+
+-- Questie-styled quest title honoring the user's Questie tooltip settings.
+-- "(Complete)" uses Questie's green so it matches Questie's own state badge.
+local function questTooltipLine(questId, completed)
+    local line
+    if QuestieLib and QuestieLib.GetColoredQuestName then
+        local profile = _G.Questie and _G.Questie.db and _G.Questie.db.profile
+        local showLevel = (profile == nil) or profile.enableTooltipsQuestLevel
+        local ok, colored = pcall(QuestieLib.GetColoredQuestName, QuestieLib, questId, showLevel, false)
+        if ok then
+            line = colored
+        end
+    end
+    if not line then
+        line = getQuestName(questId)
+    end
+    if completed then
+        line = line .. " " .. COLOR.GREEN .. "(Complete)|r"
+    end
+    return line
+end
+
+-- Quests sharing a name (one copy per capital city etc.) collapse to a single
+-- line; a not-yet-completed copy wins over a completed one so the player
+-- never sees a misleading "(Complete)" while another copy is still open.
+local function collectItemQuestEntries(itemId)
+    if not itemQuestIndex then
+        scheduleItemQuestIndexBuild()
+        return nil
+    end
+    local questIds = itemQuestIndex[itemId]
+    if not questIds then
+        return nil
+    end
+
+    local activeLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
+    -- The quest this item starts is Questie's to render (icon + name line);
+    -- listing it here too would mention the same quest twice.
+    local startQuestId = QuestieDB.QueryItemSingle and QuestieDB.QueryItemSingle(itemId, "startQuest")
+    local byName = {}
+    for _, questId in ipairs(questIds) do
+        if questId ~= startQuestId and not activeLog[questId] and matchesPlayerFaction(questId) then
+            local name = getQuestName(questId)
+            local entry = {
+                questId = questId,
+                level = QuestieDB.QueryQuestSingle(questId, "questLevel") or 0,
+                completed = isQuestCompleted(questId),
+            }
+            local kept = byName[name]
+            if not kept
+                or (kept.completed and not entry.completed)
+                or (kept.completed == entry.completed and entry.level < kept.level) then
+                byName[name] = entry
+            end
+        end
+    end
+
+    local entries = {}
+    for _, entry in pairs(byName) do
+        entries[#entries + 1] = entry
+    end
+    table.sort(entries, function(a, b)
+        if a.completed ~= b.completed then
+            return not a.completed
+        end
+        if a.level ~= b.level then
+            return a.level < b.level
+        end
+        return a.questId < b.questId
+    end)
+    return entries
+end
+
+-- Returns true when at least one line was appended so the caller can resize
+-- the tooltip. A blank separator plus a grey header group our lines apart
+-- from Questie's active-quest block above.
+local function appendItemQuestLines(tooltip, itemId)
+    if not loadQuestie() then
+        return false
+    end
+    local entries = collectItemQuestEntries(itemId)
+    if not entries or #entries == 0 then
+        return false
+    end
+
+    tooltip:AddLine(" ")
+    tooltip:AddLine(COLOR.GREY .. "Related quests:|r")
+    local shown = 0
+    for _, entry in ipairs(entries) do
+        if shown >= TOOLTIP_LINE_CAP then
+            break
+        end
+        tooltip:AddLine(questTooltipLine(entry.questId, entry.completed), 1, 1, 1, true)
+        shown = shown + 1
+    end
+    if #entries > shown then
+        tooltip:AddLine(COLOR.GREY .. string.format("... and %d more", #entries - shown) .. "|r", 1, 1, 1, true)
+    end
+    return true
+end
+
+local function extractItemIdFromTooltip(tooltip)
+    if not tooltip.GetItem then
+        return nil
+    end
+    local _, link = tooltip:GetItem()
+    if not link then
+        return nil
+    end
+    return tonumber(link:match("item:(%d+)"))
+end
+
+-- Per-tooltip guards keyed by tooltip frame so GameTooltip and ItemRefTooltip
+-- track their state independently. Weak keys so tooltips can still be GC'd.
+local tooltipLastItem = setmetatable({}, { __mode = "k" })
+-- NumLines() snapshot taken right after we appended our lines. On the next
+-- OnTooltipSetItem fire, if NumLines is now smaller, the tooltip was rebuilt
+-- under us (e.g. by an async GET_ITEM_INFO_RECEIVED refresh) and our lines
+-- need to be re-added; without this check they flicker away for ~200ms.
+local tooltipLastLineCount = setmetatable({}, { __mode = "k" })
+
+local function onItemTooltipShow(self)
+    if self.IsForbidden and self:IsForbidden() then
+        return
+    end
+    if not self.NumLines then
+        return
+    end
+    local itemId = extractItemIdFromTooltip(self)
+    if not itemId then
+        return
+    end
+
+    local sameItem = tooltipLastItem[self] == itemId
+    local lastCount = tooltipLastLineCount[self]
+    if sameItem and lastCount and self:NumLines() >= lastCount then
+        -- Our lines are still in place, nothing to do.
+        return
+    end
+
+    tooltipLastItem[self] = itemId
+    local added = appendItemQuestLines(self, itemId)
+    tooltipLastLineCount[self] = self:NumLines()
+    if added then
+        self:Show()
+    end
+end
+
+local function onItemTooltipCleared(self)
+    tooltipLastItem[self] = nil
+    tooltipLastLineCount[self] = nil
+end
+
+local tooltipHooksInstalled = false
+local function installTooltipHooks()
+    if tooltipHooksInstalled then
+        return
+    end
+    if GameTooltip then
+        GameTooltip:HookScript("OnTooltipSetItem", onItemTooltipShow)
+        GameTooltip:HookScript("OnHide", onItemTooltipCleared)
+    end
+    if ItemRefTooltip then
+        ItemRefTooltip:HookScript("OnTooltipSetItem", onItemTooltipShow)
+        ItemRefTooltip:HookScript("OnHide", onItemTooltipCleared)
+    end
+    tooltipHooksInstalled = true
 end
 
 local loader = CreateFrame("Frame")
@@ -2336,64 +2588,66 @@ loader:SetScript("OnEvent", function(self, event, name)
         return
     end
     if event == "ADDON_LOADED" and name == ADDON_NAME then
-        if type(WhereToQuestDB) ~= "table" then
-            WhereToQuestDB = {}
+        if type(QuestieGuideDB) ~= "table" then
+            QuestieGuideDB = {}
         end
-        WhereToQuestDB.minBelow = nil
-        WhereToQuestDB.maxAbove = nil
-        WhereToQuestDB.levelBelow = clampRange(WhereToQuestDB.levelBelow) or DEFAULTS.levelBelow
-        WhereToQuestDB.levelAbove = clampRange(WhereToQuestDB.levelAbove) or DEFAULTS.levelAbove
-        if type(WhereToQuestDB.useQuestieLevelRange) ~= "boolean" then
-            WhereToQuestDB.useQuestieLevelRange = DEFAULTS.useQuestieLevelRange
+        QuestieGuideDB.minBelow = nil
+        QuestieGuideDB.maxAbove = nil
+        QuestieGuideDB.levelBelow = clampRange(QuestieGuideDB.levelBelow) or DEFAULTS.levelBelow
+        QuestieGuideDB.levelAbove = clampRange(QuestieGuideDB.levelAbove) or DEFAULTS.levelAbove
+        if type(QuestieGuideDB.useQuestieLevelRange) ~= "boolean" then
+            QuestieGuideDB.useQuestieLevelRange = DEFAULTS.useQuestieLevelRange
         end
         local validSort = false
         for _, opt in ipairs(SORT_BY_OPTIONS) do
-            if WhereToQuestDB.sortMode == opt.value then
+            if QuestieGuideDB.sortMode == opt.value then
                 validSort = true
                 break
             end
         end
         if not validSort then
-            WhereToQuestDB.sortMode = DEFAULTS.sortMode
+            QuestieGuideDB.sortMode = DEFAULTS.sortMode
         end
         local validDir = false
         for _, opt in ipairs(SORT_DIR_OPTIONS) do
-            if WhereToQuestDB.sortDir == opt.value then
+            if QuestieGuideDB.sortDir == opt.value then
                 validDir = true
                 break
             end
         end
         if not validDir then
-            WhereToQuestDB.sortDir = DEFAULTS.sortDir
+            QuestieGuideDB.sortDir = DEFAULTS.sortDir
         end
-        if type(WhereToQuestDB.filters) ~= "table" then
-            WhereToQuestDB.filters = {}
+        if type(QuestieGuideDB.filters) ~= "table" then
+            QuestieGuideDB.filters = {}
         end
         for key, defaultOn in pairs(DEFAULTS.filters) do
-            if type(WhereToQuestDB.filters[key]) ~= "boolean" then
-                WhereToQuestDB.filters[key] = defaultOn
+            if type(QuestieGuideDB.filters[key]) ~= "boolean" then
+                QuestieGuideDB.filters[key] = defaultOn
             end
         end
-        WhereToQuestDB.showNpcName = nil
-        WhereToQuestDB.showCoords = nil
-        if type(WhereToQuestDB.pinCurrentZone) ~= "boolean" then
-            WhereToQuestDB.pinCurrentZone = DEFAULTS.pinCurrentZone
+        QuestieGuideDB.showNpcName = nil
+        QuestieGuideDB.showCoords = nil
+        if type(QuestieGuideDB.pinCurrentZone) ~= "boolean" then
+            QuestieGuideDB.pinCurrentZone = DEFAULTS.pinCurrentZone
         end
-        if type(WhereToQuestDB.frameSize) ~= "table" then
-            WhereToQuestDB.frameSize = { w = DEFAULTS.frameSize.w, h = DEFAULTS.frameSize.h }
+        if type(QuestieGuideDB.frameSize) ~= "table" then
+            QuestieGuideDB.frameSize = { w = DEFAULTS.frameSize.w, h = DEFAULTS.frameSize.h }
         end
-        if type(WhereToQuestDB.zoneCollapsed) ~= "table" then
-            WhereToQuestDB.zoneCollapsed = {}
+        if type(QuestieGuideDB.zoneCollapsed) ~= "table" then
+            QuestieGuideDB.zoneCollapsed = {}
         end
-        if type(WhereToQuestDB.groupCollapsed) ~= "table" then
-            WhereToQuestDB.groupCollapsed = {}
+        if type(QuestieGuideDB.groupCollapsed) ~= "table" then
+            QuestieGuideDB.groupCollapsed = {}
         end
-        if type(WhereToQuestDB.minimap) ~= "table" then
-            WhereToQuestDB.minimap = { hide = false, minimapPos = 215 }
+        if type(QuestieGuideDB.minimap) ~= "table" then
+            QuestieGuideDB.minimap = { hide = false, minimapPos = 215 }
         end
-        WhereToQuestDB.showHidden = nil
-        WhereToQuestDB.hiddenQuests = nil
+        QuestieGuideDB.showHidden = nil
+        QuestieGuideDB.hiddenQuests = nil
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
+        installTooltipHooks()
+        scheduleItemQuestIndexBuild()
     end
 end)
