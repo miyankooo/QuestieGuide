@@ -15,7 +15,7 @@ local DEFAULTS = {
     },
     pinCurrentZone = true,
     framePos = nil,
-    frameSize = { w = 360, h = 620 },
+    frameSize = { w = 680, h = 620 },
     zoneCollapsed = {},
     groupCollapsed = {},
     minimap = { hide = false, minimapPos = 215 },
@@ -56,8 +56,13 @@ local SPACING = {
     LG = 24,
 }
 
-local FRAME_WIDTH = 360
+local FRAME_WIDTH = 680
 local FRAME_HEIGHT = 620
+
+-- Split view: fixed-width options pane left, quest list fills the right pane.
+local OPTIONS_PANE_WIDTH = 260
+local PANE_GAP = SPACING.MD
+local FRAME_MIN_WIDTH = 640
 
 -- Outer frame padding and section rhythm.
 local PAD_X = SPACING.MD
@@ -69,13 +74,8 @@ local SCROLLBAR_RESERVE = SPACING.LG
 local SECTION_INNER_PAD = 12     -- inner padding for nested section boxes.
 local SECTION_LABEL_LIFT = 7     -- lift of section label above its box's top edge.
 
--- Slider / dropdown alignment within a row. The "edge" margin and "center gap"
--- mirror the existing slider layout so dropdown rows visually match slider
--- rows. The new Menu API dropdowns are sized directly via SetWidth, so the
--- old UIDROPDOWNMENU_DEFAULT_WIDTH_PADDING math is no longer needed.
+-- Options rows: sliders and dropdowns fill the pane width and stack vertically.
 local ROW_EDGE_PAD = 0
-local SLIDER_CENTER_HALF_GAP = 8           -- each slider sits this far from the row's centerline.
-local DROPDOWN_VISIBLE_GAP = SLIDER_CENTER_HALF_GAP * 2  -- visible gap between adjacent dropdown frames (16, matching the sliders' total center gap).
 local DROPDOWN_ROW_H = 28                  -- vertical room a dropdown row occupies.
 
 -- List rhythm (rows use the 4px sub-grid for density).
@@ -1664,28 +1664,6 @@ local function buildTitleHeader(parent, text)
     return mid
 end
 
--- Lays out N WowStyle2DropdownTemplate dropdowns side by side inside `row`,
--- flush with the row edges, with DROPDOWN_VISIBLE_GAP between adjacent
--- dropdowns. The section body already provides symmetric padding around the
--- row, so no extra edge inset is added here. Call from row:HookScript(
--- "OnSizeChanged", ...) so the row stays responsive to frame resizes.
-local function layoutDropdownRow(dropdowns, row)
-    local n = #dropdowns
-    if n == 0 then return end
-    local w = row:GetWidth()
-    if w <= 1 then return end
-
-    local frameW = math.max(80, (w - (n - 1) * DROPDOWN_VISIBLE_GAP) / n)
-
-    local x = 0
-    for _, d in ipairs(dropdowns) do
-        d:SetWidth(frameW)
-        d:ClearAllPoints()
-        d:SetPoint("TOPLEFT", row, "TOPLEFT", x, 0)
-        x = x + frameW + DROPDOWN_VISIBLE_GAP
-    end
-end
-
 -- Nested section box (matches AceGUI InlineGroup): flat dark bg + tooltip border.
 local function buildSection(parent, labelText)
     local section = CreateFrame("Frame", nil, parent, "BackdropTemplate")
@@ -1717,15 +1695,15 @@ end
 -- ------------
 -- The frame contains exactly one `content` container, inset from the frame by
 -- PAD_X on the sides, PAD_TOP at the top (clears the title banner), PAD_BOTTOM
--- at the bottom. Every section is a `buildSection` box (a bordered child with
--- a floating label and an inner `body` frame) and is anchored via a single
--- helper, `stack(element, gap)`, which pins TOPLEFT to the previous element's
--- BOTTOMLEFT and RIGHT to `content`'s RIGHT. Each section determines its own
--- height; vertical position follows automatically.
+-- at the bottom. Content splits into two panes: `optionsPane`, a fixed-width
+-- column on the left, and `listPane` filling the rest. Every option section is
+-- a `buildSection` box (a bordered child with a floating label and an inner
+-- `body` frame) stacked inside `optionsPane` via `stack(element, gap)`, which
+-- pins TOPLEFT to the previous element's BOTTOMLEFT and RIGHT to the pane's
+-- RIGHT. Each section determines its own height; vertical position follows.
 --
--- The quest list lives in the final section (`questsSection`), which is
--- anchored both TOP (below the previous section) and BOTTOM (to content), so
--- it fills the remaining vertical space regardless of frame size.
+-- The quest list lives in `questsSection`, which fills `listPane` for the
+-- frame's full content height regardless of frame size.
 
 local function buildMainFrame()
     if mainFrame then
@@ -1734,15 +1712,18 @@ local function buildMainFrame()
 
     local frame = CreateFrame("Frame", "QuestieGuideFrame", UIParent, "BackdropTemplate")
     local savedSize = (QuestieGuideDB and QuestieGuideDB.frameSize) or DEFAULTS.frameSize
-    frame:SetSize(savedSize.w or FRAME_WIDTH, savedSize.h or FRAME_HEIGHT)
+
+    -- Sizes saved by the old single-column layout are too narrow for two panes.
+    local savedWidth = math.max(savedSize.w or FRAME_WIDTH, FRAME_MIN_WIDTH)
+    frame:SetSize(savedWidth, savedSize.h or FRAME_HEIGHT)
     frame:SetFrameStrata("DIALOG")
     frame:SetMovable(true)
     frame:SetResizable(true)
     if frame.SetResizeBounds then
-        frame:SetResizeBounds(320, 380, 720, 960)
+        frame:SetResizeBounds(FRAME_MIN_WIDTH, 420, 1200, 960)
     elseif frame.SetMinResize then
-        frame:SetMinResize(320, 380)
-        frame:SetMaxResize(720, 960)
+        frame:SetMinResize(FRAME_MIN_WIDTH, 420)
+        frame:SetMaxResize(1200, 960)
     end
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
@@ -1774,27 +1755,38 @@ local function buildMainFrame()
     content:SetPoint("TOPLEFT", frame, "TOPLEFT", PAD_X, -PAD_TOP)
     content:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -PAD_X, PAD_BOTTOM)
 
+    -- Fixed-width options column on the left.
+    local optionsPane = CreateFrame("Frame", nil, content)
+    optionsPane:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+    optionsPane:SetPoint("BOTTOMLEFT", content, "BOTTOMLEFT", 0, 0)
+    optionsPane:SetWidth(OPTIONS_PANE_WIDTH)
+
+    -- Quest list column fills the remaining width.
+    local listPane = CreateFrame("Frame", nil, content)
+    listPane:SetPoint("TOPLEFT", optionsPane, "TOPRIGHT", PANE_GAP, 0)
+    listPane:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 0)
+
     -- Stacks the element below the previous one with a chosen gap. The first
-    -- element (prev == nil) docks to content's top-left.
+    -- element (prev == nil) docks to the options pane's top-left.
     local lastInStack
     local function stack(element, gap)
         element:ClearAllPoints()
         if lastInStack then
             element:SetPoint("TOPLEFT", lastInStack, "BOTTOMLEFT", 0, -(gap or SECTION_GAP))
         else
-            element:SetPoint("TOPLEFT", content, "TOPLEFT", 0, 0)
+            element:SetPoint("TOPLEFT", optionsPane, "TOPLEFT", 0, 0)
         end
-        element:SetPoint("RIGHT", content, "RIGHT", 0, 0)
+        element:SetPoint("RIGHT", optionsPane, "RIGHT", 0, 0)
         lastInStack = element
     end
 
-    -- Creates a nested section box, stacks it inside `content`, and returns
+    -- Creates a nested section box, stacks it inside `optionsPane`, and returns
     -- the section frame so callers can parent widgets to `section.body` and
     -- set the section's height once its content is sized. Nil gap falls back
     -- to `stack`'s SECTION_GAP default; the first section ignores the gap
     -- because there is no previous element to anchor below.
     local function makeSection(text, gap)
-        local section = buildSection(content, text)
+        local section = buildSection(optionsPane, text)
         stack(section, gap)
         return section
     end
@@ -1806,11 +1798,12 @@ local function buildMainFrame()
     local RANGE_CHECKBOX_HEIGHT = 22
     local RANGE_CHECKBOX_GAP = 6
     -- MinimalSliderWithSteppersTemplate is a Frame at 40px tall (top label,
-    -- track + steppers, min/max labels). Section height clears checkbox + gap
-    -- + slider frame + a small bottom margin.
+    -- track + steppers, min/max labels). The sliders stack vertically because
+    -- the options pane is too narrow for a side-by-side pair.
     local RANGE_SLIDER_FRAME_H = 40
+    local RANGE_SLIDER_GAP = SPACING.SM
     local RANGE_SLIDER_TOP_OFFSET = RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP
-    local RANGE_HEIGHT_EXPANDED = SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP + RANGE_SLIDER_FRAME_H + SPACING.SM
+    local RANGE_HEIGHT_EXPANDED = SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT + RANGE_CHECKBOX_GAP + RANGE_SLIDER_FRAME_H * 2 + RANGE_SLIDER_GAP + SPACING.SM
     local RANGE_HEIGHT_COLLAPSED = SECTION_INNER_PAD * 2 + RANGE_CHECKBOX_HEIGHT
     rangeSection:SetHeight(RANGE_HEIGHT_EXPANDED)
     local rangeRow = rangeSection.body
@@ -1864,11 +1857,12 @@ local function buildMainFrame()
 
     local belowSlider = buildRangeSlider(rangeRow, "Quest Level Below: -", "levelBelow")
     belowSlider:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", ROW_EDGE_PAD, -RANGE_SLIDER_TOP_OFFSET)
-    belowSlider:SetPoint("TOPRIGHT", rangeRow, "TOP", -SLIDER_CENTER_HALF_GAP, -RANGE_SLIDER_TOP_OFFSET)
+    belowSlider:SetPoint("TOPRIGHT", rangeRow, "TOPRIGHT", -ROW_EDGE_PAD, -RANGE_SLIDER_TOP_OFFSET)
 
+    local aboveSliderOffset = RANGE_SLIDER_TOP_OFFSET + RANGE_SLIDER_FRAME_H + RANGE_SLIDER_GAP
     local aboveSlider = buildRangeSlider(rangeRow, "Quest Level Above: +", "levelAbove")
-    aboveSlider:SetPoint("TOPLEFT", rangeRow, "TOP", SLIDER_CENTER_HALF_GAP, -RANGE_SLIDER_TOP_OFFSET)
-    aboveSlider:SetPoint("TOPRIGHT", rangeRow, "TOPRIGHT", -ROW_EDGE_PAD, -RANGE_SLIDER_TOP_OFFSET)
+    aboveSlider:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", ROW_EDGE_PAD, -aboveSliderOffset)
+    aboveSlider:SetPoint("TOPRIGHT", rangeRow, "TOPRIGHT", -ROW_EDGE_PAD, -aboveSliderOffset)
 
     frame.belowSlider = belowSlider
     frame.aboveSlider = aboveSlider
@@ -1909,13 +1903,11 @@ local function buildMainFrame()
         aboveSlider:SetValue(above)
     end
 
-    -- 2) Filters section: three native multi-select dropdowns laid out in a
-    -- 2+1 grid (Availability + Quest Types on the top row, Zone & NPCs full
-    -- width on the bottom row) so each dropdown stays wide enough to be
-    -- readable inside the default panel width. Opening a dropdown lists its
-    -- toggles as checkboxes (`info.isNotRadio` + `info.keepShownOnClick`).
-    -- Quest-tag filters live under `QuestieGuideDB.filters`; display toggles
-    -- live as top-level keys, so each group declares its own get/set.
+    -- 2) Filters section: three native multi-select dropdowns stacked one per
+    -- row so each stays full width inside the narrow options pane. Opening a
+    -- dropdown lists its toggles as checkboxes. Quest-tag filters live under
+    -- `QuestieGuideDB.filters`; display toggles live as top-level keys, so
+    -- each group declares its own get/set.
     local filtersSection = makeSection("Filters")
     local filtersBody = filtersSection.body
 
@@ -1969,17 +1961,7 @@ local function buildMainFrame()
         },
     }
 
-    -- Two row frames inside the section body so the dropdowns can flow as 2+1.
     local FILTER_ROW_GAP = SPACING.SM
-    local filtersTopRow = CreateFrame("Frame", nil, filtersBody)
-    filtersTopRow:SetHeight(DROPDOWN_ROW_H)
-    filtersTopRow:SetPoint("TOPLEFT", filtersBody, "TOPLEFT", 0, 0)
-    filtersTopRow:SetPoint("RIGHT", filtersBody, "RIGHT", 0, 0)
-
-    local filtersBottomRow = CreateFrame("Frame", nil, filtersBody)
-    filtersBottomRow:SetHeight(DROPDOWN_ROW_H)
-    filtersBottomRow:SetPoint("TOPLEFT", filtersTopRow, "BOTTOMLEFT", 0, -FILTER_ROW_GAP)
-    filtersBottomRow:SetPoint("RIGHT", filtersBody, "RIGHT", 0, 0)
 
     local filterDropdowns = {}
     local function buildFilterDropdown(parent, i, group)
@@ -2005,18 +1987,17 @@ local function buildMainFrame()
         return dd
     end
 
-    filterDropdowns[1] = buildFilterDropdown(filtersTopRow, 1, FILTER_GROUPS[1])
-    filterDropdowns[2] = buildFilterDropdown(filtersTopRow, 2, FILTER_GROUPS[2])
-    filterDropdowns[3] = buildFilterDropdown(filtersBottomRow, 3, FILTER_GROUPS[3])
+    -- One full-width dropdown per row; anchors size the frames, no width math.
+    for i, group in ipairs(FILTER_GROUPS) do
+        local dd = buildFilterDropdown(filtersBody, i, group)
+        local yOffset = (i - 1) * (DROPDOWN_ROW_H + FILTER_ROW_GAP)
+        dd:SetPoint("TOPLEFT", filtersBody, "TOPLEFT", 0, -yOffset)
+        dd:SetPoint("RIGHT", filtersBody, "RIGHT", 0, 0)
+        filterDropdowns[i] = dd
+    end
     frame.filterDropdowns = filterDropdowns
 
-    local function layoutFilterRows()
-        layoutDropdownRow({ filterDropdowns[1], filterDropdowns[2] }, filtersTopRow)
-        layoutDropdownRow({ filterDropdowns[3] }, filtersBottomRow)
-    end
-    filtersTopRow:HookScript("OnSizeChanged", layoutFilterRows)
-
-    filtersSection:SetHeight(DROPDOWN_ROW_H * 2 + FILTER_ROW_GAP + SECTION_INNER_PAD * 2)
+    filtersSection:SetHeight(DROPDOWN_ROW_H * #FILTER_GROUPS + FILTER_ROW_GAP * (#FILTER_GROUPS - 1) + SECTION_INNER_PAD * 2)
 
     -- The dropdowns reread their `checked` state from the DB each time the
     -- menu opens (init runs per-open), so no per-checkbox refresh is needed.
@@ -2024,10 +2005,11 @@ local function buildMainFrame()
     frame.refreshFilters = function() end
     frame.refreshToggles = function() end
 
-    -- 3) Sorting section: sort-by dropdown + direction dropdown, side by side
-    -- filling the row, matching the Quest Level Range sliders' layout.
+    -- 3) Sorting section: sort-by dropdown above direction dropdown, each
+    -- full width, matching the filters' stacked layout.
+    local SORT_ROW_GAP = SPACING.SM
     local sortingSection = makeSection("Sorting")
-    sortingSection:SetHeight(DROPDOWN_ROW_H + SECTION_INNER_PAD * 2)
+    sortingSection:SetHeight(DROPDOWN_ROW_H * 2 + SORT_ROW_GAP + SECTION_INNER_PAD * 2)
     local sortRow = sortingSection.body
 
     -- Builds a single-select dropdown that reads/writes one DB key. The
@@ -2053,10 +2035,12 @@ local function buildMainFrame()
     end
 
     local sortByDropdown = buildSortDropdown(sortRow, "QuestieGuideSortByDropdown", "sortMode", SORT_BY_OPTIONS, "Sort By")
-    local sortDirDropdown = buildSortDropdown(sortRow, "QuestieGuideSortDirDropdown", "sortDir", SORT_DIR_OPTIONS, "Direction")
+    sortByDropdown:SetPoint("TOPLEFT", sortRow, "TOPLEFT", 0, 0)
+    sortByDropdown:SetPoint("RIGHT", sortRow, "RIGHT", 0, 0)
 
-    local function layoutSortRow() layoutDropdownRow({ sortByDropdown, sortDirDropdown }, sortRow) end
-    sortRow:HookScript("OnSizeChanged", layoutSortRow)
+    local sortDirDropdown = buildSortDropdown(sortRow, "QuestieGuideSortDirDropdown", "sortDir", SORT_DIR_OPTIONS, "Direction")
+    sortDirDropdown:SetPoint("TOPLEFT", sortRow, "TOPLEFT", 0, -(DROPDOWN_ROW_H + SORT_ROW_GAP))
+    sortDirDropdown:SetPoint("RIGHT", sortRow, "RIGHT", 0, 0)
 
     frame.sortByDropdown = sortByDropdown
     frame.sortDirDropdown = sortDirDropdown
@@ -2068,13 +2052,10 @@ local function buildMainFrame()
     end
 
     -- 4) Quests section: search row (label + helper + edit box) at the top,
-    -- then toolbar and scroll list. Anchored top (below previous section) AND
-    -- bottom (to content's bottom) so it fills the remainder.
-    local questsSection = buildSection(content, "Quests")
-    questsSection:ClearAllPoints()
-    questsSection:SetPoint("TOPLEFT", lastInStack, "BOTTOMLEFT", 0, -SECTION_GAP)
-    questsSection:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 0)
-    lastInStack = questsSection
+    -- then the Collapse All button and scroll list. Fills the entire right pane.
+    local questsSection = buildSection(listPane, "Quests")
+    questsSection:SetPoint("TOPLEFT", listPane, "TOPLEFT", 0, 0)
+    questsSection:SetPoint("BOTTOMRIGHT", listPane, "BOTTOMRIGHT", 0, 0)
 
     local searchLabel = questsSection.body:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     searchLabel:SetPoint("TOPLEFT", questsSection.body, "TOPLEFT", 0, 0)
@@ -2106,24 +2087,12 @@ local function buildMainFrame()
     end)
     frame.searchBox = searchBox
 
-    local toolbar = CreateFrame("Frame", nil, questsSection.body)
-    toolbar:SetHeight(SPACING.LG)
-    toolbar:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", 0, -ELEMENT_GAP)
-    toolbar:SetPoint("RIGHT", questsSection.body, "RIGHT", 0, 0)
-
-    local refreshButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
-    refreshButton:SetSize(SPACING.LG * 3 + SPACING.SM, SPACING.LG)
-    refreshButton:SetPoint("RIGHT", toolbar, "RIGHT", 0, 0)
-    refreshButton:SetText("Refresh")
-    refreshButton:SetScript("OnClick", function()
-        invalidateScan()
-        renderList()
-    end)
-    frame.refreshButton = refreshButton
-
-    local toggleAllButton = CreateFrame("Button", nil, toolbar, "UIPanelButtonTemplate")
+    -- Collapse All sits directly under the search box. The search box frame is
+    -- inset +5 from the body's left to line its texture up with the body edge,
+    -- so pull the button back -5 to align its left with the visible search bar.
+    local toggleAllButton = CreateFrame("Button", nil, questsSection.body, "UIPanelButtonTemplate")
     toggleAllButton:SetSize(SPACING.LG * 5, SPACING.LG)
-    toggleAllButton:SetPoint("RIGHT", refreshButton, "LEFT", -ELEMENT_GAP, 0)
+    toggleAllButton:SetPoint("TOPLEFT", searchBox, "BOTTOMLEFT", -5, -ELEMENT_GAP)
     toggleAllButton:SetText("Collapse All")
     toggleAllButton:SetScript("OnClick", function()
         local zc = getZoneCollapsed()
@@ -2146,7 +2115,7 @@ local function buildMainFrame()
     frame.toggleAllButton = toggleAllButton
 
     local scroll = CreateFrame("ScrollFrame", nil, questsSection.body)
-    scroll:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -ELEMENT_GAP)
+    scroll:SetPoint("TOPLEFT", toggleAllButton, "BOTTOMLEFT", 5, -ELEMENT_GAP)
     scroll:SetPoint("BOTTOMRIGHT", questsSection.body, "BOTTOMRIGHT", -SCROLLBAR_RESERVE, 0)
 
     -- Scroll child: explicit width via SetSize, kept in sync with the scroll
