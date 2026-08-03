@@ -631,6 +631,7 @@ local function scanQuestsByZone()
                 id = questId,
                 level = level,
                 name = getQuestName(questId),
+                -- Questie's QuestXP already applies the vanilla level reduction, so grey log quests contribute their real reduced XP.
                 xp = getQuestXp(questId),
                 tag = getQuestTagLabel(questId),
             }
@@ -2053,6 +2054,29 @@ local function toggleFrame()
     end
 end
 
+-- /qg toggles the panel even when the minimap button is hidden; /qg reset rescues a window dragged off-screen.
+SLASH_QUESTIEGUIDE1 = "/questieguide"
+SLASH_QUESTIEGUIDE2 = "/qg"
+SlashCmdList["QUESTIEGUIDE"] = function(msg)
+    local command = strtrim(string.lower(msg or ""))
+    if command == "reset" then
+        QuestieGuideDB.framePos = nil
+        QuestieGuideDB.frameSize = { w = DEFAULTS.frameSize.w, h = DEFAULTS.frameSize.h }
+        if mainFrame then
+            mainFrame:SetSize(DEFAULTS.frameSize.w, DEFAULTS.frameSize.h)
+            mainFrame:ClearAllPoints()
+            mainFrame:SetPoint("CENTER")
+        end
+        print(INTRO_PREFIX .. "Window position and size reset.")
+        return
+    end
+    if not loadQuestie() then
+        print(INTRO_PREFIX .. "Questie has not finished loading yet. Try again in a moment.")
+        return
+    end
+    toggleFrame()
+end
+
 -- Registers the launcher with LibDBIcon so any addon-manager UI (CleanUI's edge-snap refresh, Titan Panel, ChocolateBar, etc.) can manage it consistently.
 local function setupMinimapButton()
     local LDB = LibStub("LibDataBroker-1.1")
@@ -2336,14 +2360,14 @@ end
 local loader = CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED")
 loader:RegisterEvent("PLAYER_LOGIN")
-loader:RegisterEvent("QUEST_LOG_UPDATE")
 loader:RegisterEvent("PLAYER_LEVEL_UP")
 loader:RegisterEvent("QUEST_ACCEPTED")
 loader:RegisterEvent("QUEST_REMOVED")
 loader:RegisterEvent("QUEST_TURNED_IN")
 loader:SetScript("OnEvent", function(self, event, name)
+    -- QUEST_LOG_UPDATE is deliberately absent: it fires on every objective tick and each fire costs a full DB rescan, while accept/remove/turn-in/level-up already cover everything that changes zone bucketing.
     if event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN"
-        or event == "QUEST_LOG_UPDATE" or event == "PLAYER_LEVEL_UP" then
+        or event == "PLAYER_LEVEL_UP" then
         invalidateScan()
         scheduleRefresh()
         return

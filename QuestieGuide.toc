@@ -1,8 +1,9 @@
-## Interface: 11508
+## Interface: 11509
 ## Title: Questie Guide
 ## Notes: Find currently available quests within a level range around your character level.
 ## Author: miyanko
 ## Version: 1.0.0
+## IconTexture: 237381
 ## OptionalDeps: Questie
 ## SavedVariables: QuestieGuideDB
 
