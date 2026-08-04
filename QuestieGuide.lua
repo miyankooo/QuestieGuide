@@ -2,7 +2,7 @@
 local ADDON_NAME = ...
 
 local DEFAULTS = {
-    sortMode = "count",
+    sortMode = "xp",
     sortDir = "desc",
     filters = {
         inLog = true,
@@ -12,7 +12,6 @@ local DEFAULTS = {
         dungeons = true,
         eliteGroup = true,
     },
-    pinCurrentZone = true,
     framePos = nil,
     frameSize = { w = 680, h = 620 },
     zoneCollapsed = {},
@@ -29,7 +28,8 @@ local LEVEL_RANGE_MAX = 10
 local INTRO_PREFIX = "|cffffff00[Questie Guide]:|r "
 
 local SORT_BY_OPTIONS = {
-    { value = "xp",       label = "Total XP" },
+    { value = "xpNow",    label = "Currently Available XP" },
+    { value = "xp",       label = "Total Chain XP" },
     { value = "count",    label = "Total Quest Count" },
     { value = "avgLevel", label = "Average Quest Level" },
     { value = "name",     label = "Alphabetical by Zone" },
@@ -104,6 +104,10 @@ local MAX_CHAIN_DEPTH = 12
 -- Classic Era (1.15.x) caps at 60; reject post-vanilla quests Questie may ship.
 local CLASSIC_MAX_LEVEL = 60
 
+local function passesClassicCaps(level, requiredLevel)
+    return level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
+end
+
 -- Questie modules; resolved lazily because Questie loads after us.
 local QuestieDB
 local QuestieLib
@@ -112,6 +116,7 @@ local QuestiePlayer
 local QuestXP
 local QuestieMap
 local QuestieLink
+local QuestieCorrections
 
 local mainFrame
 local scrollChild
@@ -170,38 +175,55 @@ local function loadQuestie()
     QuestXP = loader:ImportModule("QuestXP")
     QuestieMap = loader:ImportModule("QuestieMap")
     QuestieLink = loader:ImportModule("QuestieLink")
+    QuestieCorrections = loader:ImportModule("QuestieCorrections")
     return QuestieDB ~= nil and QuestieDB.QuestPointers ~= nil
 end
 
 -- The catch-all bucket for quests whose zoneOrSort is a sort category rather than a real area id. Pinned to the bottom of the list by sortZones because it's mostly noise (class quests, faction quests, profession quests, ...).
 local OTHER_ZONE_NAME = "Other"
 
--- zoneOrSort > 0 is a Blizzard area ID; <= 0 is a sort category we collapse into "Other".
+-- zoneOrSort > 0 is a Blizzard area ID; <= 0 is a sort category we collapse into "Other". Names are static client data, and the scan plus the chain projection resolve them for thousands of quests per rescan, so results cache for the session.
+local zoneNameCache = {}
+
 local function getZoneName(zoneOrSort)
     if not zoneOrSort or zoneOrSort <= 0 then
         return OTHER_ZONE_NAME
     end
+    local cached = zoneNameCache[zoneOrSort]
+    if cached then
+        return cached
+    end
+    local name
     if C_Map and C_Map.GetAreaInfo then
-        local name = C_Map.GetAreaInfo(zoneOrSort)
-        if name then
-            return name
-        end
+        name = C_Map.GetAreaInfo(zoneOrSort)
     end
-    if ZoneDB then
-        local dn = ZoneDB:GetLocalizedDungeonName(zoneOrSort)
-        if dn then
-            return dn
-        end
+    if not name and ZoneDB then
+        name = ZoneDB:GetLocalizedDungeonName(zoneOrSort)
     end
-    return "Zone " .. zoneOrSort
+    name = name or ("Zone " .. zoneOrSort)
+    zoneNameCache[zoneOrSort] = name
+    return name
+end
+
+-- Mirrors the hidden-quest exclusions IsDoable applies before its prereq logic: Questie's curated blacklist, quests the player hid manually, and IsDoable's own autoBlacklist verdicts. Needed wherever quests are classified after IsDoable already said no (missing-prereq rows, chain projection), because those paths never receive IsDoable's verdict on hidden state and would otherwise resurrect blacklisted or inactive-event quests.
+local function isQuestHidden(questId)
+    if QuestieCorrections and QuestieCorrections.hiddenQuests and QuestieCorrections.hiddenQuests[questId] then
+        return true
+    end
+    if QuestieDB.autoBlacklist and QuestieDB.autoBlacklist[questId] then
+        return true
+    end
+    local char = _G.Questie and _G.Questie.db and _G.Questie.db.char
+    return (char and char.hidden and char.hidden[questId]) and true or false
 end
 
 local function getEffectiveLevel(questId, playerLevel)
-    local level, requiredLevel = QuestieLib.GetTbcLevel(questId, playerLevel)
+    local level, requiredLevel, requiredMaxLevel = QuestieLib.GetTbcLevel(questId, playerLevel)
+    requiredMaxLevel = requiredMaxLevel or 0
     if level and level > 0 then
-        return level, requiredLevel or 0
+        return level, requiredLevel or 0, requiredMaxLevel
     end
-    return requiredLevel or 0, requiredLevel or 0
+    return requiredLevel or 0, requiredLevel or 0, requiredMaxLevel
 end
 
 local function getQuestName(questId)
@@ -209,7 +231,7 @@ local function getQuestName(questId)
 end
 
 -- Returns name, zoneName, {x, y}, areaId for the quest's start source. Questie's `startedBy` is a 3-tuple: [1] NPC ids, [2] object ids, [3] item ids. Real NPC start: prefer a spawn in the quest's own zone (zoneOrSort) so the labeled location matches the bucket; fall back to the smallest area id when no spawn lives in the quest zone (deterministic, but arbitrary). Object/item start (no NPC giver): use the quest's own zone as a best-effort location and "Quest Item" as the generic giver name.
-local function getQuestStartInfo(questId)
+local function computeQuestStartInfo(questId)
     if not QuestieDB then
         return nil, nil, nil, nil
     end
@@ -262,7 +284,22 @@ local function getQuestStartInfo(questId)
     return nil, nil, nil, nil
 end
 
--- Caches start info on the quest table so repeated row renders / clicks are cheap.
+-- Start info is static DB data, but the scan resolves it for every doable quest on every rescan (accept, turn-in, level-up) and quest row tables are rebuilt each scan, so a per-row cache would not survive. Cache per questId for the session instead; only compute when QuestieDB is actually loaded so a nil result is never frozen in.
+local startInfoCache = {}
+
+local function getQuestStartInfo(questId)
+    local cached = startInfoCache[questId]
+    if cached then
+        return cached.npcName, cached.zoneName, cached.spawn, cached.areaId
+    end
+    local npcName, zoneName, spawn, areaId = computeQuestStartInfo(questId)
+    if QuestieDB then
+        startInfoCache[questId] = { npcName = npcName, zoneName = zoneName, spawn = spawn, areaId = areaId }
+    end
+    return npcName, zoneName, spawn, areaId
+end
+
+-- Row and tooltip callers keep the table shape they already use; it now just fronts the session cache.
 local function resolveStartInfo(quest)
     if quest.startInfo then
         return quest.startInfo
@@ -460,6 +497,14 @@ local function isQuestTrivialForPlayer(questLevel, playerLevel)
     return (playerLevel - questLevel) > greenRange
 end
 
+-- True when the quest would render red on the player (levelDiff >= 5, the "impossible" tier in GetRelativeDifficultyColor, Classic Era's Vanilla/UIParent.lua). Red quests never count toward the XP figures, even when the slider band reaches them.
+local function isQuestRedForPlayer(questLevel, playerLevel)
+    if not playerLevel or not questLevel or questLevel <= 0 then
+        return false
+    end
+    return (questLevel - playerLevel) >= 5
+end
+
 -- True when the quest's difficulty color for the player is yellow or green. Mirrors GetRelativeDifficultyColor in Classic Era's Vanilla/UIParent.lua: yellow covers levelDiff -2..+2, green covers -greenRange..-3. Orange/red (levelDiff >= 3) and grey (below -greenRange) are excluded.
 local function isQuestYellowOrGreen(questLevel, playerLevel)
     if not playerLevel then
@@ -487,6 +532,67 @@ local function meetsRequiredLevel(requiredLevel, playerLevel)
         return true
     end
     return requiredLevel <= playerLevel
+end
+
+-- Mirrors AvailableQuests.IsLevelRequirementsFulfilled: a quest carrying a requiredMaxLevel is permanently unobtainable once the player outlevels it. IsDoable does not check this either.
+local function exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
+    if not playerLevel or not requiredMaxLevel or requiredMaxLevel == 0 then
+        return false
+    end
+    return playerLevel > requiredMaxLevel
+end
+
+-- Mirrors _AddStarter in Questie's AvailableQuests module: a quest only gets a map icon when at least one approachable starter exists. NPC givers hostile to the player's faction are unreachable, and NPC or object givers need at least one spawn or waypoint in the world. Item-started quests count as reachable because Questie draws them at their drop sources. Anything failing this can never be picked up, so it must not be listed or counted. Reachability is static per character (DB plus faction), so results cache for the session.
+local reachableStarterCache = {}
+
+local function hasReachableStarter(questId)
+    local cached = reachableStarterCache[questId]
+    if cached ~= nil then
+        return cached
+    end
+    -- Older Questie builds without the single-field queries get the permissive answer instead of an empty panel.
+    if not QuestieDB.QueryNPCSingle or not QuestieDB.QueryObjectSingle then
+        return true
+    end
+    local reachable = false
+    local startedBy = QuestieDB.QueryQuestSingle(questId, "startedBy")
+    if type(startedBy) == "table" then
+        local playerFaction = UnitFactionGroup("player")
+        local npcIds = startedBy[1]
+        if type(npcIds) == "table" then
+            for _, npcId in ipairs(npcIds) do
+                local friendlyToFaction = QuestieDB.QueryNPCSingle(npcId, "friendlyToFaction")
+                local hostile = (playerFaction == "Alliance" and friendlyToFaction == "H")
+                    or (playerFaction == "Horde" and friendlyToFaction == "A")
+                if not hostile then
+                    local spawns = QuestieDB.QueryNPCSingle(npcId, "spawns")
+                    if type(spawns) == "table" and next(spawns) then
+                        reachable = true
+                        break
+                    end
+                    local waypoints = QuestieDB.QueryNPCSingle(npcId, "waypoints")
+                    if type(waypoints) == "table" and next(waypoints) then
+                        reachable = true
+                        break
+                    end
+                end
+            end
+        end
+        if not reachable and type(startedBy[2]) == "table" then
+            for _, objectId in ipairs(startedBy[2]) do
+                local spawns = QuestieDB.QueryObjectSingle(objectId, "spawns")
+                if type(spawns) == "table" and next(spawns) then
+                    reachable = true
+                    break
+                end
+            end
+        end
+        if not reachable and type(startedBy[3]) == "table" and startedBy[3][1] then
+            reachable = true
+        end
+    end
+    reachableStarterCache[questId] = reachable
+    return reachable
 end
 
 -- True when the quest is not gated by the player's race or class.
@@ -582,6 +688,163 @@ local function findMissingChains(targetId)
     return valid
 end
 
+-- Reverse prereq index: preQuestId -> { followerQuestId, ... }. Built once per session because the quest DB is static; only completion state changes at runtime. Negative preQuestGroup ids are indexed by absolute value so those followers stay discoverable through that edge.
+local followerIndex
+
+local function ensureFollowerIndex()
+    if followerIndex then
+        return followerIndex
+    end
+    followerIndex = {}
+    local function addEdge(preId, questId)
+        if type(preId) == "number" and preId ~= 0 then
+            if preId < 0 then preId = -preId end
+            local list = followerIndex[preId]
+            if not list then
+                list = {}
+                followerIndex[preId] = list
+            end
+            list[#list + 1] = questId
+        end
+    end
+    for questId in pairs(QuestieDB.QuestPointers) do
+        local preIds = QuestieDB.QueryQuestSingle(questId, "preQuestSingle")
+        if type(preIds) == "table" then
+            for _, preId in ipairs(preIds) do addEdge(preId, questId) end
+        end
+        preIds = QuestieDB.QueryQuestSingle(questId, "preQuestGroup")
+        if type(preIds) == "table" then
+            for _, preId in ipairs(preIds) do addEdge(preId, questId) end
+        end
+        local parentId = QuestieDB.QueryQuestSingle(questId, "parentQuest")
+        if parentId and parentId ~= 0 then
+            addEdge(parentId, questId)
+        end
+    end
+    return followerIndex
+end
+
+-- A prereq is settled for the follow-up projection when it is already completed or part of the counted set (a quest the player can pick up now or unlocks along the way).
+local function isPreSettled(preId, counted)
+    return counted[preId] == true or isQuestCompleted(preId)
+end
+
+-- Mirrors QuestieDB:IsPreQuestSingleFulfilled / IsPreQuestGroupFulfilled with counted treated as "will be completed". Single: any one entry settled. Group: every entry settled, where negative ids must be settled directly and positive ids may substitute via a settled exclusiveTo alternative. parentQuest children need the parent active, so the parent must be in the counted set rather than merely completed.
+local function prereqsSettled(questId, counted)
+    local single = QuestieDB.QueryQuestSingle(questId, "preQuestSingle")
+    if type(single) == "table" and single[1] then
+        local anySettled = false
+        for _, preId in ipairs(single) do
+            if isPreSettled(preId, counted) then
+                anySettled = true
+                break
+            end
+        end
+        if not anySettled then
+            return false
+        end
+    end
+    local group = QuestieDB.QueryQuestSingle(questId, "preQuestGroup")
+    if type(group) == "table" and group[1] then
+        for _, preId in ipairs(group) do
+            if preId < 0 then
+                if not isPreSettled(-preId, counted) then
+                    return false
+                end
+            elseif not isPreSettled(preId, counted) then
+                local substitutes = QuestieDB.QueryQuestSingle(preId, "exclusiveTo")
+                local anySubstitute = false
+                if type(substitutes) == "table" then
+                    for _, exId in ipairs(substitutes) do
+                        if isPreSettled(exId, counted) then
+                            anySubstitute = true
+                            break
+                        end
+                    end
+                end
+                if not anySubstitute then
+                    return false
+                end
+            end
+        end
+    end
+    local parentId = QuestieDB.QueryQuestSingle(questId, "parentQuest")
+    if parentId and parentId ~= 0 and not counted[parentId] then
+        return false
+    end
+    return true
+end
+
+-- Mirrors IsDoable's permanent-exclusion tail for followers the projection wants to count. exclusiveTo: mutually exclusive alternatives contribute XP once — when the lockout partner is completed, in the log or already counted, this follower is gone (between two exclusive followers the first one found is kept, an acceptable approximation of "count one branch"). nextQuestInChain and breadcrumb targets follow IsDoable exactly: done or in the log means the quest can never be accepted again. Profession, reputation and spell gates are deliberately not mirrored — rare on leveling chains and mostly caught by the level gates.
+local function isLockedForProjection(questId, counted, currentLog)
+    local exclusiveTo = QuestieDB.QueryQuestSingle(questId, "exclusiveTo")
+    if type(exclusiveTo) == "table" then
+        for _, exId in ipairs(exclusiveTo) do
+            if counted[exId] or currentLog[exId] or isQuestCompleted(exId) then
+                return true
+            end
+        end
+    end
+    local nextInChain = QuestieDB.QueryQuestSingle(questId, "nextQuestInChain")
+    if nextInChain and nextInChain ~= 0 and (currentLog[nextInChain] or isQuestCompleted(nextInChain)) then
+        return true
+    end
+    local breadcrumbFor = QuestieDB.QueryQuestSingle(questId, "breadcrumbForQuestId")
+    if breadcrumbFor and breadcrumbFor ~= 0 and (currentLog[breadcrumbFor] or isQuestCompleted(breadcrumbFor)) then
+        return true
+    end
+    return false
+end
+
+-- Projects which not-yet-doable quests unlock inside the zone once its seed quests are done, without leaving the zone. BFS over the reverse prereq index: a follower joins when it lives in the same zone, passes the same level and faction gates as the discovery scan, and every prereq is completed or already part of the projection. Accepted followers re-enter the frontier so deep chains resolve, and an AND-gated follower is re-examined via the edge from whichever prereq settles last. requiredLevel is deliberately not gated: the player levels up while clearing the zone, and the level band already bounds how far ahead the projection reaches. Repeatables are skipped, they are turn-in loops rather than one-trip chain XP.
+local function collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, passesLevelGate)
+    local index = ensureFollowerIndex()
+    local counted = {}
+    local frontier = {}
+    for _, questId in ipairs(seeds) do
+        counted[questId] = true
+        frontier[#frontier + 1] = questId
+    end
+    local ids = {}
+    local xpTotal, count = 0, 0
+    for _ = 1, MAX_CHAIN_DEPTH do
+        local nextFrontier = {}
+        for _, questId in ipairs(frontier) do
+            for _, followerId in ipairs(index[questId] or {}) do
+                if not counted[followerId]
+                    and not currentLog[followerId]
+                    and not isQuestCompleted(followerId) then
+                    local zoneOrSort = QuestieDB.QueryQuestSingle(followerId, "zoneOrSort")
+                    if zoneOrSort and getZoneName(zoneOrSort) == zoneName then
+                        local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(followerId, playerLevel)
+                        if passesClassicCaps(level, requiredLevel)
+                            and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
+                            and passesLevelGate(level)
+                            and not isQuestTrivialForPlayer(level, playerLevel)
+                            and not isQuestHidden(followerId)
+                            and hasReachableStarter(followerId)
+                            and matchesPlayerFaction(followerId)
+                            and not (QuestieDB.IsRepeatable and QuestieDB.IsRepeatable(followerId))
+                            and not isLockedForProjection(followerId, counted, currentLog)
+                            and prereqsSettled(followerId, counted) then
+                            counted[followerId] = true
+                            nextFrontier[#nextFrontier + 1] = followerId
+                            ids[followerId] = true
+                            xpTotal = xpTotal + getQuestXp(followerId)
+                            count = count + 1
+                        end
+                    end
+                end
+            end
+        end
+        if #nextFrontier == 0 then
+            break
+        end
+        frontier = nextFrontier
+    end
+    return { xp = xpTotal, count = count, ids = ids }
+end
+
 -- Buckets every quest into its zone. Expensive; caller should cache the result.
 local function scanQuestsByZone()
     if not loadQuestie() then
@@ -592,12 +855,13 @@ local function scanQuestsByZone()
     local useQuestieLevelRange = QuestieGuideDB and QuestieGuideDB.useQuestieLevelRange and true or false
     local below, above = getLevelRange()
 
-    -- Slider on: explicit ± band centered on player level. Slider bypassed (useQuestieLevelRange): consider only quests Blizzard would color yellow or green for the player — the "worth doing now" tier. Orange, red and grey quests are out of range and render dimmed downstream.
+    -- Slider on: explicit ± band centered on player level, minus red quests — an "above" of 5 would otherwise pull in +5 reds. Slider bypassed (useQuestieLevelRange): consider only quests Blizzard would color yellow or green for the player — the "worth doing now" tier. Gate failures render dimmed downstream and contribute no XP.
     local function passesLevelGate(level)
         if useQuestieLevelRange then
             return isQuestYellowOrGreen(level, playerLevel)
         end
         return isLevelInBand(level, playerLevel, below, above)
+            and not isQuestRedForPlayer(level, playerLevel)
     end
 
     local byZone = {}
@@ -610,15 +874,10 @@ local function scanQuestsByZone()
                 available = {},
                 pickedUpElsewhere = {},
                 missingPre = { order = {}, entries = {} },
-                count = 0,
             }
             byZone[zoneName] = entry
         end
         return entry
-    end
-
-    local function passesClassicCaps(level, requiredLevel)
-        return level <= CLASSIC_MAX_LEVEL and (requiredLevel or 0) <= CLASSIC_MAX_LEVEL
     end
 
     -- Quests already in the player's log bypass the level band (if they accepted it, they want to see it regardless of how far it has drifted from their current level) and ALWAYS go into "In Quest Log" for their zone. We deliberately do NOT split log quests by giver zone any more -- if it's in the log, it's in the log, period. "Picked Up Elsewhere" below is for the inverse case: quests not in the log whose giver sits outside the quest's own zone.
@@ -635,17 +894,18 @@ local function scanQuestsByZone()
                 xp = getQuestXp(questId),
                 tag = getQuestTagLabel(questId),
             }
-            entry.count = entry.count + 1
         end
     end
 
     for questId in pairs(QuestieDB.QuestPointers) do
         if not currentLog[questId] and not isQuestCompleted(questId) then
-            local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
-            -- The user's level slider (passesLevelGate) used to hard-filter here. We now keep out-of-range quests in the list and tag them so renderList can fade their rows; only the hard caps, the required-level gate, and grey (trivial) quests still exclude quests entirely from the discovery sections.
+            local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(questId, playerLevel)
+            -- The user's level slider (passesLevelGate) used to hard-filter here. We now keep out-of-range quests in the list and tag them so renderList can fade their rows; only the hard caps, the required-level gates, grey (trivial) quests, and quests without a reachable starter still exclude quests entirely from the discovery sections.
             if passesClassicCaps(level, requiredLevel)
                 and meetsRequiredLevel(requiredLevel, playerLevel)
-                and not isQuestTrivialForPlayer(level, playerLevel) then
+                and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
+                and not isQuestTrivialForPlayer(level, playerLevel)
+                and hasReachableStarter(questId) then
                 local outOfRange = not passesLevelGate(level)
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
@@ -666,9 +926,8 @@ local function scanQuestsByZone()
                             and entry.pickedUpElsewhere
                             or entry.available
                         bucket[#bucket + 1] = quest
-                        entry.count = entry.count + 1
                     end
-                elseif isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
+                elseif not isQuestHidden(questId) and isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
                         -- Pick the shortest prereq chain. We don't require the chain initial to be doable; if it is, its tooltip badge shows `[Available]`, otherwise the chain is informational. Each blocked quest contributes ONE row keyed by its own questId — quests in `available` never reappear here.
@@ -684,12 +943,12 @@ local function scanQuestsByZone()
                                 id = questId,
                                 level = level,
                                 name = getQuestName(questId),
+                                xp = getQuestXp(questId),
                                 tag = getQuestTagLabel(questId),
                                 chain = bestChain,
                                 outOfRange = outOfRange,
                             }
                             entry.missingPre.order[#entry.missingPre.order + 1] = questId
-                            entry.count = entry.count + 1
                         end
                     end
                 end
@@ -725,28 +984,46 @@ local function scanQuestsByZone()
             return ea.name < eb.name
         end)
 
-        -- Stats power both the zone header summary and the zone sort. Count only in-range quests so the figures match what a player would consider when choosing where to level. inLog quests bypass the level band entirely and are always counted.
+        -- Stats power both the zone header summary and the zone sort. Count only in-range quests so the figures match what a player would consider when choosing where to level. inLog quests bypass the level band entirely and are always counted. The in-range quests double as seeds for the follow-up projection below.
         local countInRange = #entry.inLog
-        local xpTotal = 0
-        for _, q in ipairs(entry.inLog) do xpTotal = xpTotal + (q.xp or 0) end
+        local xpNow = 0
+        local seeds = {}
+        for _, q in ipairs(entry.inLog) do
+            xpNow = xpNow + (q.xp or 0)
+            seeds[#seeds + 1] = q.id
+        end
         for _, q in ipairs(entry.available) do
             if not q.outOfRange then
                 countInRange = countInRange + 1
-                xpTotal = xpTotal + (q.xp or 0)
+                xpNow = xpNow + (q.xp or 0)
+                seeds[#seeds + 1] = q.id
             end
         end
         for _, q in ipairs(entry.pickedUpElsewhere) do
             if not q.outOfRange then
                 countInRange = countInRange + 1
-                xpTotal = xpTotal + (q.xp or 0)
+                xpNow = xpNow + (q.xp or 0)
+                seeds[#seeds + 1] = q.id
             end
         end
+
+        -- Follow-up projection: chains that keep unlocking inside this zone once the seeds are done. Blocked quests whose chain runs through another zone stay out of the XP total and are reported separately, so a zone is never credited XP that requires traveling elsewhere to unlock.
+        entry.followups = collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, passesLevelGate)
+        local travelXp, travelCount = 0, 0
         for _, qid in ipairs(entry.missingPre.order) do
             local mpe = entry.missingPre.entries[qid]
-            if mpe and not mpe.outOfRange then
-                countInRange = countInRange + 1
+            if mpe then
+                mpe.unlocksHere = entry.followups.ids[qid] == true
+                if not mpe.outOfRange then
+                    countInRange = countInRange + 1
+                    if not mpe.unlocksHere then
+                        travelXp = travelXp + (mpe.xp or 0)
+                        travelCount = travelCount + 1
+                    end
+                end
             end
         end
+
         local levelSum, levelCount = 0, 0
         for _, q in ipairs(entry.available) do
             if not q.outOfRange and q.level and q.level > 0 then
@@ -754,9 +1031,15 @@ local function scanQuestsByZone()
                 levelCount = levelCount + 1
             end
         end
+        -- xp is the one-trip value: everything grabbable now plus everything that unlocks in-zone along the way. It drives the XP sort and the best-zone marker.
         entry.stats = {
             count = countInRange,
-            xp = xpTotal,
+            xp = xpNow + entry.followups.xp,
+            xpNow = xpNow,
+            xpFollowup = entry.followups.xp,
+            followupCount = entry.followups.count,
+            travelXp = travelXp,
+            travelCount = travelCount,
             avgLevel = levelCount > 0 and (levelSum / levelCount) or nil,
         }
     end
@@ -786,6 +1069,8 @@ local function sortZones(zoneOrder, byZone)
         table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.count end))
     elseif mode == "xp" then
         table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.xp end))
+    elseif mode == "xpNow" then
+        table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.xpNow end))
     elseif mode == "avgLevel" then
         table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.avgLevel end))
     else
@@ -1083,18 +1368,6 @@ local function searchMatches(text)
     return string.find(string.lower(text), searchText, 1, true) ~= nil
 end
 
-local function getPlayerZoneName()
-    if not C_Map or not C_Map.GetBestMapForUnit then
-        return nil
-    end
-    local uiMapId = C_Map.GetBestMapForUnit("player")
-    if not uiMapId or not C_Map.GetMapInfo then
-        return nil
-    end
-    local mapInfo = C_Map.GetMapInfo(uiMapId)
-    return mapInfo and mapInfo.name or nil
-end
-
 -- Forward declarations resolved later.
 local showQuestContextMenu
 local showChainContextMenu
@@ -1172,6 +1445,35 @@ function formatNumber(n)
     return out
 end
 
+-- Zone header hover: the breakdown behind the one-trip total. Uses scan-level stats driven by the level filter, which can differ from the rows on screen while a search or bucket filter narrows them.
+local function showZoneTooltip(anchor, zoneName, stats, isBest)
+    if not stats then
+        return
+    end
+    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(zoneName)
+    if isBest then
+        GameTooltip:AddLine(COLOR.GOLD .. "Best zone for your next trip|r")
+    end
+    GameTooltip:AddLine(" ")
+    addTooltipField("Available now", formatNumber(stats.xpNow or 0) .. " XP")
+    if (stats.followupCount or 0) > 0 then
+        addTooltipField("Follow-ups unlocking here",
+            string.format("%s XP (%d quests)", formatNumber(stats.xpFollowup or 0), stats.followupCount))
+    end
+    if (stats.travelCount or 0) > 0 then
+        addTooltipField("Gated outside this zone",
+            string.format("%s XP (%d quests, not counted)", formatNumber(stats.travelXp or 0), stats.travelCount))
+    end
+    local total = (stats.xpNow or 0) + (stats.xpFollowup or 0)
+    local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
+    if total > 0 and xpMax > 0 then
+        addTooltipField("One trip",
+            string.format("%s XP, %d%% of your level", formatNumber(total), math.floor(total / xpMax * 100 + 0.5)))
+    end
+    GameTooltip:Show()
+end
+
 function renderList()
     if not scrollChild then
         return
@@ -1179,6 +1481,21 @@ function renderList()
     local byZone, zoneOrder = ensureScan()
     sortZones(zoneOrder, byZone)
     lastZoneOrder = zoneOrder
+
+    -- The zone with the highest one-trip value (XP available now plus follow-ups unlocking in-zone) is called out in its header tooltip: the answer to "where should I go questing next", independent of the active sort. "Other" is a sort catch-all rather than a destination, so it never wins.
+    local bestZoneName
+    if searchText == "" then
+        local bestXp = 0
+        for _, candidate in ipairs(zoneOrder) do
+            if candidate ~= OTHER_ZONE_NAME then
+                local stats = byZone[candidate] and byZone[candidate].stats
+                if stats and (stats.xp or 0) > bestXp then
+                    bestXp = stats.xp
+                    bestZoneName = candidate
+                end
+            end
+        end
+    end
     local filters = (QuestieGuideDB and QuestieGuideDB.filters) or DEFAULTS.filters
     local index = 1
     local y = 0
@@ -1238,8 +1555,6 @@ function renderList()
 
     local zoneCollapsedDB = getZoneCollapsed()
     local groupCollapsedDB = getGroupCollapsed()
-    local pinCurrentZone = QuestieGuideDB and QuestieGuideDB.pinCurrentZone
-    local playerZone = pinCurrentZone and getPlayerZoneName() or nil
     local showDungeons = filters.dungeons ~= false
     local showEliteGroup = filters.eliteGroup ~= false
 
@@ -1290,19 +1605,6 @@ function renderList()
             end
         end
         return false
-    end
-
-    -- Reorder so the player's current zone floats to the top when pinning is on.
-    if playerZone then
-        local reordered = { playerZone }
-        for _, name in ipairs(zoneOrder) do
-            if name ~= playerZone then
-                reordered[#reordered + 1] = name
-            end
-        end
-        if byZone[playerZone] then
-            zoneOrder = reordered
-        end
     end
 
     for _, zoneName in ipairs(zoneOrder) do
@@ -1358,7 +1660,10 @@ function renderList()
                     if not q.outOfRange then
                         subRangeN = subRangeN + 1
                         inRangeTotal = inRangeTotal + 1
-                        inRangeXp = inRangeXp + (q.xp or 0)
+                        -- Blocked-quest XP is carried by the zone-level follow-up figure (only chains that unlock in-zone count), never by row summation.
+                        if subKey ~= "missingPre" then
+                            inRangeXp = inRangeXp + (q.xp or 0)
+                        end
                     end
                 end
                 subInRangeCount[subKey] = subRangeN
@@ -1373,18 +1678,27 @@ function renderList()
                 placeRow(header, 0)
                 styleHeaderRow(header, collapsed)
                 local summary = " (" .. inRangeTotal .. ")"
-                if inRangeXp > 0 then
-                    local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
-                    if xpMax > 0 then
-                        local pct = math.floor(inRangeXp / xpMax * 100 + 0.5)
-                        summary = summary .. string.format(" %s%s total XP (%d%% of current level)|r",
-                            COLOR.GREY, formatNumber(inRangeXp), pct)
-                    else
-                        summary = summary .. string.format(" %s%s total XP|r",
-                            COLOR.GREY, formatNumber(inRangeXp))
+                -- Search narrows the rows on screen, so the zone-level follow-up projection would no longer match them; the projection only shows on the unfiltered view.
+                local followupXp = (searchText == "" and entry.followups and entry.followups.xp) or 0
+                -- Mirrors the two XP sort modes: currently available XP first, the chain total in brackets. Percent-of-level detail lives in the header tooltip.
+                if inRangeXp > 0 or followupXp > 0 then
+                    local parts = formatNumber(inRangeXp) .. " XP"
+                    if followupXp > 0 then
+                        parts = parts .. " (" .. formatNumber(inRangeXp + followupXp) .. " total)"
                     end
+                    summary = summary .. " " .. COLOR.GREY .. parts .. "|r"
                 end
+                local isBestZone = (zoneName == bestZoneName)
                 header.text:SetText(zoneName .. summary)
+                local zoneStats = entry.stats
+                header:SetScript("OnEnter", function(self)
+                    self.text:SetTextColor(1, 1, 1)
+                    showZoneTooltip(self, zoneName, zoneStats, isBestZone)
+                end)
+                header:SetScript("OnLeave", function(self)
+                    self.text:SetTextColor(HEADER_R, HEADER_G, HEADER_B)
+                    GameTooltip:Hide()
+                end)
                 header:SetScript("OnClick", function()
                     local expanding = collapsed
                     zoneCollapsedDB[zoneName] = not collapsed
@@ -1431,7 +1745,12 @@ function renderList()
                                             initial = { id = mpe.chain and mpe.chain[1] }
                                             mpe._initial = initial
                                         end
-                                        local label = formatRowLabel(mpe.level, mpe.name, mpe)
+                                        -- Chains that finish unlocking inside this zone count toward its follow-up XP; the badge separates them from chains gated somewhere else.
+                                        local badge = mpe.unlocksHere
+                                            and (COLOR.GREEN .. "[Unlocks Here]|r")
+                                            or (COLOR.GREY .. "[Needs Travel]|r")
+                                        local line1, line2 = formatRowLines(mpe.level, mpe.name, mpe, badge)
+                                        local label = line2 and (line1 .. "\n" .. line2) or line1
                                         renderQuestRow(label,
                                             function(self) showChainTooltip(self, mpe) end,
                                             function() openMapForQuest(initial) end,
@@ -1761,15 +2080,6 @@ local function buildMainFrame()
         QuestieGuideDB.filters[key] = value and true or false
     end
 
-    local function getToggleValue(key)
-        local v = QuestieGuideDB and QuestieGuideDB[key]
-        if v == nil then v = DEFAULTS[key] end
-        return v and true or false
-    end
-    local function setToggleValue(key, value)
-        QuestieGuideDB[key] = value and true or false
-    end
-
     local FILTER_GROUPS = {
         {
             title = "Availability",
@@ -1789,14 +2099,6 @@ local function buildMainFrame()
             specs = {
                 { key = "dungeons",   label = "Dungeons" },
                 { key = "eliteGroup", label = "Elite (Group)" },
-            },
-        },
-        {
-            title = "Zones",
-            get = getToggleValue,
-            set = setToggleValue,
-            specs = {
-                { key = "pinCurrentZone", label = "Pin Current Zone" },
             },
         },
     }
@@ -2403,6 +2705,12 @@ loader:SetScript("OnEvent", function(self, event, name)
         if not validDir then
             QuestieGuideDB.sortDir = DEFAULTS.sortDir
         end
+        -- One-time switch to the one-trip XP sort the zone recommendation is built around; the flag keeps any later manual sort choice untouched.
+        if not QuestieGuideDB.oneTripSortApplied then
+            QuestieGuideDB.oneTripSortApplied = true
+            QuestieGuideDB.sortMode = "xp"
+            QuestieGuideDB.sortDir = "desc"
+        end
         if type(QuestieGuideDB.filters) ~= "table" then
             QuestieGuideDB.filters = {}
         end
@@ -2413,9 +2721,8 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         QuestieGuideDB.showNpcName = nil
         QuestieGuideDB.showCoords = nil
-        if type(QuestieGuideDB.pinCurrentZone) ~= "boolean" then
-            QuestieGuideDB.pinCurrentZone = DEFAULTS.pinCurrentZone
-        end
+        -- Zone pinning was removed; the sort setting now governs every zone.
+        QuestieGuideDB.pinCurrentZone = nil
         if type(QuestieGuideDB.frameSize) ~= "table" then
             QuestieGuideDB.frameSize = { w = DEFAULTS.frameSize.w, h = DEFAULTS.frameSize.h }
         end

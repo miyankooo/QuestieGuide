@@ -5,13 +5,12 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 ## Features
 
 - Minimap button opens a movable, resizable dialog.
-- Search box with helper text that matches against quest names, zone names, and (when **Show NPC Name and Location** or **Show NPC Coordinates** is on) NPC names.
-- Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone header shows the visible-quest count, total reward XP, and how much of your current level that represents.
-- **Quest Level Range** sliders configure how many levels below and above the player to include (each 0–5, default 5/5). Quests already in your log are always shown regardless of the range.
-- Filters: **In Quest Log**, **Available**, **Show Chain Prerequisites**, **Show Dungeons**, **Show Elite/Group Quests**.
-- View toggles: **Show NPC Name and Location**, **Show NPC Coordinates**, **Pin Current Zone**.
-- Sort modes: **Number of Quests**, **Total XP**, **Average Quest Level**, **Alphabetical Zone Names**.
-- **Collapse / Expand** all zones and a **Refresh** button to force a re-scan, placed beneath the search box.
+- Search box with helper text that matches against quest names, zone names, and NPC names.
+- Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone header shows the in-range quest count, the XP available right now, and the one-trip chain total in brackets; hovering the header shows the full breakdown including percent of your current level.
+- **Quest Level Range** sliders configure how many levels below and above the player to include (each 0–10, default 5/5), with a **Use Questie Level Ranges** checkbox that switches to yellow/green difficulty gating instead. Red quests never count toward the XP figures. Quests already in your log are always shown regardless of the range.
+- Filters: **In Quest Log**, **Available in Zone**, **Available Elsewhere**, **Missing Pre-Quest**, **Dungeons**, **Elite (Group)**.
+- Sort modes: **Currently Available XP**, **Total Chain XP**, **Total Quest Count**, **Average Quest Level**, **Alphabetical by Zone**, each ascending or descending. The sort setting governs every zone.
+- **Collapse / Expand** all zones with one button beneath the search box.
 - Click a quest to open the World Map at its start NPC zone; the matching Questie pin pulses for a few seconds so you can spot it.
 - Right-click a quest for a context menu: **Show on map**, **Link in chat**.
 - Tooltips show required level, NPC, location, XP reward, objectives, repeatable / tag markers, and for chain entries the full prereq chain with each step's NPC and coordinates.
