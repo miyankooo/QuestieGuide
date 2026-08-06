@@ -6,12 +6,13 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 
 - Minimap button opens a movable, resizable dialog.
 - Search box with helper text that matches against quest names, zone names, and NPC names.
-- Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone header shows the in-range quest count, the XP available right now, and the one-trip chain total in brackets; hovering the header shows the full breakdown including percent of your current level.
+- Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone splits into **Picked Up in Zone** and **Picked Up Outside of Zone**. Every quest carries a color-coded status label: yellow **[In Questlog]**, green **[Available]** or red **[Missing Pre-Quest]**. Blocked quests render greyed at 50% opacity. Each zone header shows the in-range quest count and the total XP for one trip through the zone; hovering the header shows the breakdown including percent of your current level.
 - **Quest Level Range** sliders configure how many levels below and above the player to include (each 0–10, default 5/5), with a **Use Questie Level Ranges** checkbox that switches to yellow/green difficulty gating instead. Red quests never count toward the XP figures. Quests already in your log are always shown regardless of the range.
-- Filters: **In Quest Log**, **Available in Zone**, **Available Elsewhere**, **Missing Pre-Quest**, **Dungeons**, **Elite (Group)**.
-- Sort modes: **Currently Available XP**, **Total Chain XP**, **Total Quest Count**, **Average Quest Level**, **Alphabetical by Zone**, each ascending or descending. The sort setting governs every zone.
+- Filters: **In Questlog** (toggles the yellow in-log rows), **Picked Up in Zone**, **Picked Up Outside of Zone**, **Missing Pre-Quest** (toggles the greyed blocked rows), **Dungeons**, **Elite (Group)**.
+- Sort modes: **Total XP**, **Total Quest Count**, **Average Quest Level**, **Alphabetical by Zone**, each ascending or descending. The sort setting governs every zone.
+- **Visibility Filters** section with a **Show Completed Quests** checkbox (default on). When checked, a **Completed Quests** category sits at the top of the list, grouping quests that are ready to turn in by their turn-in zone, sorted by turn-in count. Rows carry a green **[Ready to Turn In]** label; clicking opens the World Map at the turn-in target with the matching Questie pin pulsing. Completeness comes from the native quest log; the turn-in location comes from Questie's `finishedBy` data.
 - **Collapse / Expand** all zones with one button beneath the search box.
-- Click a quest to open the World Map at its start NPC zone; the matching Questie pin pulses for a few seconds so you can spot it.
+- Clicking follows the status label: **[Available]** opens the World Map at the start NPC with the matching Questie pin pulsing, **[In Questlog]** opens the native quest log at that quest, and **[Missing Pre-Quest]** jumps the list to the chain step you can pick up right now and blinks it.
 - Right-click a quest for a context menu: **Show on map**, **Link in chat**.
 - Tooltips show required level, NPC, location, XP reward, objectives, repeatable / tag markers, and for chain entries the full prereq chain with each step's NPC and coordinates.
 - Frame position, size, collapsed-state, and all filters/toggles persist between sessions.
@@ -52,7 +53,7 @@ The embedded libraries (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIc
 
 Questie Guide imports a small set of Questie modules through `QuestieLoader`:
 
-- `QuestieDB` — `QuestPointers`, `IsDoable`, `GetQuest`, `QueryQuestSingle`, `GetQuestTagInfo`, `IsRepeatable`, `GetNPC`, `IsPreQuestSingleFulfilled`, `IsPreQuestGroupFulfilled`.
+- `QuestieDB` — `QuestPointers`, `IsDoable`, `IsComplete`, `GetQuest`, `QueryQuestSingle`, `QueryObjectSingle`, `GetQuestTagInfo`, `IsRepeatable`, `GetNPC`, `IsPreQuestSingleFulfilled`, `IsPreQuestGroupFulfilled`.
 - `QuestieLib` — `GetTbcLevel`, `GetColoredQuestName`, `GetDifficultyColorPercent`.
 - `ZoneDB` — `GetLocalizedDungeonName` for dungeon zone fallbacks and `GetUiMapIdByAreaId` for the click-to-map feature.
 - `QuestiePlayer` — `currentQuestlog`, `HasRequiredRace`, `HasRequiredClass`.
@@ -67,7 +68,9 @@ A quest is shown when:
 3. For non-log quests, the player meets `requiredLevel` and the effective level falls within the configured **Quest Level Range** band. In-log quests bypass the band.
 4. For **Chain Prerequisites**, the initial step itself must pass `QuestieDB.IsDoable` (race, class, faction, reputation, exclusivity, breadcrumb). For `preQuestGroup` (AND) gating, every incomplete prereq is surfaced as its own row so the player sees all initials they have to pick up.
 
-Zone names come from `C_Map.GetAreaInfo` using `zoneOrSort`, with `ZoneDB:GetLocalizedDungeonName` as a fallback. Quests with non-positive `zoneOrSort` (sort categories such as class or profession buckets) are grouped under **Other**. The start-NPC location displayed on each row prefers a spawn that lives in the quest's own zone; if the NPC doesn't spawn there, the smallest area id is used as a deterministic fallback.
+Zone names come from `C_Map.GetAreaInfo` using `zoneOrSort`, with `ZoneDB:GetLocalizedDungeonName` as a fallback. Quests with non-positive `zoneOrSort` (sort categories such as class or profession buckets) are grouped under **Other**.
+
+A quest counts for a zone when it is set in the zone (`zoneOrSort`) or starts at a giver in the zone. A quest set elsewhere but picked up here lists under **Picked Up in Zone** in the giver zone and under **Picked Up Outside of Zone** in its own zone, and it joins both zones' XP totals. The follow-up projection uses the same rule, so chain steps that continue from a giver in the zone count toward the one-trip total even when they are filed under another zone or a sort category. In-log and prereq-blocked quests follow the same bucketing; blocked quests render greyed until their chain is cleared. The start-NPC location displayed on each row prefers a spawn that lives in the quest's own zone; if the NPC doesn't spawn there, the smallest area id is used as a deterministic fallback.
 
 ## Saved Variables
 

@@ -20,6 +20,7 @@ local DEFAULTS = {
     useQuestieLevelRange = false,
     levelBelow = 5,
     levelAbove = 5,
+    showCompleted = true,
 }
 
 local LEVEL_RANGE_MIN = 0
@@ -28,8 +29,7 @@ local LEVEL_RANGE_MAX = 10
 local INTRO_PREFIX = "|cffffff00[Questie Guide]:|r "
 
 local SORT_BY_OPTIONS = {
-    { value = "xpNow",    label = "Currently Available XP" },
-    { value = "xp",       label = "Total Chain XP" },
+    { value = "xp",       label = "Total XP" },
     { value = "count",    label = "Total Quest Count" },
     { value = "avgLevel", label = "Average Quest Level" },
     { value = "name",     label = "Alphabetical by Zone" },
@@ -39,13 +39,16 @@ local SORT_DIR_OPTIONS = {
     { value = "desc", label = "Descending" },
 }
 
-local SUBCAT_ORDER = { "inLog", "available", "pickedUpElsewhere", "missingPre" }
+-- Two sections per zone, split by where the quest is picked up. Every row carries a bracket status label instead of sections per status: in-log and blocked rows live inside these buckets, toggled by the inLog and missingPre filters.
+local SUBCAT_ORDER = { "available", "pickedUpElsewhere" }
 local SUBCAT_LABEL = {
-    inLog = "In Quest Log",
-    available = "Available in Zone",
-    pickedUpElsewhere = "Available Elsewhere",
-    missingPre = "Missing Pre-Quest",
+    available = "Picked Up in Zone",
+    pickedUpElsewhere = "Picked Up Outside of Zone",
 }
+
+-- Completed-quests section: sentinel collapse key that can't collide with a real zone name ("||" never appears in area names).
+local COMPLETED_KEY = "||completed"
+local COMPLETED_LABEL = "Completed Quests"
 
 -- Layout grid: 8px outer chrome, 4px sub-grid for compact list rows.
 local SPACING = {
@@ -122,6 +125,10 @@ local mainFrame
 local scrollChild
 local rowPool = {}
 local lastZoneOrder = {}
+-- Turn-in zones rendered by the completed section on the last pass; drives Collapse All parity.
+local lastCompletedZones = {}
+-- questId -> { row, top } for pickable and in-log rows, rebuilt every render; powers the jump-to-prerequisite scroll.
+local rowTargets = {}
 local renderList
 local searchText = ""
 local getQuestTagLabel
@@ -150,6 +157,7 @@ local COLOR = {
     GREEN  = "|cff00ff00",
     GOLD   = "|cffffd200",
     ORANGE = "|cffff8000",
+    RED    = "|cffff1a1a",
 }
 
 local function getZoneCollapsed()
@@ -230,7 +238,30 @@ local function getQuestName(questId)
     return QuestieDB.QueryQuestSingle(questId, "name") or ("Quest " .. questId)
 end
 
--- Returns name, zoneName, {x, y}, areaId for the quest's start source. Questie's `startedBy` is a 3-tuple: [1] NPC ids, [2] object ids, [3] item ids. Real NPC start: prefer a spawn in the quest's own zone (zoneOrSort) so the labeled location matches the bucket; fall back to the smallest area id when no spawn lives in the quest zone (deterministic, but arbitrary). Object/item start (no NPC giver): use the quest's own zone as a best-effort location and "Quest Item" as the generic giver name.
+-- Picks a spawn from Questie's per-zone spawn table: prefer the quest's own zone (zoneOrSort) so the labeled location matches the bucket; fall back to the smallest area id when no spawn lives there (deterministic, but arbitrary).
+local function pickPreferredSpawn(spawns, preferZoneId)
+    local preferredZoneId, preferredSpawn
+    local fallbackZoneId, fallbackSpawn
+    for zoneId, list in pairs(spawns) do
+        if type(list) == "table" and list[1] then
+            if preferZoneId and zoneId == preferZoneId then
+                preferredZoneId = zoneId
+                preferredSpawn = list[1]
+            elseif not fallbackZoneId or zoneId < fallbackZoneId then
+                fallbackZoneId = zoneId
+                fallbackSpawn = list[1]
+            end
+        end
+    end
+    return preferredZoneId or fallbackZoneId, preferredSpawn or fallbackSpawn
+end
+
+local function getPreferredZoneId(questId)
+    local questZone = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+    return (questZone and questZone > 0) and questZone or nil
+end
+
+-- Returns name, zoneName, {x, y}, areaId for the quest's start source. Questie's `startedBy` is a 3-tuple: [1] NPC ids, [2] object ids, [3] item ids. Object/item start (no NPC giver): use the quest's own zone as a best-effort location and "Quest Item" as the generic giver name.
 local function computeQuestStartInfo(questId)
     if not QuestieDB then
         return nil, nil, nil, nil
@@ -247,23 +278,7 @@ local function computeQuestStartInfo(questId)
             if type(npc.spawns) ~= "table" then
                 return npc.name, nil, nil, nil
             end
-            local questZone = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
-            local preferZoneId = (questZone and questZone > 0) and questZone or nil
-            local preferredZoneId, preferredSpawn
-            local fallbackZoneId, fallbackSpawn
-            for zoneId, spawns in pairs(npc.spawns) do
-                if type(spawns) == "table" and spawns[1] then
-                    if preferZoneId and zoneId == preferZoneId then
-                        preferredZoneId = zoneId
-                        preferredSpawn = spawns[1]
-                    elseif not fallbackZoneId or zoneId < fallbackZoneId then
-                        fallbackZoneId = zoneId
-                        fallbackSpawn = spawns[1]
-                    end
-                end
-            end
-            local bestZoneId = preferredZoneId or fallbackZoneId
-            local bestSpawn = preferredSpawn or fallbackSpawn
+            local bestZoneId, bestSpawn = pickPreferredSpawn(npc.spawns, getPreferredZoneId(questId))
             if not bestZoneId then
                 return npc.name, nil, nil, nil
             end
@@ -312,6 +327,62 @@ local function resolveStartInfo(quest)
         areaId = areaId,
     }
     return quest.startInfo
+end
+
+-- Returns name, zoneName, {x, y}, areaId for the quest's turn-in target. Questie's `finishedBy` is a 2-tuple: [1] NPC ids, [2] object ids. The turn-in location only exists in Questie's data; no native API exposes it.
+local function computeQuestFinishInfo(questId)
+    if not QuestieDB then
+        return nil, nil, nil, nil
+    end
+    local finishedBy = QuestieDB.QueryQuestSingle(questId, "finishedBy")
+    if type(finishedBy) ~= "table" then
+        return nil, nil, nil, nil
+    end
+
+    local npcIds = finishedBy[1]
+    if type(npcIds) == "table" and npcIds[1] and QuestieDB.GetNPC then
+        local npc = QuestieDB:GetNPC(npcIds[1])
+        if npc then
+            if type(npc.spawns) ~= "table" then
+                return npc.name, nil, nil, nil
+            end
+            local bestZoneId, bestSpawn = pickPreferredSpawn(npc.spawns, getPreferredZoneId(questId))
+            if not bestZoneId then
+                return npc.name, nil, nil, nil
+            end
+            return npc.name, getZoneName(bestZoneId), bestSpawn, bestZoneId
+        end
+    end
+
+    local objectIds = finishedBy[2]
+    if type(objectIds) == "table" and objectIds[1] and QuestieDB.QueryObjectSingle then
+        local name = QuestieDB.QueryObjectSingle(objectIds[1], "name")
+        local spawns = QuestieDB.QueryObjectSingle(objectIds[1], "spawns")
+        if type(spawns) == "table" then
+            local bestZoneId, bestSpawn = pickPreferredSpawn(spawns, getPreferredZoneId(questId))
+            if bestZoneId then
+                return name, getZoneName(bestZoneId), bestSpawn, bestZoneId
+            end
+        end
+        return name, nil, nil, nil
+    end
+
+    return nil, nil, nil, nil
+end
+
+-- Turn-in targets are static DB data like start info; cache per questId for the session and only freeze results once QuestieDB is loaded.
+local finishInfoCache = {}
+
+local function getQuestFinishInfo(questId)
+    local cached = finishInfoCache[questId]
+    if cached then
+        return cached.npcName, cached.zoneName, cached.spawn, cached.areaId
+    end
+    local npcName, zoneName, spawn, areaId = computeQuestFinishInfo(questId)
+    if QuestieDB then
+        finishInfoCache[questId] = { npcName = npcName, zoneName = zoneName, spawn = spawn, areaId = areaId }
+    end
+    return npcName, zoneName, spawn, areaId
 end
 
 local HIGHLIGHT_PULSE_SCALE = 1.25
@@ -796,7 +867,7 @@ local function isLockedForProjection(questId, counted, currentLog)
     return false
 end
 
--- Projects which not-yet-doable quests unlock inside the zone once its seed quests are done, without leaving the zone. BFS over the reverse prereq index: a follower joins when it lives in the same zone, passes the same level and faction gates as the discovery scan, and every prereq is completed or already part of the projection. Accepted followers re-enter the frontier so deep chains resolve, and an AND-gated follower is re-examined via the edge from whichever prereq settles last. requiredLevel is deliberately not gated: the player levels up while clearing the zone, and the level band already bounds how far ahead the projection reaches. Repeatables are skipped, they are turn-in loops rather than one-trip chain XP.
+-- Projects which not-yet-doable quests unlock inside the zone once its seed quests are done, without leaving the zone. BFS over the reverse prereq index: a follower joins when it is set in the zone or starts at a giver in the zone, passes the same level and faction gates as the discovery scan, and every prereq is completed or already part of the projection. Accepted followers re-enter the frontier so deep chains resolve, and an AND-gated follower is re-examined via the edge from whichever prereq settles last. requiredLevel is deliberately not gated: the player levels up while clearing the zone, and the level band already bounds how far ahead the projection reaches. Repeatables are skipped, they are turn-in loops rather than one-trip chain XP.
 local function collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, passesLevelGate)
     local index = ensureFollowerIndex()
     local counted = {}
@@ -814,8 +885,14 @@ local function collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, pa
                 if not counted[followerId]
                     and not currentLog[followerId]
                     and not isQuestCompleted(followerId) then
+                    -- Zone membership: set in the zone (zoneOrSort) or picked up in the zone (giver). The cheap zoneOrSort check runs first; the giver lookup is session-cached per quest.
                     local zoneOrSort = QuestieDB.QueryQuestSingle(followerId, "zoneOrSort")
-                    if zoneOrSort and getZoneName(zoneOrSort) == zoneName then
+                    local inZone = zoneOrSort and getZoneName(zoneOrSort) == zoneName
+                    if not inZone then
+                        local _, giverZoneName = getQuestStartInfo(followerId)
+                        inZone = giverZoneName == zoneName
+                    end
+                    if inZone then
                         local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(followerId, playerLevel)
                         if passesClassicCaps(level, requiredLevel)
                             and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
@@ -870,30 +947,38 @@ local function scanQuestsByZone()
         local entry = byZone[zoneName]
         if not entry then
             entry = {
-                inLog = {},
                 available = {},
                 pickedUpElsewhere = {},
-                missingPre = { order = {}, entries = {} },
             }
             byZone[zoneName] = entry
         end
         return entry
     end
 
-    -- Quests already in the player's log bypass the level band (if they accepted it, they want to see it regardless of how far it has drifted from their current level) and ALWAYS go into "In Quest Log" for their zone. We deliberately do NOT split log quests by giver zone any more -- if it's in the log, it's in the log, period. "Picked Up Elsewhere" below is for the inverse case: quests not in the log whose giver sits outside the quest's own zone.
+    -- Quests already in the player's log bypass the level band (if they accepted it, they want to see it regardless of how far it has drifted from their current level). They render inside the pickup buckets with an [In Questlog] label, split by giver zone like every other quest.
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
         if zoneOrSort and passesClassicCaps(level, requiredLevel) then
-            local entry = ensureZone(getZoneName(zoneOrSort))
-            entry.inLog[#entry.inLog + 1] = {
+            local questZoneName = getZoneName(zoneOrSort)
+            local _, giverZoneName = getQuestStartInfo(questId)
+            local quest = {
                 id = questId,
                 level = level,
                 name = getQuestName(questId),
                 -- Questie's QuestXP already applies the vanilla level reduction, so grey log quests contribute their real reduced XP.
                 xp = getQuestXp(questId),
                 tag = getQuestTagLabel(questId),
+                inLog = true,
             }
+            local entry = ensureZone(questZoneName)
+            local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
+            local bucket = giverElsewhere and entry.pickedUpElsewhere or entry.available
+            bucket[#bucket + 1] = quest
+            if giverElsewhere then
+                local giverEntry = ensureZone(giverZoneName)
+                giverEntry.available[#giverEntry.available + 1] = quest
+            end
         end
     end
 
@@ -926,6 +1011,11 @@ local function scanQuestsByZone()
                             and entry.pickedUpElsewhere
                             or entry.available
                         bucket[#bucket + 1] = quest
+                        -- A quest picked up in this zone but set elsewhere also counts for the giver zone: it lists under "Available" there and joins that zone's XP totals and follow-up seeds. The quest table is shared; its fields are zone-independent.
+                        if giverZoneName and giverZoneName ~= questZoneName then
+                            local giverEntry = ensureZone(giverZoneName)
+                            giverEntry.available[#giverEntry.available + 1] = quest
+                        end
                     end
                 elseif not isQuestHidden(questId) and isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
@@ -938,17 +1028,29 @@ local function scanQuestsByZone()
                             end
                         end
                         if bestChain then
-                            local entry = ensureZone(getZoneName(zoneOrSort))
-                            entry.missingPre.entries[questId] = {
-                                id = questId,
-                                level = level,
-                                name = getQuestName(questId),
-                                xp = getQuestXp(questId),
-                                tag = getQuestTagLabel(questId),
-                                chain = bestChain,
-                                outOfRange = outOfRange,
-                            }
-                            entry.missingPre.order[#entry.missingPre.order + 1] = questId
+                            -- Blocked quests land greyed in the same pickup buckets as doable ones. Each zone gets its own row table because unlocksHere is marked per zone by the follow-up projection.
+                            local function addBlockedRow(zoneName, bucketKey)
+                                local entry = ensureZone(zoneName)
+                                local bucket = entry[bucketKey]
+                                bucket[#bucket + 1] = {
+                                    id = questId,
+                                    level = level,
+                                    name = getQuestName(questId),
+                                    xp = getQuestXp(questId),
+                                    tag = getQuestTagLabel(questId),
+                                    chain = bestChain,
+                                    blocked = true,
+                                    outOfRange = outOfRange,
+                                }
+                            end
+                            local questZoneName = getZoneName(zoneOrSort)
+                            local _, giverZoneName = getQuestStartInfo(questId)
+                            local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
+                            addBlockedRow(questZoneName, giverElsewhere and "pickedUpElsewhere" or "available")
+                            -- A blocked quest starting at a giver in another zone also lists there, mirroring the doable path above.
+                            if giverElsewhere then
+                                addBlockedRow(giverZoneName, "available")
+                            end
                         end
                     end
                 end
@@ -956,11 +1058,15 @@ local function scanQuestsByZone()
         end
     end
 
-    -- In-range quests sort above out-of-range so the actionable rows stay at the top of each bucket; faded rows sink below within the same level/name ordering.
+    -- Actionable rows stay at the top of each bucket: in-range doable first, then in-range blocked (greyed), then out-of-range, level/name ordered within each tier.
     local function sortQuests(list)
+        local function tier(q)
+            return (q.outOfRange and 2 or 0) + (q.blocked and 1 or 0)
+        end
         table.sort(list, function(a, b)
-            if (a.outOfRange and true or false) ~= (b.outOfRange and true or false) then
-                return not a.outOfRange
+            local ta, tb = tier(a), tier(b)
+            if ta ~= tb then
+                return ta < tb
             end
             if a.level == b.level then
                 return a.name < b.name
@@ -972,61 +1078,48 @@ local function scanQuestsByZone()
     local zoneOrder = {}
     for zoneName, entry in pairs(byZone) do
         zoneOrder[#zoneOrder + 1] = zoneName
-        sortQuests(entry.inLog)
         sortQuests(entry.available)
         sortQuests(entry.pickedUpElsewhere)
-        table.sort(entry.missingPre.order, function(a, b)
-            local ea, eb = entry.missingPre.entries[a], entry.missingPre.entries[b]
-            if (ea.outOfRange and true or false) ~= (eb.outOfRange and true or false) then
-                return not ea.outOfRange
-            end
-            if ea.level ~= eb.level then return ea.level < eb.level end
-            return ea.name < eb.name
-        end)
 
-        -- Stats power both the zone header summary and the zone sort. Count only in-range quests so the figures match what a player would consider when choosing where to level. inLog quests bypass the level band entirely and are always counted. The in-range quests double as seeds for the follow-up projection below.
-        local countInRange = #entry.inLog
+        -- Stats power both the zone header summary and the zone sort. Count only in-range quests so the figures match what a player would consider when choosing where to level. In-log rows bypass the level band entirely and are always counted. The pickable rows double as seeds for the follow-up projection below; blocked rows are tallied after the projection settles which of them unlock in-zone.
+        local countInRange = 0
         local xpNow = 0
         local seeds = {}
-        for _, q in ipairs(entry.inLog) do
-            xpNow = xpNow + (q.xp or 0)
-            seeds[#seeds + 1] = q.id
-        end
-        for _, q in ipairs(entry.available) do
-            if not q.outOfRange then
-                countInRange = countInRange + 1
-                xpNow = xpNow + (q.xp or 0)
-                seeds[#seeds + 1] = q.id
+        local function tallyDoable(list)
+            for _, q in ipairs(list) do
+                if not q.blocked and (q.inLog or not q.outOfRange) then
+                    countInRange = countInRange + 1
+                    xpNow = xpNow + (q.xp or 0)
+                    seeds[#seeds + 1] = q.id
+                end
             end
         end
-        for _, q in ipairs(entry.pickedUpElsewhere) do
-            if not q.outOfRange then
-                countInRange = countInRange + 1
-                xpNow = xpNow + (q.xp or 0)
-                seeds[#seeds + 1] = q.id
-            end
-        end
+        tallyDoable(entry.available)
+        tallyDoable(entry.pickedUpElsewhere)
 
-        -- Follow-up projection: chains that keep unlocking inside this zone once the seeds are done. Blocked quests whose chain runs through another zone stay out of the XP total and are reported separately, so a zone is never credited XP that requires traveling elsewhere to unlock.
+        -- Follow-up projection: chains that keep unlocking in this zone (set here or starting here) once the seeds are done. Blocked quests whose chain runs through another zone stay out of the XP total and are reported separately, so a zone is never credited XP that requires traveling elsewhere to unlock.
         entry.followups = collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, passesLevelGate)
         local travelXp, travelCount = 0, 0
-        for _, qid in ipairs(entry.missingPre.order) do
-            local mpe = entry.missingPre.entries[qid]
-            if mpe then
-                mpe.unlocksHere = entry.followups.ids[qid] == true
-                if not mpe.outOfRange then
-                    countInRange = countInRange + 1
-                    if not mpe.unlocksHere then
-                        travelXp = travelXp + (mpe.xp or 0)
-                        travelCount = travelCount + 1
+        local function tallyBlocked(list)
+            for _, q in ipairs(list) do
+                if q.blocked then
+                    q.unlocksHere = entry.followups.ids[q.id] == true
+                    if not q.outOfRange then
+                        countInRange = countInRange + 1
+                        if not q.unlocksHere then
+                            travelXp = travelXp + (q.xp or 0)
+                            travelCount = travelCount + 1
+                        end
                     end
                 end
             end
         end
+        tallyBlocked(entry.available)
+        tallyBlocked(entry.pickedUpElsewhere)
 
         local levelSum, levelCount = 0, 0
         for _, q in ipairs(entry.available) do
-            if not q.outOfRange and q.level and q.level > 0 then
+            if not q.blocked and not q.inLog and not q.outOfRange and q.level and q.level > 0 then
                 levelSum = levelSum + q.level
                 levelCount = levelCount + 1
             end
@@ -1035,7 +1128,6 @@ local function scanQuestsByZone()
         entry.stats = {
             count = countInRange,
             xp = xpNow + entry.followups.xp,
-            xpNow = xpNow,
             xpFollowup = entry.followups.xp,
             followupCount = entry.followups.count,
             travelXp = travelXp,
@@ -1069,8 +1161,6 @@ local function sortZones(zoneOrder, byZone)
         table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.count end))
     elseif mode == "xp" then
         table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.xp end))
-    elseif mode == "xpNow" then
-        table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.xpNow end))
     elseif mode == "avgLevel" then
         table.sort(zoneOrder, compareNumeric(function(z) return byZone[z].stats.avgLevel end))
     else
@@ -1207,19 +1297,11 @@ local function formatRowLines(level, name, quest, badge)
     return line1, line2
 end
 
-local function formatRowLabel(level, name, quest)
-    local line1, line2 = formatRowLines(level, name, quest, nil)
-    if line2 then
-        return line1 .. "\n" .. line2
-    end
-    return line1
-end
-
--- Status badge for prior quests in the chain tooltip. `[In Progress]` (yellow) if the player has the quest in their log, `[Available]` (green) if it can be picked up right now, otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
+-- Status badge for prior quests in the chain tooltip. `[In Questlog]` (yellow) if the player has the quest in their log, `[Available]` (green) if it can be picked up right now, otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
 local function getStatusBadge(questId)
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
     if currentLog[questId] then
-        return COLOR.YELLOW .. "[In Progress]|r"
+        return COLOR.YELLOW .. "[In Questlog]|r"
     end
     if QuestieDB and QuestieDB.IsDoable and QuestieDB.IsDoable(questId) then
         return COLOR.GREEN .. "[Available]|r"
@@ -1456,22 +1538,192 @@ local function showZoneTooltip(anchor, zoneName, stats, isBest)
         GameTooltip:AddLine(COLOR.GOLD .. "Best zone for your next trip|r")
     end
     GameTooltip:AddLine(" ")
-    addTooltipField("Available now", formatNumber(stats.xpNow or 0) .. " XP")
+    local total = stats.xp or 0
+    local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
+    if total > 0 and xpMax > 0 then
+        addTooltipField("Total XP",
+            string.format("%s XP, %d%% of your level", formatNumber(total), math.floor(total / xpMax * 100 + 0.5)))
+    else
+        addTooltipField("Total XP", formatNumber(total) .. " XP")
+    end
     if (stats.followupCount or 0) > 0 then
-        addTooltipField("Follow-ups unlocking here",
+        addTooltipField("Includes follow-ups",
             string.format("%s XP (%d quests)", formatNumber(stats.xpFollowup or 0), stats.followupCount))
     end
     if (stats.travelCount or 0) > 0 then
         addTooltipField("Gated outside this zone",
             string.format("%s XP (%d quests, not counted)", formatNumber(stats.travelXp or 0), stats.travelCount))
     end
-    local total = (stats.xpNow or 0) + (stats.xpFollowup or 0)
-    local xpMax = (UnitXPMax and UnitXPMax("player")) or 0
-    if total > 0 and xpMax > 0 then
-        addTooltipField("One trip",
-            string.format("%s XP, %d%% of your level", formatNumber(total), math.floor(total / xpMax * 100 + 0.5)))
+    GameTooltip:Show()
+end
+
+-- Opens the native quest log to the quest. Headers expand first because a quest under a collapsed header has no reachable log index, and the faux scroll list is nudged so the selection is on screen (QuestLog_SetSelection highlights but never scrolls).
+local function openQuestInLog(questId)
+    if not GetQuestLogIndexByID or not QuestLogFrame then
+        return
+    end
+    if ExpandQuestHeader then
+        ExpandQuestHeader(0)
+    end
+    local logIndex = GetQuestLogIndexByID(questId)
+    if not logIndex or logIndex == 0 then
+        return
+    end
+    if not QuestLogFrame:IsShown() then
+        ShowUIPanel(QuestLogFrame)
+    end
+    if QuestLogListScrollFrame and FauxScrollFrame_SetOffset and QuestLogListScrollFrameScrollBar then
+        local offset = math.max(0, logIndex - 3)
+        FauxScrollFrame_SetOffset(QuestLogListScrollFrame, offset)
+        QuestLogListScrollFrameScrollBar:SetValue(offset * (QUESTLOG_QUEST_HEIGHT or 16))
+    end
+    QuestLog_SetSelection(logIndex)
+    QuestLog_Update()
+end
+
+-- Blink the row's native hover highlight a few times so the eye lands on the jump target. Ends hidden; a hover in between re-drives it through OnEnter/OnLeave anyway.
+local function flashRow(row)
+    local step = 0
+    local function blink()
+        step = step + 1
+        if step % 2 == 1 then
+            row.highlight:Show()
+        else
+            row.highlight:Hide()
+        end
+        if step < 6 then
+            C_Timer.After(0.25, blink)
+        end
+    end
+    blink()
+end
+
+-- First zone/bucket in display order holding a pickable or in-log row for the quest, honoring the active filters so the jump only targets a row that actually renders.
+local function findListedQuest(questId)
+    local byZone = ensureScan()
+    local filters = (QuestieGuideDB and QuestieGuideDB.filters) or DEFAULTS.filters
+    for _, zoneName in ipairs(lastZoneOrder) do
+        local entry = byZone[zoneName]
+        if entry then
+            for _, subKey in ipairs(SUBCAT_ORDER) do
+                if filters[subKey] then
+                    for _, q in ipairs(entry[subKey] or {}) do
+                        if q.id == questId and not q.blocked and (not q.inLog or filters.inLog) then
+                            return zoneName, subKey
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Expand the target's zone and bucket, re-render, scroll the list to the row and blink it. Scrolling goes through the scrollbar so its thumb stays in sync.
+local function jumpToQuestInList(questId)
+    local zoneName, subKey = findListedQuest(questId)
+    if not zoneName then
+        return false
+    end
+    getZoneCollapsed()[zoneName] = false
+    getGroupCollapsed()[zoneName .. "||" .. subKey] = false
+    renderList()
+    local target = rowTargets[questId]
+    if not target or not mainFrame or not mainFrame.scroll then
+        return false
+    end
+    local scroll, scrollBar = mainFrame.scroll, mainFrame.scrollBar
+    local range = math.max(0, scrollChild:GetHeight() - scroll:GetHeight())
+    if range > 0 then
+        -- A third down the viewport keeps some context visible above the target row.
+        local goal = math.min(math.max(target.top - scroll:GetHeight() / 3, 0), range)
+        scrollBar:SetScrollPercentage(goal / range)
+    end
+    flashRow(target.row)
+    return true
+end
+
+-- Tooltip for a ready-to-turn-in quest: Questie-colored name plus the turn-in target, mirroring showQuestTooltip's field styling. The quest's startInfo carries the finisher (see collectCompletedByZone).
+local function showTurnInTooltip(anchor, quest)
+    if not loadQuestie() then
+        return
+    end
+    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(QuestieLib:GetColoredQuestName(quest.id, true, false))
+    GameTooltip:AddLine(COLOR.GREEN .. "Ready to turn in|r")
+    GameTooltip:AddLine(" ")
+    local info = quest.startInfo
+    addTooltipField("Turn in to", info and info.npcName)
+    addTooltipField("Location", info and formatLocation(info.zoneName, info.spawn))
+    if quest.xp and quest.xp > 0 then
+        addTooltipField("XP", formatNumber(quest.xp))
     end
     GameTooltip:Show()
+end
+
+-- Quests in the log that are ready to turn in, bucketed by the turn-in target's zone. Detection uses QuestieDB.IsComplete, which reads the native quest log's isComplete flag and also settles no-objective auto-complete quests; the zone grouping needs Questie's finishedBy data either way. Cheap (log holds at most 20 quests), so it runs fresh every render instead of joining the scan cache.
+local function collectCompletedByZone()
+    if not loadQuestie() or not QuestieDB.IsComplete then
+        return {}, {}
+    end
+    local playerLevel = UnitLevel("player")
+    local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
+    local byZone = {}
+    local zoneOrder = {}
+    for questId in pairs(currentLog) do
+        if QuestieDB.IsComplete(questId) == 1 then
+            local npcName, zoneName, spawn, areaId = getQuestFinishInfo(questId)
+            local bucketName = zoneName or OTHER_ZONE_NAME
+            local quest = {
+                id = questId,
+                level = getEffectiveLevel(questId, playerLevel),
+                name = getQuestName(questId),
+                xp = getQuestXp(questId),
+                tag = getQuestTagLabel(questId),
+                completed = true,
+                -- Finisher stands in for startInfo so row line 2, map clicks, and the waypoint all point at the turn-in target instead of the giver.
+                startInfo = { npcName = npcName, zoneName = zoneName, spawn = spawn, areaId = areaId },
+            }
+            local bucket = byZone[bucketName]
+            if not bucket then
+                bucket = {}
+                byZone[bucketName] = bucket
+                zoneOrder[#zoneOrder + 1] = bucketName
+            end
+            bucket[#bucket + 1] = quest
+        end
+    end
+    for _, list in pairs(byZone) do
+        table.sort(list, function(a, b)
+            if a.level == b.level then
+                return a.name < b.name
+            end
+            return a.level < b.level
+        end)
+    end
+    -- Zones with the most turn-ins first so the best trip reads at a glance; ties alphabetical, "Other" pinned last like the main list.
+    table.sort(zoneOrder, function(a, b)
+        if a == OTHER_ZONE_NAME then return false end
+        if b == OTHER_ZONE_NAME then return true end
+        local countA, countB = #byZone[a], #byZone[b]
+        if countA ~= countB then
+            return countA > countB
+        end
+        return a < b
+    end)
+    return byZone, zoneOrder
+end
+
+-- Left-click on a blocked row lands on the chain step the player can act on now. The chain runs [initial, ..., blocked target]; the earliest step with a pickable or in-log row is the actionable one. Falls back to the map at the chain start when no step is listed.
+local function jumpToUnlockingQuest(mpe)
+    local chain = mpe.chain
+    if type(chain) == "table" then
+        for i = 1, #chain - 1 do
+            if jumpToQuestInList(chain[i]) then
+                return
+            end
+        end
+    end
+    openMapForQuest({ id = type(chain) == "table" and chain[1] or mpe.id })
 end
 
 function renderList()
@@ -1481,6 +1733,7 @@ function renderList()
     local byZone, zoneOrder = ensureScan()
     sortZones(zoneOrder, byZone)
     lastZoneOrder = zoneOrder
+    rowTargets = {}
 
     -- The zone with the highest one-trip value (XP available now plus follow-ups unlocking in-zone) is called out in its header tooltip: the answer to "where should I go questing next", independent of the active sort. "Other" is a sort catch-all rather than a destination, so it never wins.
     local bestZoneName
@@ -1523,6 +1776,7 @@ function renderList()
 
     local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha)
         y = y + ROW_GAP
+        local rowTop = y
         local row = acquireRow(index)
         placeRow(row, INDENT_STEP * 2)
         -- Rows are pooled and reused across renders, so always reset alpha explicitly. Out-of-range quests pass 0.5 to dim the row.
@@ -1551,6 +1805,7 @@ function renderList()
         end
         y = y + sizeRow(row, ROW_HEIGHT)
         index = index + 1
+        return row, rowTop
     end
 
     local zoneCollapsedDB = getZoneCollapsed()
@@ -1607,6 +1862,90 @@ function renderList()
         return false
     end
 
+    -- Completed Quests section at the top of the list: turn-in zones sorted by count, quests styled like the zone buckets below. Returns true when it drew anything so the zone loop and empty-state message can account for it.
+    local function renderCompletedSection()
+        if not (QuestieGuideDB and QuestieGuideDB.showCompleted) then
+            lastCompletedZones = {}
+            return false
+        end
+        local completedByZone, completedZoneOrder = collectCompletedByZone()
+        lastCompletedZones = completedZoneOrder
+
+        local visibleByZone = {}
+        local total = 0
+        for _, zoneName in ipairs(completedZoneOrder) do
+            local zoneMatch = searchMatches(zoneName)
+            local list = {}
+            for _, q in ipairs(completedByZone[zoneName]) do
+                if zoneMatch or searchMatches(q.name) or (q.startInfo and searchMatches(q.startInfo.npcName)) then
+                    list[#list + 1] = q
+                end
+            end
+            if #list > 0 then
+                visibleByZone[zoneName] = list
+                total = total + #list
+            end
+        end
+        if total == 0 then
+            return false
+        end
+
+        local collapsed = zoneCollapsedDB[COMPLETED_KEY] == true
+        local header = acquireRow(index)
+        placeRow(header, 0)
+        styleHeaderRow(header, collapsed)
+        header.text:SetText(COMPLETED_LABEL .. " (" .. total .. ")")
+        -- Section toggle only flips the section itself; turn-in zone state is independent, matching the zone headers.
+        header:SetScript("OnClick", function()
+            zoneCollapsedDB[COMPLETED_KEY] = not collapsed
+            renderList()
+        end)
+        y = y + sizeRow(header, HEADER_HEIGHT)
+        index = index + 1
+
+        if not collapsed then
+            local subIndex = 0
+            for _, zoneName in ipairs(completedZoneOrder) do
+                local list = visibleByZone[zoneName]
+                if list then
+                    subIndex = subIndex + 1
+                    local groupKey = COMPLETED_KEY .. "||" .. zoneName
+                    local groupHidden = groupCollapsedDB[groupKey] == true
+
+                    y = y + (subIndex == 1 and ROW_GAP or GROUP_GAP)
+
+                    local sub = acquireRow(index)
+                    placeRow(sub, INDENT_STEP)
+                    styleHeaderRow(sub, groupHidden)
+                    sub.text:SetText(string.format("%s (%d)", zoneName, #list))
+                    sub:SetScript("OnClick", function()
+                        groupCollapsedDB[groupKey] = not groupHidden
+                        renderList()
+                    end)
+                    y = y + sizeRow(sub, SUBHEADER_HEIGHT)
+                    index = index + 1
+
+                    if not groupHidden then
+                        for _, quest in ipairs(list) do
+                            -- Left-click opens the map at the turn-in target and pulses the quest's Questie icons (quest.startInfo carries the finisher, so openMapForQuest lands there).
+                            local badge = COLOR.GREEN .. "[Ready to Turn In]|r"
+                            local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
+                            local label = line2 and (line1 .. "\n" .. line2) or line1
+                            renderQuestRow(label,
+                                function(self) showTurnInTooltip(self, quest) end,
+                                function() openMapForQuest(quest) end,
+                                function(self) if showQuestContextMenu then showQuestContextMenu(self, quest) end end,
+                                function() linkQuestInChat(quest) end)
+                        end
+                    end
+                end
+            end
+        end
+        return true
+    end
+
+    local completedShown = renderCompletedSection()
+
     for _, zoneName in ipairs(zoneOrder) do
         local entry = byZone[zoneName]
         if entry then
@@ -1618,32 +1957,27 @@ function renderList()
             for _, subKey in ipairs(SUBCAT_ORDER) do
                 visible[subKey] = {}
             end
-            if filters.inLog then
-                for _, q in ipairs(entry.inLog or {}) do
-                    if passesQuest(q, zoneMatch) then
-                        visible.inLog[#visible.inLog + 1] = q
-                    end
+            -- In-log and blocked rows ride inside the pickup buckets, toggled by their filters. Blocked rows match the search through any step of their chain and respect the tag filters like every other row.
+            local function passesRow(quest)
+                if quest.blocked then
+                    return filters.missingPre and passesTagFilter(quest) and passesChain(quest, zoneMatch)
                 end
+                if quest.inLog and not filters.inLog then
+                    return false
+                end
+                return passesQuest(quest, zoneMatch)
             end
             if filters.available then
                 for _, q in ipairs(entry.available or {}) do
-                    if passesQuest(q, zoneMatch) then
+                    if passesRow(q) then
                         visible.available[#visible.available + 1] = q
                     end
                 end
             end
             if filters.pickedUpElsewhere then
                 for _, q in ipairs(entry.pickedUpElsewhere or {}) do
-                    if passesQuest(q, zoneMatch) then
+                    if passesRow(q) then
                         visible.pickedUpElsewhere[#visible.pickedUpElsewhere + 1] = q
-                    end
-                end
-            end
-            if filters.missingPre and entry.missingPre and entry.missingPre.order then
-                for _, blockedId in ipairs(entry.missingPre.order) do
-                    local mpe = entry.missingPre.entries[blockedId]
-                    if mpe and passesChain(mpe, zoneMatch) then
-                        visible.missingPre[#visible.missingPre + 1] = mpe
                     end
                 end
             end
@@ -1661,7 +1995,7 @@ function renderList()
                         subRangeN = subRangeN + 1
                         inRangeTotal = inRangeTotal + 1
                         -- Blocked-quest XP is carried by the zone-level follow-up figure (only chains that unlock in-zone count), never by row summation.
-                        if subKey ~= "missingPre" then
+                        if not q.blocked then
                             inRangeXp = inRangeXp + (q.xp or 0)
                         end
                     end
@@ -1669,7 +2003,7 @@ function renderList()
                 subInRangeCount[subKey] = subRangeN
             end
             if visibleTotal > 0 then
-                if renderedZones > 0 then
+                if renderedZones > 0 or completedShown then
                     y = y + ZONE_GAP
                 end
                 renderedZones = renderedZones + 1
@@ -1680,13 +2014,10 @@ function renderList()
                 local summary = " (" .. inRangeTotal .. ")"
                 -- Search narrows the rows on screen, so the zone-level follow-up projection would no longer match them; the projection only shows on the unfiltered view.
                 local followupXp = (searchText == "" and entry.followups and entry.followups.xp) or 0
-                -- Mirrors the two XP sort modes: currently available XP first, the chain total in brackets. Percent-of-level detail lives in the header tooltip.
-                if inRangeXp > 0 or followupXp > 0 then
-                    local parts = formatNumber(inRangeXp) .. " XP"
-                    if followupXp > 0 then
-                        parts = parts .. " (" .. formatNumber(inRangeXp + followupXp) .. " total)"
-                    end
-                    summary = summary .. " " .. COLOR.GREY .. parts .. "|r"
+                -- Single total XP figure: rows in range plus follow-ups unlocking in-zone. Percent-of-level detail lives in the header tooltip.
+                local totalXp = inRangeXp + followupXp
+                if totalXp > 0 then
+                    summary = summary .. " " .. COLOR.GREY .. formatNumber(totalXp) .. " XP|r"
                 end
                 local isBestZone = (zoneName == bestZoneName)
                 header.text:SetText(zoneName .. summary)
@@ -1699,15 +2030,9 @@ function renderList()
                     self.text:SetTextColor(HEADER_R, HEADER_G, HEADER_B)
                     GameTooltip:Hide()
                 end)
+                -- Zone toggle only flips the zone itself; subcategory state is independent and survives so Collapse All's collapsed subs stay collapsed.
                 header:SetScript("OnClick", function()
-                    local expanding = collapsed
                     zoneCollapsedDB[zoneName] = not collapsed
-                    -- Auto-expand the actionable subcategories so a freshly expanded zone shows its quests without a second click. missingPre stays under user control because it's a noisier, mostly-informational section.
-                    if expanding then
-                        groupCollapsedDB[zoneName .. "||inLog"] = false
-                        groupCollapsedDB[zoneName .. "||available"] = false
-                        groupCollapsedDB[zoneName .. "||pickedUpElsewhere"] = false
-                    end
                     renderList()
                 end)
                 y = y + sizeRow(header, HEADER_HEIGHT)
@@ -1737,36 +2062,37 @@ function renderList()
                             index = index + 1
 
                             if not groupHidden then
-                                if subKey == "missingPre" then
-                                    for _, mpe in ipairs(list) do
-                                        -- Row is the blocked quest itself. Map jumps to the next actionable step (chain[1]); chat link points at the blocked quest (the row being hovered).
-                                        local initial = mpe._initial
-                                        if not initial then
-                                            initial = { id = mpe.chain and mpe.chain[1] }
-                                            mpe._initial = initial
-                                        end
-                                        -- Chains that finish unlocking inside this zone count toward its follow-up XP; the badge separates them from chains gated somewhere else.
-                                        local badge = mpe.unlocksHere
-                                            and (COLOR.GREEN .. "[Unlocks Here]|r")
-                                            or (COLOR.GREY .. "[Needs Travel]|r")
-                                        local line1, line2 = formatRowLines(mpe.level, mpe.name, mpe, badge)
+                                for _, quest in ipairs(list) do
+                                    if quest.blocked then
+                                        -- Row is the blocked quest itself, greyed until its chain is cleared. Left-click jumps the list to the chain step the player can pick up now; chat link points at the blocked quest (the row being hovered).
+                                        local badge = COLOR.RED .. "[Missing Pre-Quest]|r"
+                                        local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
                                         local label = line2 and (line1 .. "\n" .. line2) or line1
                                         renderQuestRow(label,
-                                            function(self) showChainTooltip(self, mpe) end,
-                                            function() openMapForQuest(initial) end,
-                                            function(self) if showChainContextMenu then showChainContextMenu(self, mpe) end end,
-                                            function() linkQuestInChat(mpe) end,
-                                            mpe.outOfRange and 0.5 or 1)
-                                    end
-                                else
-                                    for _, quest in ipairs(list) do
-                                        local label = formatRowLabel(quest.level, quest.name, quest)
-                                        renderQuestRow(label,
+                                            function(self) showChainTooltip(self, quest) end,
+                                            function() jumpToUnlockingQuest(quest) end,
+                                            function(self) if showChainContextMenu then showChainContextMenu(self, quest) end end,
+                                            function() linkQuestInChat(quest) end,
+                                            0.5)
+                                    else
+                                        -- In-log rows open the native quest log; pickable rows open the map at their giver. Both register as jump targets for blocked rows' chains.
+                                        local badge = quest.inLog
+                                            and (COLOR.YELLOW .. "[In Questlog]|r")
+                                            or (COLOR.GREEN .. "[Available]|r")
+                                        local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
+                                        local label = line2 and (line1 .. "\n" .. line2) or line1
+                                        local onLeftClick = quest.inLog
+                                            and function() openQuestInLog(quest.id) end
+                                            or function() openMapForQuest(quest) end
+                                        local row, rowTop = renderQuestRow(label,
                                             function(self) showQuestTooltip(self, quest.id) end,
-                                            function() openMapForQuest(quest) end,
+                                            onLeftClick,
                                             function(self) if showQuestContextMenu then showQuestContextMenu(self, quest) end end,
                                             function() linkQuestInChat(quest) end,
                                             quest.outOfRange and 0.5 or 1)
+                                        if not rowTargets[quest.id] then
+                                            rowTargets[quest.id] = { row = row, top = rowTop }
+                                        end
                                     end
                                 end
                             end
@@ -1777,11 +2103,11 @@ function renderList()
         end
     end
 
-    if renderedZones == 0 then
-        local anyBucket = filters.inLog or filters.available or filters.pickedUpElsewhere or filters.missingPre
+    if renderedZones == 0 and not completedShown then
+        local anyBucket = filters.available or filters.pickedUpElsewhere
         local msg
         if not anyBucket then
-            msg = "All quest filters are off. Enable In Quest Log, Available, Picked Up Elsewhere, or Missing Prerequisite to see quests."
+            msg = "All quest filters are off. Enable Picked Up in Zone or Picked Up Outside of Zone to see quests."
         elseif searchText ~= "" then
             msg = string.format("No quests match \"%s\". Clear the search or change filters.", searchText)
         else
@@ -1801,12 +2127,15 @@ function renderList()
     hideUnusedRows(index)
 
     if mainFrame and mainFrame.toggleAllButton then
-        local allCollapsed = #zoneOrder > 0
+        local allCollapsed = #zoneOrder > 0 or completedShown
         for _, zoneName in ipairs(zoneOrder) do
             if not zoneCollapsedDB[zoneName] then
                 allCollapsed = false
                 break
             end
+        end
+        if completedShown and not zoneCollapsedDB[COMPLETED_KEY] then
+            allCollapsed = false
         end
         mainFrame.toggleAllButton:SetText(allCollapsed and "Expand All" or "Collapse All")
     end
@@ -2086,9 +2415,9 @@ local function buildMainFrame()
             get = getFilterValue,
             set = setFilterValue,
             specs = {
-                { key = "inLog",             label = "In Quest Log" },
-                { key = "available",         label = "Available in Zone" },
-                { key = "pickedUpElsewhere", label = "Available Elsewhere" },
+                { key = "inLog",             label = "In Questlog" },
+                { key = "available",         label = "Picked Up in Zone" },
+                { key = "pickedUpElsewhere", label = "Picked Up Outside of Zone" },
                 { key = "missingPre",        label = "Missing Pre-Quest" },
             },
         },
@@ -2183,7 +2512,34 @@ local function buildMainFrame()
         sortDirDropdown:GenerateMenu()
     end
 
-    -- 4) Quests section: search row (label + helper + edit box) at the top, then the Collapse All button and scroll list. Fills the entire right pane.
+    -- 4) Visibility Filters section: display toggles that add whole sections to the quest list, stored as top-level DB keys like the other display toggles.
+    local visibilitySection = makeSection("Visibility Filters")
+    local VIS_CHECKBOX_HEIGHT = 22
+    visibilitySection:SetHeight(SECTION_INNER_PAD * 2 + VIS_CHECKBOX_HEIGHT)
+
+    local showCompletedCheckbox = CreateFrame("CheckButton", "QuestieGuideShowCompleted", visibilitySection.body, "UICheckButtonTemplate")
+    showCompletedCheckbox:SetSize(VIS_CHECKBOX_HEIGHT, VIS_CHECKBOX_HEIGHT)
+    showCompletedCheckbox:SetPoint("TOPLEFT", visibilitySection.body, "TOPLEFT", ROW_EDGE_PAD, 0)
+    local showCompletedLabel = _G[showCompletedCheckbox:GetName() .. "Text"]
+    if showCompletedLabel then
+        showCompletedLabel:SetFontObject("GameFontNormal")
+        showCompletedLabel:SetText("Show Completed Quests")
+        -- Same re-anchor as the range checkbox: the template's gap is calibrated for the 32px default size.
+        showCompletedLabel:ClearAllPoints()
+        showCompletedLabel:SetPoint("LEFT", showCompletedCheckbox, "RIGHT", 4, 0)
+    end
+    showCompletedCheckbox:SetScript("OnClick", function(self)
+        QuestieGuideDB.showCompleted = self:GetChecked() and true or false
+        -- Completed data reads the live quest log per render, so no scan invalidation is needed.
+        renderList()
+    end)
+    frame.showCompletedCheckbox = showCompletedCheckbox
+
+    frame.refreshShowCompleted = function()
+        showCompletedCheckbox:SetChecked(QuestieGuideDB and QuestieGuideDB.showCompleted and true or false)
+    end
+
+    -- 5) Quests section: search row (label + helper + edit box) at the top, then the Collapse All button and scroll list. Fills the entire right pane.
     local questsSection = buildSection(listPane, "Quests")
     questsSection:SetPoint("TOPLEFT", listPane, "TOPLEFT", 0, 0)
     questsSection:SetPoint("BOTTOMRIGHT", listPane, "BOTTOMRIGHT", 0, 0)
@@ -2222,15 +2578,25 @@ local function buildMainFrame()
     toggleAllButton:SetScript("OnClick", function()
         local zc = getZoneCollapsed()
         local gc = getGroupCollapsed()
+        local completedActive = QuestieGuideDB.showCompleted and #lastCompletedZones > 0
         local anyExpanded = false
         for _, zoneName in ipairs(lastZoneOrder) do
             if not zc[zoneName] then anyExpanded = true; break end
+        end
+        if completedActive and not zc[COMPLETED_KEY] then
+            anyExpanded = true
         end
         -- anyExpanded -> collapse everything; otherwise expand everything. Subcategory state mirrors the zone toggle so the button acts as a single "show me everything / nothing" control.
         for _, zoneName in ipairs(lastZoneOrder) do
             zc[zoneName] = anyExpanded
             for _, subKey in ipairs(SUBCAT_ORDER) do
                 gc[zoneName .. "||" .. subKey] = anyExpanded
+            end
+        end
+        if completedActive then
+            zc[COMPLETED_KEY] = anyExpanded
+            for _, zoneName in ipairs(lastCompletedZones) do
+                gc[COMPLETED_KEY .. "||" .. zoneName] = anyExpanded
             end
         end
         renderList()
@@ -2337,6 +2703,9 @@ local function showFrame()
     end
     if frame.refreshRangeSliders then
         frame.refreshRangeSliders()
+    end
+    if frame.refreshShowCompleted then
+        frame.refreshShowCompleted()
     end
     frame:Show()
     renderLoadingPlaceholder()
@@ -2666,12 +3035,20 @@ loader:RegisterEvent("PLAYER_LEVEL_UP")
 loader:RegisterEvent("QUEST_ACCEPTED")
 loader:RegisterEvent("QUEST_REMOVED")
 loader:RegisterEvent("QUEST_TURNED_IN")
+loader:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
 loader:SetScript("OnEvent", function(self, event, name)
     -- QUEST_LOG_UPDATE is deliberately absent: it fires on every objective tick and each fire costs a full DB rescan, while accept/remove/turn-in/level-up already cover everything that changes zone bucketing.
     if event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN"
         or event == "PLAYER_LEVEL_UP" then
         invalidateScan()
         scheduleRefresh()
+        return
+    end
+    -- Objective progress can flip a log quest to complete. Re-render only (the scan cache stays valid); the completed section reads live completeness each render.
+    if event == "UNIT_QUEST_LOG_CHANGED" then
+        if name == "player" then
+            scheduleRefresh()
+        end
         return
     end
     if event == "ADDON_LOADED" and name == ADDON_NAME then
@@ -2684,6 +3061,9 @@ loader:SetScript("OnEvent", function(self, event, name)
         QuestieGuideDB.levelAbove = clampRange(QuestieGuideDB.levelAbove) or DEFAULTS.levelAbove
         if type(QuestieGuideDB.useQuestieLevelRange) ~= "boolean" then
             QuestieGuideDB.useQuestieLevelRange = DEFAULTS.useQuestieLevelRange
+        end
+        if type(QuestieGuideDB.showCompleted) ~= "boolean" then
+            QuestieGuideDB.showCompleted = DEFAULTS.showCompleted
         end
         local validSort = false
         for _, opt in ipairs(SORT_BY_OPTIONS) do
