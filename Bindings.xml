@@ -1,0 +1,5 @@
+<Bindings>
+    <Binding name="QUESTIEGUIDE_TOGGLE" category="Questie Guide">
+        QuestieGuide_Toggle()
+    </Binding>
+</Bindings>
