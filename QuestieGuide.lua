@@ -81,15 +81,16 @@ local SECTION_LABEL_LIFT = SPACING.SM              -- floating label bottom abov
 local ROW_EDGE_PAD = 0
 local DROPDOWN_ROW_H = 28                  -- vertical room a dropdown row occupies.
 
--- List rhythm (rows use the 4px sub-grid for density).
-local ROW_HEIGHT = SPACING.MD
-local SUBHEADER_HEIGHT = SPACING.MD
-local HEADER_HEIGHT = SPACING.LG
--- Vertical rhythm inside the quest list. Three tiers, each tier visibly looser than the one nested below it: 4px between quest rows inside a subcategory, 8px between subcategory headers within a zone, 16px between zones.
-local ROW_GAP = SPACING.XS
-local GROUP_GAP = SPACING.SM
-local ZONE_GAP = SPACING.MD
-local INDENT_STEP = SPACING.MD
+-- List rhythm (rows use the 4px sub-grid for density), one table because renderList sits at Lua 5.1's 60-upvalue closure cap and each grouped constant frees a slot. Gap tiers: each tier visibly looser than the one nested below it, 4px between quest rows inside a subcategory, 8px between subcategory headers within a zone, 16px between zones.
+local LIST = {
+    ROW_HEIGHT = SPACING.MD,
+    SUBHEADER_HEIGHT = SPACING.MD,
+    HEADER_HEIGHT = SPACING.LG,
+    ROW_GAP = SPACING.XS,
+    GROUP_GAP = SPACING.SM,
+    ZONE_GAP = SPACING.MD,
+    INDENT_STEP = SPACING.MD,
+}
 
 -- Native quest log header treatment, mirroring Classic Era's QuestLogFrame (Blizzard_UIPanels_Game/Vanilla/QuestLogFrame.xml + .lua): a 16x16 red plus/minus toggle at x=3 with the additive hilight on hover, text 20px in from the row's left edge, header grey text that whitens on mouse-over (QuestDifficultyColors / QuestDifficultyHighlightColors "header").
 local HEADER_TEXT_INSET = 20
@@ -136,6 +137,8 @@ local zoneHeaderTops = {}
 local renderList
 local expandAndScrollToZone
 local searchText = ""
+-- Quest carrying the native-quest-log selection look; moved by row left-clicks, list jumps, and Questie map icon clicks.
+local selectedQuestId
 local getQuestTagLabel
 local getQuestXp
 local formatNumber
@@ -161,8 +164,9 @@ local COLOR = {
     YELLOW = "|cffffff00",
     GREEN  = "|cff00ff00",
     GOLD   = "|cffffd200",
-    ORANGE = "|cffff8000",
+    ORANGE = "|cffff7f00",
     RED    = "|cffff1a1a",
+    BLUE   = "|cffaaaaff",
 }
 
 local function getZoneCollapsed()
@@ -1370,11 +1374,15 @@ local function showQuestTooltip(anchor, questId)
 end
 
 -- Questie's difficulty color (red/orange/yellow/green/grey) for the quest level. Matches the color the name receives so the level brackets and name share a hue.
-local function getDifficultyColorCode(level)
-    local r, g, b = 1, 1, 1
+local function getDifficultyRGB(level)
     if QuestieLib and QuestieLib.GetDifficultyColorPercent then
-        r, g, b = QuestieLib:GetDifficultyColorPercent(level)
+        return QuestieLib:GetDifficultyColorPercent(level)
     end
+    return 1, 1, 1
+end
+
+local function getDifficultyColorCode(level)
+    local r, g, b = getDifficultyRGB(level)
     return string.format("|cff%02x%02x%02x",
         math.floor(r * 255), math.floor(g * 255), math.floor(b * 255))
 end
@@ -1405,11 +1413,11 @@ local function formatRowLines(level, name, quest, badge)
     return line1, line2
 end
 
--- Status badge for prior quests in the chain tooltip. `[In Questlog]` (yellow) if the player has the quest in their log, `[Available]` (green) if it can be picked up right now, otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
+-- Status badge for prior quests in the chain tooltip. `[In Questlog]` (blue) if the player has the quest in their log, `[Available]` (green) if it can be picked up right now, otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
 local function getStatusBadge(questId)
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
     if currentLog[questId] then
-        return COLOR.YELLOW .. "[In Questlog]|r"
+        return COLOR.BLUE .. "[In Questlog]|r"
     end
     if QuestieDB and QuestieDB.IsDoable and QuestieDB.IsDoable(questId) then
         return COLOR.GREEN .. "[Available]|r"
@@ -1485,6 +1493,7 @@ local function acquireRow(index)
         -- Pool rows persist across renders; reset alpha so a row that was previously used for an out-of-range quest doesn't carry the dimmed look forward when it's reused for a header or in-range quest. renderQuestRow overrides this for actual fading rows.
         row:SetAlpha(1)
         row.highlight:Hide()
+        row.selection:Hide()
         -- Reset the header dressing so a row reused for a quest or message doesn't keep the toggle, text inset, or grey header color.
         row.toggle:Hide()
         row.toggleHighlight:SetTexture("")
@@ -1493,7 +1502,7 @@ local function acquireRow(index)
         return row
     end
     row = CreateFrame("Button", nil, scrollChild)
-    row:SetHeight(ROW_HEIGHT)
+    row:SetHeight(LIST.ROW_HEIGHT)
     row:SetPoint("LEFT", scrollChild, "LEFT", 0, 0)
     row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -1503,6 +1512,12 @@ local function acquireRow(index)
     row.highlight:SetBlendMode("ADD")
     row.highlight:SetAllPoints(true)
     row.highlight:Hide()
+    -- Native quest log selection look: the same UI-QuestLogTitleHighlight in ADD blend that QuestLogSkillHighlight uses (Classic Era Vanilla/QuestLogFrame.xml), vertex-colored per quest difficulty in renderQuestRow like QuestLog_Update does.
+    row.selection = row:CreateTexture(nil, "BACKGROUND")
+    row.selection:SetTexture("Interface\\QuestFrame\\UI-QuestLogTitleHighlight")
+    row.selection:SetBlendMode("ADD")
+    row.selection:SetAllPoints(true)
+    row.selection:Hide()
     row.text = row:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     -- Anchor text from the top so wrapped lines grow downward; row height is sized to fit the measured text + ROW_PAD_V padding (see renderList).
     row.text:SetPoint("TOPLEFT", row, "TOPLEFT", SPACING.XS, -ROW_PAD_V)
@@ -1736,6 +1751,8 @@ local function jumpToQuestInList(questId)
     if not zoneName then
         return false
     end
+    -- The jump target becomes the selected row so the eye keeps it after the blink fades.
+    selectedQuestId = questId
     getZoneCollapsed()[zoneName] = false
     getGroupCollapsed()[zoneName .. "||" .. subKey] = false
     renderList()
@@ -1761,7 +1778,7 @@ local function showTurnInTooltip(anchor, quest)
     end
     GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
     GameTooltip:AddLine(QuestieLib:GetColoredQuestName(quest.id, true, false))
-    GameTooltip:AddLine(COLOR.GREEN .. "Ready to turn in|r")
+    GameTooltip:AddLine(COLOR.GREEN .. "Completed|r")
     GameTooltip:AddLine(" ")
     local info = quest.startInfo
     addTooltipField("Turn in to", info and info.npcName)
@@ -1902,14 +1919,19 @@ function renderList()
         GameTooltip:Hide()
     end
 
-    local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha)
-        y = y + ROW_GAP
+    local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha, quest)
+        y = y + LIST.ROW_GAP
         local rowTop = y
         local row = acquireRow(index)
-        placeRow(row, INDENT_STEP * 2)
+        placeRow(row, LIST.INDENT_STEP * 2)
         -- Rows are pooled and reused across renders, so always reset alpha explicitly. Out-of-range quests pass 0.5 to dim the row.
         row:SetAlpha(alpha or 1)
         row.text:SetText(label)
+        -- Selection mirrors the native quest log: the selected row keeps a difficulty-colored UI-QuestLogTitleHighlight until another row is selected. Blocked rows never carry it because their click jumps elsewhere.
+        if quest and quest.id == selectedQuestId and not quest.blocked then
+            row.selection:SetVertexColor(getDifficultyRGB(quest.level))
+            row.selection:Show()
+        end
         row:SetScript("OnEnter", function(self)
             row.highlight:Show()
             if onEnter then onEnter(self) end
@@ -1925,13 +1947,18 @@ function renderList()
                 elseif btn == "RightButton" then
                     if onRightClick then onRightClick(self) end
                 else
+                    -- Plain left click selects the row like the native quest log before running its action; the re-render moves the selection texture.
+                    if quest and not quest.blocked and quest.id ~= selectedQuestId then
+                        selectedQuestId = quest.id
+                        renderList()
+                    end
                     if onLeftClick then onLeftClick(self) end
                 end
             end)
         else
             row:SetScript("OnClick", nil)
         end
-        y = y + sizeRow(row, ROW_HEIGHT)
+        y = y + sizeRow(row, LIST.ROW_HEIGHT)
         index = index + 1
         return row, rowTop
     end
@@ -2028,7 +2055,7 @@ function renderList()
             zoneCollapsedDB[COMPLETED_KEY] = not collapsed
             renderList()
         end)
-        y = y + sizeRow(header, HEADER_HEIGHT)
+        y = y + sizeRow(header, LIST.HEADER_HEIGHT)
         index = index + 1
 
         if not collapsed then
@@ -2040,30 +2067,31 @@ function renderList()
                     local groupKey = COMPLETED_KEY .. "||" .. zoneName
                     local groupHidden = groupCollapsedDB[groupKey] == true
 
-                    y = y + (subIndex == 1 and ROW_GAP or GROUP_GAP)
+                    y = y + (subIndex == 1 and LIST.ROW_GAP or LIST.GROUP_GAP)
 
                     local sub = acquireRow(index)
-                    placeRow(sub, INDENT_STEP)
+                    placeRow(sub, LIST.INDENT_STEP)
                     styleHeaderRow(sub, groupHidden)
                     sub.text:SetText(string.format("%s (%d)", zoneName, #list))
                     sub:SetScript("OnClick", function()
                         groupCollapsedDB[groupKey] = not groupHidden
                         renderList()
                     end)
-                    y = y + sizeRow(sub, SUBHEADER_HEIGHT)
+                    y = y + sizeRow(sub, LIST.SUBHEADER_HEIGHT)
                     index = index + 1
 
                     if not groupHidden then
                         for _, quest in ipairs(list) do
                             -- Left-click opens the map at the turn-in target and pulses the quest's Questie icons (quest.startInfo carries the finisher, so openMapForQuest lands there).
-                            local badge = COLOR.GREEN .. "[Ready to Turn In]|r"
+                            local badge = COLOR.GREEN .. "[Completed]|r"
                             local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
                             local label = line2 and (line1 .. "\n" .. line2) or line1
                             renderQuestRow(label,
                                 function(self) showTurnInTooltip(self, quest) end,
                                 function() openMapForQuest(quest) end,
                                 function(self) if showQuestContextMenu then showQuestContextMenu(self, quest) end end,
-                                function() linkQuestInChat(quest) end)
+                                function() linkQuestInChat(quest) end,
+                                nil, quest)
                         end
                     end
                 end
@@ -2096,7 +2124,7 @@ function renderList()
         row:SetScript("OnClick", function()
             expandAndScrollToZone(bannerZone)
         end)
-        y = y + sizeRow(row, HEADER_HEIGHT) + GROUP_GAP
+        y = y + sizeRow(row, LIST.HEADER_HEIGHT) + LIST.GROUP_GAP
         index = index + 1
     end
 
@@ -2160,7 +2188,7 @@ function renderList()
             end
             if visibleTotal > 0 then
                 if renderedZones > 0 or completedShown then
-                    y = y + ZONE_GAP
+                    y = y + LIST.ZONE_GAP
                 end
                 renderedZones = renderedZones + 1
                 zoneHeaderTops[zoneName] = y
@@ -2204,7 +2232,7 @@ function renderList()
                     end
                     renderList()
                 end)
-                y = y + sizeRow(header, HEADER_HEIGHT)
+                y = y + sizeRow(header, LIST.HEADER_HEIGHT)
                 index = index + 1
 
                 if not collapsed then
@@ -2216,10 +2244,10 @@ function renderList()
                             local groupKey = zoneName .. "||" .. subKey
                             local groupHidden = groupCollapsedDB[groupKey] == true
 
-                            y = y + (subIndex == 1 and ROW_GAP or GROUP_GAP)
+                            y = y + (subIndex == 1 and LIST.ROW_GAP or LIST.GROUP_GAP)
 
                             local sub = acquireRow(index)
-                            placeRow(sub, INDENT_STEP)
+                            placeRow(sub, LIST.INDENT_STEP)
                             styleHeaderRow(sub, groupHidden)
                             sub.text:SetText(string.format("%s (%d)",
                                 SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0))
@@ -2227,14 +2255,14 @@ function renderList()
                                 groupCollapsedDB[groupKey] = not groupHidden
                                 renderList()
                             end)
-                            y = y + sizeRow(sub, SUBHEADER_HEIGHT)
+                            y = y + sizeRow(sub, LIST.SUBHEADER_HEIGHT)
                             index = index + 1
 
                             if not groupHidden then
                                 for _, quest in ipairs(list) do
                                     if quest.blocked then
                                         -- Row is the blocked quest itself, greyed until its chain is cleared. Left-click jumps the list to the chain step the player can pick up now; chat link points at the blocked quest (the row being hovered).
-                                        local badge = COLOR.RED .. "[Missing Pre-Quest]|r"
+                                        local badge = COLOR.ORANGE .. "[Missing Pre-Quest]|r"
                                         local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
                                         local label = line2 and (line1 .. "\n" .. line2) or line1
                                         renderQuestRow(label,
@@ -2242,11 +2270,11 @@ function renderList()
                                             function() jumpToUnlockingQuest(quest) end,
                                             function(self) if showChainContextMenu then showChainContextMenu(self, quest) end end,
                                             function() linkQuestInChat(quest) end,
-                                            0.5)
+                                            0.5, quest)
                                     else
                                         -- In-log rows open the native quest log; pickable rows open the map at their giver. Both register as jump targets for blocked rows' chains.
                                         local badge = quest.inLog
-                                            and (COLOR.YELLOW .. "[In Questlog]|r")
+                                            and (COLOR.BLUE .. "[In Questlog]|r")
                                             or (COLOR.GREEN .. "[Available]|r")
                                         local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
                                         -- Route number prefix: the row's stop on this zone's pickup route. Gaps mean filtered-out stops.
@@ -2262,7 +2290,7 @@ function renderList()
                                             onLeftClick,
                                             function(self) if showQuestContextMenu then showQuestContextMenu(self, quest) end end,
                                             function() linkQuestInChat(quest) end,
-                                            quest.outOfRange and 0.5 or 1)
+                                            quest.outOfRange and 0.5 or 1, quest)
                                         if not rowTargets[quest.id] then
                                             rowTargets[quest.id] = { row = row, top = rowTop }
                                         end
@@ -2292,7 +2320,7 @@ function renderList()
         row:SetScript("OnEnter", nil)
         row:SetScript("OnLeave", nil)
         row:SetScript("OnClick", nil)
-        y = y + sizeRow(row, ROW_HEIGHT * 2)
+        y = y + sizeRow(row, LIST.ROW_HEIGHT * 2)
         index = index + 1
 
         -- One-click fix for the likely cause, mirroring the message above. No button when Questie's ranges govern or the sliders are maxed; the message's advice (level up, move on) has no shortcut.
@@ -2961,11 +2989,11 @@ local function renderLoadingPlaceholder()
     end
     local row = acquireRow(1)
     row:ClearAllPoints()
-    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -ROW_HEIGHT)
-    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -ROW_HEIGHT)
-    row:SetHeight(ROW_HEIGHT)
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -LIST.ROW_HEIGHT)
+    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -LIST.ROW_HEIGHT)
+    row:SetHeight(LIST.ROW_HEIGHT)
     row.text:SetText("|cff7f7f7fScanning quest database\226\128\166|r")
-    scrollChild:SetHeight(ROW_HEIGHT * 3)
+    scrollChild:SetHeight(LIST.ROW_HEIGHT * 3)
 end
 
 local function showFrame()
@@ -3000,6 +3028,82 @@ local function toggleFrame()
         frame:Hide()
     else
         showFrame()
+    end
+end
+
+-- Opens the guide with the quest row expanded, scrolled to, and selected; used by Questie map icon clicks for quests not yet in the log.
+local function openGuideAtQuest(questId)
+    showFrame()
+    -- showFrame defers its first layout pass one tick, so the jump waits one tick too.
+    C_Timer.After(0.1, function()
+        if not jumpToQuestInList(questId) then
+            print(INTRO_PREFIX .. getQuestName(questId) .. " is not listed with the current filters.")
+        end
+    end)
+end
+
+-- Runs after Questie's own pin OnClick. Plain left click on a quest icon opens the quest: in-log quests jump to the native quest log, everything else opens the guide at the quest row. Modified clicks (Shift hide, Ctrl TomTom) and chat-link insertion stay Questie's; a world-map click that changed the shown map was a zoom-to-zone click, detected against the map id captured on mouse-down.
+local function onMapIconClick(pin, button)
+    if button ~= "LeftButton" or IsModifierKeyDown() then
+        return
+    end
+    if ChatEdit_GetActiveWindow and ChatEdit_GetActiveWindow() then
+        return
+    end
+    local data = pin.data
+    local questId = data and data.Id
+    if type(questId) ~= "number" or data.Type == "manual" then
+        return
+    end
+    if not pin.miniMapIcon and WorldMapFrame and WorldMapFrame:IsShown()
+        and pin.qgPreClickMapId and pin.UiMapID and pin.UiMapID ~= pin.qgPreClickMapId then
+        return
+    end
+    if not loadQuestie() then
+        return
+    end
+    local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
+    if currentLog[questId] then
+        openQuestInLog(questId)
+    else
+        openGuideAtQuest(questId)
+    end
+end
+
+local hookedPins = {}
+
+local function hookMapIcon(pin)
+    if not pin or hookedPins[pin] then
+        return
+    end
+    hookedPins[pin] = true
+    -- OnMouseDown fires before Questie's OnClick can switch maps, capturing which map the player actually clicked on.
+    pin:HookScript("OnMouseDown", function(self)
+        self.qgPreClickMapId = WorldMapFrame and WorldMapFrame.GetMapID and WorldMapFrame:GetMapID()
+    end)
+    pin:HookScript("OnClick", onMapIconClick)
+end
+
+-- Questie pins are pooled named globals (QuestieFrame1..N) created only by QuestieFrame.CreateIconFrame, which QuestieFramePool resolves per call, so a module-table hook catches every future pin; the sweep covers pins that already exist.
+local mapIconHooksInstalled = false
+
+local function installMapIconHooks()
+    if mapIconHooksInstalled then
+        return
+    end
+    local questieLoader = _G.QuestieLoader
+    local frameModule = questieLoader and questieLoader:ImportModule("QuestieFrame")
+    if not frameModule or not frameModule.CreateIconFrame then
+        return
+    end
+    mapIconHooksInstalled = true
+    hooksecurefunc(frameModule, "CreateIconFrame", function(frameId)
+        hookMapIcon(_G["QuestieFrame" .. frameId])
+    end)
+    local i = 1
+    while _G["QuestieFrame" .. i] do
+        hookMapIcon(_G["QuestieFrame" .. i])
+        i = i + 1
     end
 end
 
@@ -3450,6 +3554,7 @@ loader:SetScript("OnEvent", function(self, event, name)
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
         installItemTooltipHooks()
+        installMapIconHooks()
         scheduleItemQuestIndexBuild()
     end
 end)
