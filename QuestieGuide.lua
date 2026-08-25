@@ -1,6 +1,5 @@
 -- QuestieGuide: zone-bucketed quest browser sourced from Questie.
--- ns is the addon-shared namespace; QuestieGuideSteps.lua consumes the exports registered below.
-local ADDON_NAME, ns = ...
+local ADDON_NAME = ...
 
 local DEFAULTS = {
     sortMode = "xp",
@@ -23,19 +22,6 @@ local DEFAULTS = {
     levelAbove = 5,
     showCompleted = true,
     routeSort = true,
-    -- Step-guide panel (QuestieGuideSteps.lua): visibility, drag point, zone override (nil follows the suggested zone), out-of-zone pickup detours. Width/height mirror Questie's TrackerWidth/Height semantics: 0 means automatic sizing.
-    stepsShown = false,
-    stepsPoint = nil,
-    stepsZone = nil,
-    stepsOutsideZone = true,
-    stepsHideRepeatable = true,
-    -- Guide routes are solo travel paths, so dungeon and elite quests stay out unless opted in; auto waypoint feeds TomTom when installed.
-    stepsHideDungeon = true,
-    stepsHideElite = true,
-    stepsAutoWaypoint = true,
-    stepsCollapsed = false,
-    stepsWidth = 0,
-    stepsHeight = 0,
 }
 
 local LEVEL_RANGE_MIN = 0
@@ -211,8 +197,6 @@ local OTHER_ZONE_NAME = "Other"
 
 -- zoneOrSort > 0 is a Blizzard area ID; <= 0 is a sort category we collapse into "Other". Names are static client data, and the scan plus the chain projection resolve them for thousands of quests per rescan, so results cache for the session.
 local zoneNameCache = {}
--- Reverse map so the step guide can score zones by continent; first area id seen for a name wins, which is stable within a session.
-local zoneAreaIdByName = {}
 
 local function getZoneName(zoneOrSort)
     if not zoneOrSort or zoneOrSort <= 0 then
@@ -231,14 +215,7 @@ local function getZoneName(zoneOrSort)
     end
     name = name or ("Zone " .. zoneOrSort)
     zoneNameCache[zoneOrSort] = name
-    if not zoneAreaIdByName[name] then
-        zoneAreaIdByName[name] = zoneOrSort
-    end
     return name
-end
-
-local function getZoneAreaId(zoneName)
-    return zoneAreaIdByName[zoneName]
 end
 
 -- Mirrors the hidden-quest exclusions IsDoable applies before its prereq logic: Questie's curated blacklist, quests the player hid manually, and IsDoable's own autoBlacklist verdicts. Needed wherever quests are classified after IsDoable already said no (missing-prereq rows, chain projection), because those paths never receive IsDoable's verdict on hidden state and would otherwise resurrect blacklisted or inactive-event quests.
@@ -570,42 +547,6 @@ local function openMapForQuest(quest)
     end)
 end
 
--- Step-guide opener: shows the zone map holding an explicit routed coordinate instead of the quest giver, drops a TomTom waypoint at it when possible and pulses the quest's Questie pins. Coordinates live in areaId's 0-100 map space.
-local function openMapAtCoord(areaId, x, y, title, questId)
-    if not loadQuestie() or not areaId or not ZoneDB or not ZoneDB.GetUiMapIdByAreaId then
-        return
-    end
-    local uiMapId = ZoneDB:GetUiMapIdByAreaId(areaId)
-    local renderMapId = uiMapId and resolveRenderableMapId(uiMapId)
-    if not renderMapId then
-        if WorldMapFrame and not WorldMapFrame:IsShown() then
-            ShowUIPanel(WorldMapFrame)
-        end
-        return
-    end
-    if not WorldMapFrame:IsShown() then
-        ShowUIPanel(WorldMapFrame)
-    end
-    if WorldMapFrame.SetMapID then
-        WorldMapFrame:SetMapID(renderMapId)
-    end
-    if renderMapId == uiMapId and x and y and type(TomTom) == "table" and TomTom.AddWaypoint then
-        pcall(function()
-            TomTom:AddWaypoint(uiMapId, x / 100, y / 100, {
-                title = title or (questId and getQuestName(questId)) or nil,
-                persistent = false,
-                minimap = true,
-                world = true,
-            })
-        end)
-    end
-    if questId then
-        C_Timer.After(0.2, function()
-            highlightQuestOnMap(questId)
-        end)
-    end
-end
-
 local function isQuestCompleted(questId)
     if IsQuestFlaggedCompleted then
         return IsQuestFlaggedCompleted(questId) == true
@@ -682,7 +623,7 @@ local function isQuestYellowOrGreen(questLevel, playerLevel)
     return true
 end
 
--- Single authority for the player's level band, shared by display, XP, routing and the step guide: the explicit ± slider band minus red quests, or Questie's yellow/green tier when the bypass checkbox is on.
+-- Single authority for the player's level band, shared by display, XP and routing: the explicit ± slider band minus red quests, or Questie's yellow/green tier when the bypass checkbox is on.
 local function passesPlayerBand(level, playerLevel)
     playerLevel = playerLevel or UnitLevel("player")
     if QuestieGuideDB and QuestieGuideDB.useQuestieLevelRange then
@@ -1368,22 +1309,6 @@ local function ensureScan()
     return scanCache.byZone, scanCache.zoneOrder
 end
 
--- Shared exports for QuestieGuideSteps.lua; placed here because ensureScan is the last-defined dependency.
-ns.loadQuestie = loadQuestie
-ns.ensureScan = ensureScan
-ns.getQuestStartInfo = getQuestStartInfo
-ns.getQuestFinishInfo = getQuestFinishInfo
-ns.getZoneName = getZoneName
-ns.getCurrentZoneName = getCurrentZoneName
-ns.getPlayerRouteStart = getPlayerRouteStart
-ns.isQuestCompleted = isQuestCompleted
-ns.openMapForQuest = openMapForQuest
-ns.openMapAtCoord = openMapAtCoord
-ns.getZoneAreaId = getZoneAreaId
-ns.passesPlayerBand = passesPlayerBand
-ns.getEffectiveLevel = getEffectiveLevel
-ns.OTHER_ZONE_NAME = OTHER_ZONE_NAME
-
 local function formatLocation(zoneName, spawn)
     if not zoneName then
         return nil
@@ -1728,10 +1653,6 @@ function formatNumber(n)
 end
 
 -- Step-guide exports for tag gating, XP figures and number formatting; registered here because the three locals above are forward-declared and only assigned at this point.
-ns.getQuestTagLabel = getQuestTagLabel
-ns.getQuestXp = getQuestXp
-ns.formatNumber = formatNumber
-
 -- Zone header hover: the breakdown behind the one-trip total. Uses scan-level stats driven by the level filter, which can differ from the rows on screen while a search or bucket filter narrows them.
 local function showZoneTooltip(anchor, zoneName, stats, isBest, focusHint)
     if not stats then
@@ -1789,9 +1710,6 @@ local function openQuestInLog(questId)
     QuestLog_SetSelection(logIndex)
     QuestLog_Update()
 end
-
--- Shared with QuestieGuideSteps.lua so step lines open the native quest log too.
-ns.openQuestInLog = openQuestInLog
 
 -- Blink the row's native hover highlight a few times so the eye lands on the jump target. Ends hidden; a hover in between re-drives it through OnEnter/OnLeave anyway.
 local function flashRow(row)
@@ -2071,7 +1989,7 @@ function renderList()
         if not passesTagFilter(quest) then
             return false
         end
-        -- Out-of-range rows never render, EXCEPT quests already in the log: accepted quests always list here regardless of the bracket, while XP figures and the step guide keep respecting it. Dimming is reserved for in-range quests that cannot be accepted yet.
+        -- Out-of-range rows never render, EXCEPT quests already in the log: accepted quests always list here regardless of the bracket, while XP figures keep respecting it. Dimming is reserved for in-range quests that cannot be accepted yet.
         if quest.outOfRange and not quest.inLog then
             return false
         end
@@ -2916,34 +2834,9 @@ local function buildMainFrame()
         showCompletedCheckbox:SetChecked(QuestieGuideDB and QuestieGuideDB.showCompleted and true or false)
     end
 
-    -- 5) Guide group: every step-guide option lives here so the guide panel itself stays chrome-free; toggles refresh the guide live.
-    local GUIDE_OPTS = {
-        { key = "stepsOutsideZone",    label = "Include out-of-zone pickups" },
-        { key = "stepsHideRepeatable", label = "Hide repeatable quests" },
-        { key = "stepsHideDungeon",    label = "Hide dungeon quests" },
-        { key = "stepsHideElite",      label = "Hide elite (group) quests" },
-        { key = "stepsAutoWaypoint",   label = "Auto TomTom waypoint" },
-    }
-    local guideGroup = makeGroup("Guide", #GUIDE_OPTS * LAYOUT.CHECK_H + (#GUIDE_OPTS - 1) * SPACING.XS)
-    local guideBoxes = {}
-    for i, opt in ipairs(GUIDE_OPTS) do
-        local box = buildCheckbox(guideGroup.body, "QuestieGuideOpt" .. opt.key, opt.label, function(self)
-            QuestieGuideDB[opt.key] = self:GetChecked() and true or false
-            if ns.refreshStepsPanel then ns.refreshStepsPanel() end
-        end)
-        box:SetPoint("TOPLEFT", guideGroup.body, "TOPLEFT", 0, -((i - 1) * (LAYOUT.CHECK_H + SPACING.XS)))
-        guideBoxes[opt.key] = box
-    end
-
-    frame.refreshOutsideZone = function()
-        for key, box in pairs(guideBoxes) do
-            box:SetChecked(not QuestieGuideDB or QuestieGuideDB[key] ~= false)
-        end
-    end
-
     relayoutSettings()
 
-    -- 6) Quests section: a Search subcontainer above a Quest List subcontainer, mirroring the left pane's group treatment. Fills the entire right pane.
+    -- 5) Quests section: a Search subcontainer above a Quest List subcontainer, mirroring the left pane's group treatment. Fills the entire right pane.
     local questsSection = buildSection(listPane, "Quests")
     questsSection:SetPoint("TOPLEFT", listPane, "TOPLEFT", 0, 0)
     questsSection:SetPoint("BOTTOMRIGHT", listPane, "BOTTOMRIGHT", 0, 0)
@@ -3136,9 +3029,6 @@ local function showFrame()
     if frame.refreshShowCompleted then
         frame.refreshShowCompleted()
     end
-    if frame.refreshOutsideZone then
-        frame.refreshOutsideZone()
-    end
     frame:Show()
     renderLoadingPlaceholder()
     -- Defer the first real layout pass to the next tick. Dropdown rows get their final width from the section body's OnSizeChanged hook, but that hook may not have fired yet on the first paint; renderList itself also relies on the scroll child's resolved width.
@@ -3298,18 +3188,14 @@ local function setupMinimapButton()
         text = "Questie Guide",
         icon = "Interface\\Icons\\INV_Misc_Map02",
         OnClick = function(_, button)
-            if button ~= "LeftButton" and button ~= "RightButton" then
+            if button ~= "LeftButton" then
                 return
             end
             if not loadQuestie() then
                 print(INTRO_PREFIX .. "Questie has not finished loading yet. Try again in a moment.")
                 return
             end
-            if button == "LeftButton" then
-                toggleFrame()
-            elseif ns.toggleStepsPanel then
-                ns.toggleStepsPanel()
-            end
+            toggleFrame()
         end,
         OnTooltipShow = function(tt)
             tt:AddLine("Questie Guide")
@@ -3321,7 +3207,6 @@ local function setupMinimapButton()
                 tt:AddLine(string.format("%d quest%s available in %s.", count, count == 1 and "" or "s", zoneName), 1, 1, 1)
             end
             tt:AddLine(COLOR.GOLD .. "Left-click|r to open the quest panel.", 1, 1, 1)
-            tt:AddLine(COLOR.GOLD .. "Right-click|r to open the step guide.", 1, 1, 1)
         end,
     })
 
@@ -3684,63 +3569,18 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         QuestieGuideDB.showHidden = nil
         QuestieGuideDB.hiddenQuests = nil
-        -- Step-guide panel keys: coerce shapes so QuestieGuideSteps.lua can trust them.
-        if type(QuestieGuideDB.stepsShown) ~= "boolean" then
-            QuestieGuideDB.stepsShown = DEFAULTS.stepsShown
-        end
-        if type(QuestieGuideDB.stepsPoint) ~= "table" or not QuestieGuideDB.stepsPoint.point then
-            QuestieGuideDB.stepsPoint = nil
-        end
-        -- Steps panel size: 0 = auto, mirroring Questie's TrackerWidth/Height.
-        QuestieGuideDB.stepsAutoSize = nil
-        if type(QuestieGuideDB.stepsWidth) ~= "number" or QuestieGuideDB.stepsWidth < 0 then
-            QuestieGuideDB.stepsWidth = DEFAULTS.stepsWidth
-        end
-        if type(QuestieGuideDB.stepsHeight) ~= "number" or QuestieGuideDB.stepsHeight < 0 then
-            QuestieGuideDB.stepsHeight = DEFAULTS.stepsHeight
-        end
-        if type(QuestieGuideDB.stepsZone) ~= "string" then
-            QuestieGuideDB.stepsZone = nil
-        end
-        if type(QuestieGuideDB.stepsOutsideZone) ~= "boolean" then
-            QuestieGuideDB.stepsOutsideZone = DEFAULTS.stepsOutsideZone
-        end
-        if type(QuestieGuideDB.stepsHideRepeatable) ~= "boolean" then
-            QuestieGuideDB.stepsHideRepeatable = DEFAULTS.stepsHideRepeatable
-        end
-        if type(QuestieGuideDB.stepsHideDungeon) ~= "boolean" then
-            QuestieGuideDB.stepsHideDungeon = DEFAULTS.stepsHideDungeon
-        end
-        if type(QuestieGuideDB.stepsHideElite) ~= "boolean" then
-            QuestieGuideDB.stepsHideElite = DEFAULTS.stepsHideElite
-        end
-        if type(QuestieGuideDB.stepsAutoWaypoint) ~= "boolean" then
-            QuestieGuideDB.stepsAutoWaypoint = DEFAULTS.stepsAutoWaypoint
-        end
-        if type(QuestieGuideDB.stepsCollapsed) ~= "boolean" then
-            QuestieGuideDB.stepsCollapsed = DEFAULTS.stepsCollapsed
-        end
-        -- Per-zone guide progress: done history, skip stack, current-step pin. Entries holding nothing get pruned so the table only carries zones with real state.
-        if type(QuestieGuideDB.stepsProgress) ~= "table" then
-            QuestieGuideDB.stepsProgress = {}
-        else
-            for zone, prog in pairs(QuestieGuideDB.stepsProgress) do
-                if type(prog) ~= "table"
-                    or ((type(prog.done) ~= "table" or #prog.done == 0)
-                        and (type(prog.skips) ~= "table" or #prog.skips == 0)) then
-                    QuestieGuideDB.stepsProgress[zone] = nil
-                end
+        -- The step guide was removed; drop its keys so old saved variables shrink instead of lingering.
+        for key in pairs(QuestieGuideDB) do
+            if type(key) == "string" and key:sub(1, 5) == "steps" then
+                QuestieGuideDB[key] = nil
             end
-        end
-        if type(QuestieGuideDB.stepsFolds) ~= "table" then
-            QuestieGuideDB.stepsFolds = {}
         end
     elseif event == "PLAYER_LOGIN" then
         setupMinimapButton()
         if not QuestieGuideDB.introSeen then
             QuestieGuideDB.introSeen = true
-            print(INTRO_PREFIX .. "Finds every quest you can pick up, rates the best zones for your level and routes them step by step.")
-            print(INTRO_PREFIX .. "Left-click the minimap button for the quest browser, right-click for the step guide. Guide settings live in the browser's Settings pane. /qg toggles the browser.")
+            print(INTRO_PREFIX .. "Finds every quest you can pick up and rates the best zones for your level.")
+            print(INTRO_PREFIX .. "Left-click the minimap button to open the quest panel, or type /qg.")
         end
         installItemTooltipHooks()
         installMapIconHooks()
