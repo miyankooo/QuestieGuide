@@ -26,6 +26,26 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 - Toggle the panel with `/qg`, `/questieguide`, a key binding (Key Bindings > Questie Guide), or the minimap button. `/qg reset` rescues a window dragged off-screen.
 - Frame position, size, collapsed-state, and all filters/toggles persist between sessions.
 
+## Step guide panel
+
+Right-click the minimap button for the step guide: a side panel styled after the Questie tracker (gold section headers, plain rows, mirrored backdrop settings) that routes one zone trip and tells you what to do next and where to go. Steps regenerate statelessly from live quest state on every quest event, so the guide always reflects what this character can actually do.
+
+- **Zone picker** ranks zones by one-trip XP weighted by level fit and travel proximity (same continent beats crossing the world, the zone you stand in gets a bonus). Entries show their XP and a `far` marker for other-continent zones. **Suggested Zone** follows the live ranking; picking a zone pins it.
+- **Route**: pickup, objective, and turn-in steps ordered by a precedence-constrained nearest-neighbor route seeded from your position. Consecutive steps at the same NPC merge into one numbered visit (`At Marshal Dughan:` with one action per line).
+- **NOW card**: the first stop renders highlighted under a gold **Next** header with its live objective progress lines. A **Skip** button rejects the stop instantly; skipped steps and their followers drop to **Later** (labeled with the skip count) where a **Restore skipped steps** line brings them all back. A **Back** button beside Skip pops the most recent skip and makes that stop the NOW step again.
+- **Navigation is TomTom's job**: the panel draws no compass or coordinates of its own. With TomTom installed, the arrow follows the NOW stop automatically, advancing when a step completes and retargeting when objective progress moves the nearest remaining spawn. Toggleable in the browser's Guide settings. Without TomTom, the pulsing Questie map pin is the locate cue.
+- **State-aware clicks**: left-click any quest row to open the map with the pulsing pin and (with TomTom) a waypoint at the right place for the quest's state: the giver before pickup, an unfinished objective while working, the finisher when the quest is ready. Right-click opens the native quest log for in-log quests.
+- **Trip stats row**: a chrome-free line under the zone picker with `n stops left` and remaining XP, counted in the same visit unit the list numbers; reads `Trip complete` with the gained XP when the route empties.
+- **Per-zone progress memory**: done history, skips and the current-step pin persist per zone in saved variables, so switching zones or reloading and coming back picks the trip up where it left off. Fold states persist too. Empty entries are pruned at login.
+- **Hidden fold**: quests excluded by the level band or the repeatable/dungeon/elite settings list under `Hidden (n)` with their reason, so the guide never hides work silently.
+- **Next / Later / Done**: three visits queue under the NOW card, the rest fold under **Later (n)**, and completed steps fold under **Done (n)** at the bottom, XP included.
+- **Turn in elsewhere** lists ready quests whose finisher stands in another zone, so owed XP never silently disappears; clicking navigates to the finisher.
+- **Next zone handoff**: when the route empties, a `Next zone: X (XP)` line pins the next best zone with one click.
+- **Detour pickups** (givers in other zones) show under **Before you travel**, and only while you are outside the guided zone.
+- **Settings**: all guide options (out-of-zone pickups, repeatable / dungeon / elite hiding, auto TomTom waypoint) live in the Guide group of the browser panel's Settings pane, keeping the guide itself chrome-free. Dungeon and elite quests are hidden by default because the route is a solo travel path.
+- **First-run intro**: two chat lines on first login explain what the addon does and how to open both views.
+- **Layout**: data-driven rendering with a single spacing scale; the trip model flattens into typed rows (section, step, sub) and one pass positions them, so rhythm stays identical in every section.
+
 ## Requirements
 
 - World of Warcraft Classic Era 1.15.x.
@@ -86,7 +106,11 @@ A quest counts for a zone when it is set in the zone (`zoneOrSort`) or starts at
 
 ## Saved Variables
 
-`QuestieGuideDB` stores the sort mode, route-order toggle, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account.
+`QuestieGuideDB` stores the sort mode, route-order toggle, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account. The step guide adds its visibility, position, size, pinned zone, option toggles (outside-zone pickups, repeatable/dungeon/elite hiding, auto waypoint), fold states, and per-zone progress (done history, skip stack, current-step pin).
+
+## Design token convention
+
+All sizing, spacing and font values sit on a 4px grid, stated as multiples of the grid unit (`SPACING.XS` in `QuestieGuide.lua`, `GRID` in `QuestieGuideSteps.lua`) or derived from tokens that are. Colors are tokenized with one entry per role (`COLOR` table in each file); raw `|cff` literals outside those tables are limited to data-driven composition from `QUEST_TAG_COLORS` and difficulty colors. Two documented exemptions exist, both marked `NATIVE` in code: metrics that mirror external art (the WowStyle2 dropdown height, the dialog-header banner, the QuestLogFrame toggle inset, the SearchBox texture offset, Questie's sizer diagonals) and derived centering insets (`ROW_PAD`, half the difference between row height and font size). The step guide's vertical rhythm is one doubling scale: 4px between sub-lines, 8px between steps, 16px between sections.
 
 ## Notes and assumptions
 
