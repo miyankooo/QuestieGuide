@@ -11,6 +11,7 @@ local DEFAULTS = {
         missingPre = true,
         dungeons = true,
         eliteGroup = true,
+        repeatable = true,
     },
     framePos = nil,
     frameSize = { w = 680, h = 620 },
@@ -21,7 +22,6 @@ local DEFAULTS = {
     levelBelow = 5,
     levelAbove = 5,
     showCompleted = true,
-    routeSort = true,
 }
 
 local LEVEL_RANGE_MIN = 0
@@ -190,6 +190,11 @@ local function loadQuestie()
     QuestieCorrections = loader:ImportModule("QuestieCorrections")
     QuestieTooltips = loader:ImportModule("QuestieTooltips")
     return QuestieDB ~= nil and QuestieDB.QuestPointers ~= nil
+end
+
+-- Repeatable lives in the specialFlags bit rather than the quest tag, so it needs its own lookup next to getQuestTagLabel.
+local function isQuestRepeatable(questId)
+    return (QuestieDB and QuestieDB.IsRepeatable and QuestieDB.IsRepeatable(questId)) and true or false
 end
 
 -- The catch-all bucket for quests whose zoneOrSort is a sort category rather than a real area id. Pinned to the bottom of the list by sortZones because it's mostly noise (class quests, faction quests, profession quests, ...).
@@ -974,67 +979,6 @@ local function getCurrentZoneName()
     return getZoneName(areaId)
 end
 
--- Player position in Questie's 0-100 zone coordinate space, only while the player is actually in the zone; the route seed falls back to the lowest-level quest otherwise.
-local function getPlayerRouteStart(zoneName)
-    if getCurrentZoneName() ~= zoneName then
-        return nil
-    end
-    local mapId = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
-    local pos = mapId and C_Map.GetPlayerMapPosition(mapId, "player")
-    if not pos then
-        return nil
-    end
-    return pos.x * 100, pos.y * 100
-end
-
--- Greedy nearest-neighbor pickup route over the actionable rows whose giver has coordinates in this zone, so the bucket reads top-to-bottom as a travel path. In-log, blocked, out-of-range and coordinate-less rows keep their level order behind the routed block; spawn coordinates only compare within one zone's map space, hence the giver-zone check.
-local function applyRouteOrder(list, zoneName)
-    local routable, rest = {}, {}
-    for _, q in ipairs(list) do
-        local info = resolveStartInfo(q)
-        if not q.blocked and not q.outOfRange and not q.inLog and info.spawn and info.zoneName == zoneName then
-            routable[#routable + 1] = q
-        else
-            rest[#rest + 1] = q
-        end
-    end
-    if #routable >= 2 then
-        local ordered = {}
-        local x, y = getPlayerRouteStart(zoneName)
-        if not x then
-            ordered[1] = table.remove(routable, 1)
-            x, y = ordered[1].startInfo.spawn[1], ordered[1].startInfo.spawn[2]
-        end
-        while #routable > 0 do
-            local bestIndex, bestDist
-            for i, q in ipairs(routable) do
-                local dx = q.startInfo.spawn[1] - x
-                local dy = q.startInfo.spawn[2] - y
-                local dist = dx * dx + dy * dy
-                if not bestDist or dist < bestDist then
-                    bestDist = dist
-                    bestIndex = i
-                end
-            end
-            local nextQuest = table.remove(routable, bestIndex)
-            ordered[#ordered + 1] = nextQuest
-            x, y = nextQuest.startInfo.spawn[1], nextQuest.startInfo.spawn[2]
-        end
-        -- Number the stops so rows can render "1. 2. 3."; routeZone scopes the number to the zone whose route it belongs to, because quest tables are shared across zone buckets.
-        for i, q in ipairs(ordered) do
-            q.routeIndex = i
-            q.routeZone = zoneName
-        end
-        routable = ordered
-    end
-    for i, q in ipairs(routable) do
-        list[i] = q
-    end
-    for i, q in ipairs(rest) do
-        list[#routable + i] = q
-    end
-end
-
 -- Buckets every quest into its zone. Expensive; caller should cache the result.
 local function scanQuestsByZone()
     if not loadQuestie() then
@@ -1042,7 +986,6 @@ local function scanQuestsByZone()
     end
     local playerLevel = UnitLevel("player")
     local currentLog = (QuestiePlayer and QuestiePlayer.currentQuestlog) or {}
-    local routeSort = not QuestieGuideDB or QuestieGuideDB.routeSort ~= false
 
     -- Gate failures render only under an active search downstream and contribute no XP; see passesPlayerBand for the band semantics.
     local function passesLevelGate(level)
@@ -1077,6 +1020,7 @@ local function scanQuestsByZone()
                 -- Questie's QuestXP already applies the vanilla level reduction, so grey log quests contribute their real reduced XP.
                 xp = getQuestXp(questId),
                 tag = getQuestTagLabel(questId),
+                repeatable = isQuestRepeatable(questId),
                 inLog = true,
                 outOfRange = not passesLevelGate(level),
             }
@@ -1113,6 +1057,7 @@ local function scanQuestsByZone()
                             name = getQuestName(questId),
                             xp = getQuestXp(questId),
                             tag = getQuestTagLabel(questId),
+                            repeatable = isQuestRepeatable(questId),
                             outOfRange = outOfRange,
                         }
                         -- Non-log quests where the giver NPC lives in another zone go to "Picked Up Elsewhere" as a navigation hint: the quest is set here but you'd need to go somewhere else to start it. Quests with a giver in this zone (or with no resolvable giver location) stay under "Available".
@@ -1147,6 +1092,7 @@ local function scanQuestsByZone()
                                     name = getQuestName(questId),
                                     xp = getQuestXp(questId),
                                     tag = getQuestTagLabel(questId),
+                                    repeatable = isQuestRepeatable(questId),
                                     chain = bestChain,
                                     blocked = true,
                                     outOfRange = outOfRange,
@@ -1189,10 +1135,6 @@ local function scanQuestsByZone()
         zoneOrder[#zoneOrder + 1] = zoneName
         sortQuests(entry.available)
         sortQuests(entry.pickedUpElsewhere)
-        -- pickedUpElsewhere never routes: its givers live in other zones by definition, so their coordinates don't compare in this zone's map space.
-        if routeSort then
-            applyRouteOrder(entry.available, zoneName)
-        end
 
         -- Stats power both the zone header summary and the zone sort. Count only in-range quests so the figures match what a player would consider when choosing where to level; in-log rows obey the band like everything else. The pickable rows double as seeds for the follow-up projection below; blocked rows are tallied after the projection settles which of them unlock in-zone.
         local countInRange = 0
@@ -1970,8 +1912,13 @@ function renderList()
     local groupCollapsedDB = getGroupCollapsed()
     local showDungeons = filters.dungeons ~= false
     local showEliteGroup = filters.eliteGroup ~= false
+    local showRepeatable = filters.repeatable ~= false
 
     local function passesTagFilter(quest)
+        -- Repeatable is tested before the tag switch because it rides a specialFlags bit, orthogonal to the tag: a repeatable quest can still carry Dungeon or Elite.
+        if quest.repeatable and not showRepeatable then
+            return false
+        end
         local tag = quest.tag
         if not tag then
             return true
@@ -2286,10 +2233,6 @@ function renderList()
                                             and (COLOR.BLUE .. "[In Questlog]|r")
                                             or (COLOR.GREEN .. "[Available]|r")
                                         local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
-                                        -- Route number prefix: the row's stop on this zone's pickup route. Gaps mean filtered-out stops.
-                                        if quest.routeIndex and quest.routeZone == zoneName then
-                                            line1 = COLOR.GREY .. quest.routeIndex .. ".|r " .. line1
-                                        end
                                         local label = line2 and (line1 .. "\n" .. line2) or line1
                                         local onLeftClick = quest.inLog
                                             and function() openQuestInLog(quest.id) end
@@ -2728,6 +2671,7 @@ local function buildMainFrame()
             specs = {
                 { key = "dungeons",   label = "Dungeons" },
                 { key = "eliteGroup", label = "Elite (Group)" },
+                { key = "repeatable", label = "Repeatable" },
             },
         },
     }
@@ -2770,7 +2714,7 @@ local function buildMainFrame()
     frame.refreshToggles = function() end
 
     -- 3) Sorting group: sort-by dropdown above direction dropdown, each full width, matching the filters' stacked layout.
-    local sortGroup = makeGroup("Sorting", LAYOUT.ROW_H * 2 + SPACING.SM * 2 + LAYOUT.CHECK_H)
+    local sortGroup = makeGroup("Sorting", LAYOUT.ROW_H * 2 + SPACING.SM)
     local sortRow = sortGroup.body
 
     -- Builds a single-select dropdown that reads/writes one DB key. The button text reflects the currently selected option via the DropdownSelectionTextMixin (defaultText shows when nothing matches).
@@ -2801,23 +2745,12 @@ local function buildMainFrame()
     sortDirDropdown:SetPoint("TOPLEFT", sortRow, "TOPLEFT", 0, -(LAYOUT.ROW_H + SPACING.SM))
     sortDirDropdown:SetPoint("RIGHT", sortRow, "RIGHT", 0, 0)
 
-    -- Route Order re-sorts each zone's pickable rows into a giver-proximity pickup route (see applyRouteOrder); off restores plain level order. Route order is applied at scan time, so toggling rebuilds the cache.
-    local routeSortCheckbox = buildCheckbox(sortRow, "QuestieGuideRouteSort", "Route Order Within Zones", function(self)
-        QuestieGuideDB.routeSort = self:GetChecked() and true or false
-        invalidateScan()
-        renderList()
-    end)
-    routeSortCheckbox:SetPoint("TOPLEFT", sortRow, "TOPLEFT", 0, -(LAYOUT.ROW_H * 2 + SPACING.SM * 2))
-    routeSortCheckbox:SetChecked(not QuestieGuideDB or QuestieGuideDB.routeSort ~= false)
-    frame.routeSortCheckbox = routeSortCheckbox
-
     frame.sortByDropdown = sortByDropdown
     frame.sortDirDropdown = sortDirDropdown
     -- The button text is driven by DropdownSelectionTextMixin via the per-option `isSelected` callbacks, so no manual refresh is required.
     frame.refreshSortDropdown = function()
         sortByDropdown:GenerateMenu()
         sortDirDropdown:GenerateMenu()
-        routeSortCheckbox:SetChecked(not QuestieGuideDB or QuestieGuideDB.routeSort ~= false)
     end
 
     -- 4) Visibility Filters group: display toggles that add whole sections to the quest list, stored as top-level DB keys like the other display toggles. Completed data reads the live quest log per render, so no scan invalidation is needed.
@@ -3479,9 +3412,9 @@ loader:RegisterEvent("QUEST_TURNED_IN")
 loader:RegisterEvent("UNIT_QUEST_LOG_CHANGED")
 loader:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 loader:SetScript("OnEvent", function(self, event, name)
-    -- QUEST_LOG_UPDATE is deliberately absent: it fires on every objective tick and each fire costs a full DB rescan, while accept/remove/turn-in/level-up already cover everything that changes zone bucketing. Zone changes rescan too: the route seed is scan-time player position, and the current-zone header marker plus the Current Zone button read location at render.
+    -- QUEST_LOG_UPDATE is deliberately absent: it fires on every objective tick and each fire costs a full DB rescan, while accept/remove/turn-in/level-up already cover everything that changes zone bucketing.
     if event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED" or event == "QUEST_TURNED_IN"
-        or event == "PLAYER_LEVEL_UP" or event == "ZONE_CHANGED_NEW_AREA" then
+        or event == "PLAYER_LEVEL_UP" then
         invalidateScan()
         scheduleRefresh()
         if event == "PLAYER_LEVEL_UP" then
@@ -3500,6 +3433,11 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         return
     end
+    -- Zone changes only move the current-zone header marker, which reads location at render, so the scan cache survives.
+    if event == "ZONE_CHANGED_NEW_AREA" then
+        scheduleRefresh()
+        return
+    end
     if event == "ADDON_LOADED" and name == ADDON_NAME then
         if type(QuestieGuideDB) ~= "table" then
             QuestieGuideDB = {}
@@ -3513,9 +3451,6 @@ loader:SetScript("OnEvent", function(self, event, name)
         end
         if type(QuestieGuideDB.showCompleted) ~= "boolean" then
             QuestieGuideDB.showCompleted = DEFAULTS.showCompleted
-        end
-        if type(QuestieGuideDB.routeSort) ~= "boolean" then
-            QuestieGuideDB.routeSort = DEFAULTS.routeSort
         end
         local validSort = false
         for _, opt in ipairs(SORT_BY_OPTIONS) do
@@ -3555,6 +3490,8 @@ loader:SetScript("OnEvent", function(self, event, name)
         QuestieGuideDB.showCoords = nil
         -- Zone pinning was removed; the sort setting now governs every zone.
         QuestieGuideDB.pinCurrentZone = nil
+        -- Route order was removed; zone buckets always read in quest-level order now.
+        QuestieGuideDB.routeSort = nil
         if type(QuestieGuideDB.frameSize) ~= "table" then
             QuestieGuideDB.frameSize = { w = DEFAULTS.frameSize.w, h = DEFAULTS.frameSize.h }
         end

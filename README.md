@@ -8,15 +8,14 @@ A small World of Warcraft Classic Era (1.15.x) add-on that lists every quest cur
 - Search box with helper text that matches against quest names, zone names, and NPC names.
 - Scrollable list, grouped by zone, with collapsible zone and sub-category headers. Each zone splits into **Picked Up in Zone** and **Picked Up Outside of Zone**. Every quest carries a color-coded status label: yellow **[In Questlog]**, green **[Available]** or red **[Missing Pre-Quest]**. Blocked quests render greyed at 50% opacity. Each zone header shows the in-range quest count and the total XP for one trip through the zone; hovering the header shows the breakdown including percent of your current level.
 - **Quest Level Range** sliders configure how many levels below and above the player to include (each 0–10, default 5/5), with a **Use Questie Level Ranges** checkbox that switches to yellow/green difficulty gating instead. Red quests never count toward the XP figures. Quests already in your log are always shown regardless of the range.
-- Filters: **In Questlog** (toggles the yellow in-log rows), **Picked Up in Zone**, **Picked Up Outside of Zone**, **Missing Pre-Quest** (toggles the greyed blocked rows), **Dungeons**, **Elite (Group)**.
-- Sort modes: **Total XP**, **Total Quest Count**, **Average Quest Level**, **Alphabetical by Zone**, each ascending or descending. The sort setting governs every zone.
+- Filters: **In Questlog** (toggles the yellow in-log rows), **Picked Up in Zone**, **Picked Up Outside of Zone**, **Missing Pre-Quest** (toggles the greyed blocked rows), **Dungeons**, **Elite (Group)**, **Repeatable** (uncheck to hide repeatable turn-in loops).
+- Sort modes: **Total XP**, **Total Quest Count**, **Average Quest Level**, **Alphabetical by Zone**, each ascending or descending. The sort setting governs the zone order; rows within a zone always read in quest-level order, actionable rows first.
 - **Visibility Filters** section with a **Show Completed Quests** checkbox (default on). When checked, a **Completed Quests** category sits at the top of the list, grouping quests that are ready to turn in by their turn-in zone, sorted by turn-in count. Rows carry a green **[Ready to Turn In]** label; clicking opens the World Map at the turn-in target with the matching Questie pin pulsing. Completeness comes from the native quest log; the turn-in location comes from Questie's `finishedBy` data.
 - **Collapse / Expand** all zones with one button beneath the search box.
 - Clicking follows the status label: **[Available]** opens the World Map at the start NPC with the matching Questie pin pulsing, **[In Questlog]** opens the native quest log at that quest, and **[Missing Pre-Quest]** jumps the list to the chain step you can pick up right now and blinks it.
 - Right-click a quest for a context menu: **Show on map**, **Link in chat**. Shift-click links the quest directly into an open chat box.
 - Tooltips show required level, NPC, location, XP reward, objectives, repeatable / tag markers, and for chain entries the full prereq chain with each step's NPC and coordinates.
 - **Next-trip banner** at the top of the list names the best zone for your next trip with its one-trip XP and percent of your current level. Click it to jump to that zone.
-- **Route Order Within Zones** (Sorting section, default on) re-sorts each zone's pickable rows into a nearest-neighbor pickup route, numbered `1. 2. 3.`, seeded from your position when you are in that zone. Gaps in the numbering mean stops hidden by search or filters.
 - The zone you are standing in carries a gold **(You are here)** header tag; the **Current Zone** button next to Collapse All jumps to it. Both update when you cross a zone border.
 - **Focus mode**: right-click any zone header to expand it and collapse everything else.
 - **Item tooltips** list every quest an item belongs to that is not in your quest log, styled like Questie's own lines: green **(Available)**, yellow **(Upcoming)** for level- or prereq-gated quests, gray **(Completed Before)**. Active quests stay Questie's job.
@@ -86,7 +85,7 @@ A quest counts for a zone when it is set in the zone (`zoneOrSort`) or starts at
 
 ## Saved Variables
 
-`QuestieGuideDB` stores the sort mode, route-order toggle, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account.
+`QuestieGuideDB` stores the sort mode, filters, view toggles, level-range sliders, collapsed zones/groups, minimap button position, and frame position/size per-account.
 
 ## Design token convention
 
