@@ -1,11 +1,14 @@
-## Interface: 11509
+## Interface: 11509, 16001
 ## Title: Questie Guide
 ## Notes: Find currently available quests within a level range around your character level.
 ## Author: miyanko
-## Version: 1.0.0
+## Version: 1.1.0
 ## IconTexture: 237381
 ## Dependencies: Questie
 ## SavedVariables: QuestieGuideDB
+## AddonCompartmentFunc: QuestieGuide_CompartmentClick
+## AddonCompartmentFuncOnEnter: QuestieGuide_CompartmentEnter
+## AddonCompartmentFuncOnLeave: QuestieGuide_CompartmentLeave
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
