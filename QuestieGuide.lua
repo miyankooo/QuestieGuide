@@ -3035,7 +3035,7 @@ do
         C_Timer.After(INDEX_BUILD_DELAY, buildItemQuestIndex)
     end
 
-    -- Classifies a non-log quest for the item tooltip; nil skips the line. Skipped entirely: active quests (Questie renders them), hidden or race/class-gated quests, and permanently unobtainable ones. "Upcoming" covers both level-gated and prereq-blocked quests: not grabbable now, unlocks later.
+    -- Classifies a non-log quest for the item tooltip; nil skips the line. Skipped entirely: active quests (Questie renders them), hidden or race/class-gated quests, and permanently unobtainable ones. A quest the player is too low for reads "Requires Level N", the list's own wording (ITEM_MIN_LEVEL), in the grey of Questie's level-locked pin; "Upcoming" is left for prereq-blocked quests.
     local function getItemQuestStatus(questId, playerLevel, currentLog)
         if currentLog[questId] then
             return nil
@@ -3051,7 +3051,7 @@ do
             return nil
         end
         if not meetsRequiredLevel(requiredLevel, playerLevel) then
-            return "Upcoming", "yellow"
+            return ITEM_MIN_LEVEL:format(requiredLevel), "gray"
         end
         if QuestieDB.IsDoable(questId) then
             return "Available", "green"
