@@ -1,6 +1,6 @@
 # QuestieGuide — Memory
 
-Updated 2026-09-30 after the Forever-only rework (2.0.0) and the owner's round-2 decisions (TomTom, elite quests, Questie level ranges, fixed window size, colours), all still inside 2.0.0, which has not shipped. The owner's decision: WoW Forever 1.60.x only. `main` holds only the Forever version; `1.15.x-backup` keeps the Classic version. Quest data comes only from Questie.
+Updated 2026-09-30 after the Forever-only rework (2.0.0) the owner's round-2 decisions (TomTom, elite quests, Questie level ranges, fixed window size, colours) and round-3 answers (both tags, XP only from green/yellow/orange, level-locked quests, Questie's two range exceptions), all still inside 2.0.0, which has not shipped. The owner's decision: WoW Forever 1.60.x only. `main` holds only the Forever version; `1.15.x-backup` keeps the Classic version. Quest data comes only from Questie.
 
 Verified against:
 
@@ -16,7 +16,7 @@ Nothing has run in a client.
 Lists every quest you can pick up now, grouped by zone, from Questie's database. On top of that list it adds:
 
 - Trip XP including follow-ups, and a "Next:" banner.
-- Status labels and a chain tooltip that jumps to the step you can do.
+- Status labels (In Questlog, Available, Requires Level N, Missing Pre-Quest, Completed) and a chain tooltip that jumps to the step you can do.
 - A map jump to the quest giver with the native user waypoint and beacon.
 - Quest type tags (Elite (Group), Group, Dungeon, Raid, PvP), filters, sorting, a completed-quests section, item-tooltip lines and a level-up toast.
 - A minimap button, the Addon Compartment, `/qg`, a key binding, and click-through from Questie's map icons.
@@ -24,9 +24,9 @@ Lists every quest you can pick up now, grouped by zone, from Questie's database.
 | Item | State |
 |---|---|
 | Version | 2.0.0: `## Interface: 16001`, `## Category: Quests`, `## RequiredDeps: Questie`, `## IconTexture: Interface\Icons\INV_Misc_Map02`, Addon Compartment fields |
-| Files | One Lua file (`QuestieGuide.lua`, 3,231 lines; 3,219 after the split, 3,557 before it), `Bindings.xml`, the toc, and the four tracked libs in `Libs/` (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0) |
+| Files | One Lua file (`QuestieGuide.lua`, 3,328 lines; 3,219 after the split, 3,557 before it), `Bindings.xml`, the toc, and the four tracked libs in `Libs/` (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0) |
 | Git | `1.15.x-backup` = `origin/1.15.x-backup` = `c50c068` (the dual-client 1.1.0, created by the lead). `main` carries the 2.0.0 commits, not pushed |
-| Offline checks | `luac -p` passes (5.5). Lua 5.1 limits estimated from the luac 5.5 listing: main chunk at most 134 active locals (limit 200), `renderList` 48 upvalues (limit 60). The lead's throwaway smoke harness (mocked WoW API and fake Questie, kept in the session scratchpad, not in the repo) passes 53/53, including elite tagging, the Elite (Group) filter, all four Questie level styles, the bar anchors and the missing-profile-key path |
+| Offline checks | `luac -p` passes (5.5). Lua 5.1 limits estimated from the luac 5.5 listing: main chunk at most 140 active locals (limit 200), `renderList` 49 upvalues, `scanQuestsByZone` 24 (limit 60). The lead's throwaway smoke harness (mocked WoW API and fake Questie, kept in the session scratchpad, not in the repo) passes 76/76. It covers both tags and both filters, zone XP with red, grey and level-locked quests present, `[Requires Level N]` rows and the chain badge, all four Questie level styles, both Questie exceptions, the bar anchors and the missing-field path for the profile, `activeQuests` and `parentQuest`. Every new check was confirmed to fail when its code is removed. A slider-mode diff against `7cfb487` (16 below/above settings, same mock data) renders identical rows; the only difference is that a grey in-log quest inside a wide band no longer adds XP |
 
 ## How it talks to Questie
 
@@ -38,14 +38,15 @@ Readiness and refresh use Questie's public API (`Questie/Public/`), which Questi
 - Until ready, every launcher prints "Questie has not finished loading yet". If Questie's init aborts, ready never comes and the message stays; there is no polling.
 - `Questie.API` itself is checked at `ADDON_LOADED` (`RegisterOnReady`, `RegisterForQuestUpdates`, `Enums.QuestUpdateTriggerReason`).
 
-The fail-closed check (`QUESTIE_FIELDS`) covers every internal the code reads. One missing field prints its name and keeps the window closed for the session. It is per field because `QuestieLoader:ImportModule` returns an empty module, never nil. The fields and where they live in the installed Questie 12.0.3:
+The fail-closed check (`QUESTIE_FIELDS`) covers every internal the code reads. Owners are dotted paths walked from the `Questie` global or a `QuestieLoader` module (`getFieldOwner`). One missing field prints its name and keeps the window closed for the session. It is per field because `QuestieLoader:ImportModule` returns an empty module, never nil. The fields and where they live in the installed Questie 12.0.3:
 
 - `QuestieDB`: `QuestPointers` (bound at `QuestieDB.lua:467`), `QueryQuestSingle`/`QueryNPCSingle`/`QueryItemSingle`/`QueryObjectSingle`/`QueryQuest` (`:443-447`), `GetNPC` (`:2039`), `GetQuest` (`:1658`), `IsDoable` (`:873`), `IsPreQuestSingleFulfilled` (`:856`), `IsPreQuestGroupFulfilled` (`:821`), `IsRepeatable` (`:656`), `IsComplete` (`:1604`), `IsTrivial` (`:1627`), `GetQuestTagInfo` (`:769`), `autoBlacklist` (`:54`), `RefreshAfterCorrectionApply` (`:523`)
 - `QuestieLib` (`Modules/Libs/QuestieLib.lua`): `GetDifficultyColorPercent` (`:71`), `GetColoredQuestName` (`:151`), `GetEffectiveQuestLevel` (`:224`)
 - `QuestiePlayer` (`Modules/QuestiePlayer.lua`): `currentQuestlog` (`:15`), `HasRequiredRace` (`:93`), `HasRequiredClass` (`:110`), `GetCurrentZoneId` (`:116`)
 - `ZoneDB` (`Database/Zones/zoneDB.lua`): `GetUiMapIdByAreaId` (`:141`), `GetLocalizedDungeonName` (`:209`)
 - `QuestXP.GetQuestLogRewardXP` (`QuestieXP.lua:93`), `QuestieMap.GetFramesForQuest` (`QuestieMap.lua:81`), `QuestieCorrections.hiddenQuests` (`QuestieCorrections.lua:28`), `QuestieTooltips.lookupByKey` (`Tooltip.lua:28`), `QuestieFrame.CreateIconFrame` (`QuestieFrame.lua:47`)
-- `QuestieCompat.GetQuestGreenRange` (`Modules/QuestieCompat.lua:651`; on Forever it returns `UnitQuestTrivialLevelRange("player")`), `AvailableQuests.ResetLevelRequirementCache` (`Modules/Quest/AvailableQuests/IsLevelRequirementFulfilled.lua:78`)
+- `QuestieCompat.GetQuestGreenRange` (`Modules/QuestieCompat.lua:651`; on Forever it returns `UnitQuestTrivialLevelRange("player")`), `AvailableQuests.ResetLevelRequirementCache` (`Modules/Quest/AvailableQuests/IsLevelRequirementFulfilled.lua:78`), `QuestieEvent.activeQuests` (`Database/Corrections/Holidays/QuestieEvent.lua:73`, filled in place, read through its module)
+- `QuestieDB.questKeys.parentQuest`: the key enum Questie binds at file load from the provider (`QuestieDB.lua:432-440`; `parentQuest = 25` in `QuestieDB/src/meta/questMeta.lua:69`). It is the only query key the check covers; the other key names the guide queries are unchecked
 - `Questie.Colorize` (`Questie.lua:127`), `Questie.LOWLEVEL_ALL` / `_OFFSET` / `_RANGE` (`Questie.lua:339-342`), `Questie.db`, and `Questie.db.char.complete` / `.hidden`
 - `Questie.db.profile` (AceDB, so unset keys read their default): `lowLevelStyle`, `manualLevelOffset`, `minLevelFilter`, `maxLevelFilter` (`Modules/Options/QuestieOptionsDefaults.lua:123-126`), and `enableTooltips`, `enableTooltipsQuestLevel`, `showQuestsInNpcTooltip` (`:56`, `:62`, `:162`), which the item tooltip already read without being checked
 
@@ -69,7 +70,7 @@ Switched from native to Questie in 2.0.0:
 | Data | Was | Now |
 |---|---|---|
 | Completion flag | `C_QuestLog.IsQuestFlaggedCompleted` | `Questie.db.char.complete`, the set Questie's `IsDoable` and prerequisite checks read. Repeatables are not marked there unless daily/weekly/monthly (`QuestLifecycle.lua:142`) |
-| Grey / green range | `UnitQuestTrivialLevelRange("player")` | Sliders: `QuestieDB.IsTrivial` for grey, QuestieLib's red tier (+5). "Use Questie Level Ranges": Questie's own Quest Level Options, see below |
+| Grey / green range | `UnitQuestTrivialLevelRange("player")` | Listing: sliders drop `QuestieDB.IsTrivial` grey and QuestieLib's red tier (+5); "Use Questie Level Ranges" follows Questie's own Quest Level Options, see below. XP: `QuestieDB.IsTrivial` and the red tier in both modes |
 | "Is in the quest log" before opening the log | `C_QuestLog.GetLogIndexForQuestID` | `QuestiePlayer.currentQuestlog` |
 | Quest change events | `QUEST_ACCEPTED`, `QUEST_REMOVED`, `QUEST_TURNED_IN`, `UNIT_QUEST_LOG_CHANGED` | `Questie.API.RegisterForQuestUpdates` |
 
@@ -84,12 +85,41 @@ Questie's rule in the installed 12.0.3:
 - Bounds, computed in `_CalculateAndDrawAvailableQuests` (`AvailableQuests.lua:576-585`): `minLevel = playerLevel - GetQuestGreenRange`, `maxLevel = playerLevel`. Style `LOWLEVEL_RANGE` (4) replaces both with `minLevelFilter` / `maxLevelFilter`; `LOWLEVEL_OFFSET` (3) sets `minLevel = playerLevel - manualLevelOffset`. `LOWLEVEL_NONE` (1, default) and `LOWLEVEL_ALL` (2) keep the defaults.
 - Test, `AvailableQuests.IsLevelRequirementsFulfilled` (`IsLevelRequirementFulfilled.lua:21-75`): at or under `maxLevel`, the quest fails when its level is under `minLevel`, except in `LOWLEVEL_ALL`. Above `maxLevel`, it fails in `LOWLEVEL_RANGE`, or when `requiredLevel > maxLevel`. Then `requiredLevel > maxLevel` fails, and so does outliving `requiredMaxLevel`.
 
-How the guide applies it (`getQuestieLevelBounds`, `isInQuestieRange`):
+How the guide applies it (`getQuestieLevelBounds`, `isInQuestieRange`, `getRequiredLevelCap`, `isQuestieRangeException`):
 
-- The quest-level half is mirrored exactly. Under the checkbox it replaces both the slider band (`passesPlayerBand`) and the grey cut (`isLevelExcluded`). So "show all low level quests" and a large offset list grey quests, and red quests with a met required level count toward XP like any in-range quest.
-- The required-level half stays the guide's own gates, `meetsRequiredLevel` (player level) and `exceedsRequiredMaxLevel`. They equal Questie's except in `LOWLEVEL_RANGE` with `maxLevelFilter` above the player: Questie then pins quests the player can't accept yet, and the guide keeps them out because its rows say Available. The follow-up projection still skips the required-level gate, as before.
-- Not mirrored: Questie's two exceptions ahead of the test. It keeps a quest whose parent quest is in the log (`:28-33`). Outside `LOWLEVEL_RANGE` it also keeps an active event quest whose required level is under `minLevel` (`:35-39`, `QuestieEvent.activeQuests`). See the open questions.
+- The quest-level half is mirrored exactly. Under the checkbox it replaces both the slider band (`passesPlayerBand`) and the grey cut (`isLevelExcluded`). So "show all low level quests" and a large offset list grey quests, and red quests with a met required level list too. None of them add XP (see "XP counting").
+- The required-level half is mirrored too (round 3): the listing cap is `getRequiredLevelCap`, which is Questie's `maxLevel`. That is the player's level in every style except `LOWLEVEL_RANGE`, where it is `maxLevelFilter` (`IsLevelRequirementFulfilled.lua:61`). Two consequences:
+  - A top below the player now also drops quests whose required level is above it, as Questie does.
+  - A top above the player lets quests through that the player can't accept yet. Questie pins those with the same grey "!" it uses for trivial quests (`QuestieLib.GetQuestIcon`, `QuestieLib.lua:779-780`). Its own comment calls them "not available yet due to level restrictions" (`AvailableQuests.lua:883-888`), and its Journey panel labels the field "Required Level" (`QuestDetailsFrame.lua:339`).
+- The guide lists those quests (`lockedLevel` on the row) as `[Requires Level N]`, in Blizzard's own `ITEM_MIN_LEVEL` wording ("Requires Level %d", `GlobalStrings_enUS.lua:12726`), grey like Questie's pin, on a row dimmed to 0.5 like Missing Pre-Quest rows. They sort with blocked rows and count in the header quest count. They never add XP, never seed the follow-up projection and stay out of the average level. A click opens the map at the giver. The chain tooltip shows the same badge for a prior step whose only obstacle is its level (`IsDoable` ignores levels).
+- Only doable quests get a `[Requires Level N]` row. Prerequisite-blocked quests still need the player's own level, and Questie doesn't pin non-doable quests either. `exceedsRequiredMaxLevel` stays the guide's gate. The follow-up projection still skips the required-level gate, as before.
+- Questie's two exceptions ahead of the test are mirrored too (owner decision, round 3), in `isQuestieRangeException`, only under the checkbox:
+  - A quest whose `parentQuest` is in `QuestiePlayer.currentQuestlog` is always in range (`:28-33`).
+  - Outside `LOWLEVEL_RANGE`, an active event quest (`QuestieEvent.activeQuests`) whose required level is under `minLevel` is in range while the player is under its `requiredMaxLevel`, or it has none (`:35-39`).
+  - As in Questie, where the early return skips the whole test, an exception waives the band, `isLevelExcluded` and the required-level cap, in the discovery scan (`passesListingGates`, `passesLevelGate`), the follow-up projection (`isFollowerInRange`) and the log rows' out-of-range flag.
+  - One difference is kept: `exceedsRequiredMaxLevel` still drops a child quest the player has outlevelled, because such a row would say Available for a quest that can never be accepted. A child whose required level is above the player lists as `[Requires Level N]`.
+  - The event lookup runs first; the parent query only runs for quests that fail the normal gates, and only under the checkbox.
 - Questie calls `AvailableQuests.ResetLevelRequirementCache` on every change to these options (`QuestieOptionsGeneral.lua:369-438`, the Questie menu's "Trivial Quest" toggle at `QuestieMenu.lua:346-352`) and on level-up (`EventHandler.lua:463`). The guide post-hooks it (`hooksecurefunc`, installed at ready) and rescans while the checkbox is on. Every caller reads the field at call time, so the hook sees them all. The guide never calls `IsLevelRequirementsFulfilled` itself, because that fills Questie's per-quest cache.
+
+### XP counting (owner answer, round 3)
+
+`countsTowardXp(level, playerLevel)`: only green, yellow and orange quests add XP, in both modes. That means not `QuestieDB.IsTrivial` and not QuestieLib's red tier (5+ above). Each row carries `countsXp`, set false for level-locked rows. Every XP sum reads it:
+
+- the zone header XP (`renderList` `inRangeXp`)
+- the one-trip `stats.xp` (`xpNow`), which drives the XP sort, the best zone and the Next banner
+- the follow-up XP and count (`collectZoneFollowups`)
+- the "gated outside this zone" travel XP and count
+
+Grey and red followers still join the projection (`ids`, frontier), so their own followers and the blocked rows' `unlocksHere` resolve as before. Row colours are unchanged (Questie's difficulty colour). Quest counts (header "(N)", `stats.count`, the Total Quest Count sort and the launcher tooltip) still count every listed in-range row. The sliders still never list red quests; Questie's range lists them when Questie does.
+
+### The guide's own range (checkbox off)
+
+Unchanged by rounds 2 and 3 except for the XP rule:
+
+- A quest outside the log is listed when it passes the level cap and `meetsRequiredLevel` (player level). It must not have outlived its `requiredMaxLevel`, must not be grey (`QuestieDB.IsTrivial`), and needs a reachable starter.
+- It is in range (`outOfRange` false) when its level sits in [player - below, player + above] and it isn't red. Out-of-range non-log quests don't render; log quests always render.
+- Questie's Quest Level Options, its two exceptions, `[Requires Level N]` rows and the level-cache hook (`onQuestieLevelRangeChanged` returns early) never apply here.
+- XP: in-range green, yellow and orange quests only. The one visible change is that a grey in-log quest inside a wide band (below 10) no longer adds its reduced XP.
 
 Native calls that stay, and why:
 
@@ -99,7 +129,8 @@ Native calls that stay, and why:
 - `OpenWorldMap`, `C_Map.GetMapArtLayers`, `C_Map.GetMapInfo`, `WorldMapFrame:GetMapID`: the map jump.
 - `C_Map.CanSetUserWaypointOnMap`, `C_Map.SetUserWaypoint`, `UiMapPoint.CreateFromCoordinates`, `C_SuperTrack.SetSuperTrackedUserWaypoint`: the waypoint.
 - `TooltipDataProcessor.AddTooltipPostCall` with `data.id`: which item a tooltip shows.
-- `C_QuestLog.IsEliteQuest(questID)` (deliberate, owner decision round 2): the elite flag behind the Elite (Group) tag. Questie has no elite status. Its `questTagIds.ELITE` is tag 1, which Forever names Group. `QuestieCompat.GetQuestTagInfo` returns the client's `isElite`, but `QuestieDB.GetQuestTagInfo`, the cached and corrected wrapper, keeps only id and name (`QuestieDB.lua:769-795`). Verified on Forever: `QuestLogDocumentation.lua:749-761` (one `questID` number, returns a non-nilable bool), `GlobalAPI.lua:3584`, and Camelot's own quest log marks elites with it (`Blizzard_UIPanels_Game/Camelot/QuestMapFrameOverrides.lua:15-21`, a loaded file). Called uncached on each tag lookup, so a quest whose data arrives later is right on the next render.
+- `ITEM_MIN_LEVEL` (global string, not a call): the `[Requires Level N]` wording.
+- `C_QuestLog.IsEliteQuest(questID)` (deliberate, owner decision round 2): the elite flag behind the Elite (Group) tag. Questie has no elite status. Its `questTagIds.ELITE` is tag 1, which Forever names Group. `QuestieCompat.GetQuestTagInfo` returns the client's `isElite`, but `QuestieDB.GetQuestTagInfo`, the cached and corrected wrapper, keeps only id and name (`QuestieDB.lua:769-795`). Verified on Forever: `QuestLogDocumentation.lua:749-761` (one `questID` number, returns a non-nilable bool), `GlobalAPI.lua:3584`, and Camelot's own quest log marks elites with it (`Blizzard_UIPanels_Game/Camelot/QuestMapFrameOverrides.lua:15-21`, a loaded file). Called uncached on each tag lookup, so a quest whose data arrives later is right on the next render. An elite quest that Questie tags Dungeon, Raid or PvP carries both tags (round 3); a Group-tagged elite shows only Elite (Group), which already says group.
 - `ChatFrameUtil.GetActiveWindow` / `InsertLink` / `OpenChat`: chat links.
 - Events `PLAYER_LEVEL_UP` (payload level) and `ZONE_CHANGED_NEW_AREA`: the player's level and location.
 
@@ -114,7 +145,7 @@ Questie calls that wrap natives: `QuestieDB.GetQuestTagInfo` (C_QuestLog.GetQues
 - Bottom bar: two `MagicButtonTemplate` buttons. The primary, Current Zone, sits at BOTTOMRIGHT; Collapse All is anchored RIGHT to its LEFT. Both use zero offsets, then `MagicButton_OnLoad`, which applies -6/4 at the corner and -1 to the neighbour (`SharedUIPanelTemplates.lua:12-46`). Left to right they read Collapse All, Current Zone, as before.
 - Controls: `WowStyle1DropdownTemplate`, `MinimalSliderWithSteppersTemplate`, `UICheckButtonTemplate` (`.Text`), `UIPanelButtonTemplate` for the empty-state action, `MenuUtil.CreateContextMenu`.
 - Row art from Forever's quest UI: hover `Interface\QuestFrame\UI-QuestTitleHighlight` (Forever's GossipFrame and quest greeting rows), selection atlas `questlog-quest-glow-yellow` (the called-out quest in Forever's quest log, `QuestMapFrame.xml:227`, `QuestMapFrame.lua:1956`), header toggles `UI-PlusButton-Up` / `UI-MinusButton-Up` / `UI-PlusButton-Hilight` (Forever's Group Finder listing, `Blizzard_LFGVanilla_Listing.lua:956-958`).
-- Colours are Blizzard colour objects (`GRAY`, `NORMAL`, `YELLOW`, `LIGHTBLUE`, `GREEN`, `ORANGE`, `LINK`, `RED`, `HIGHLIGHT` `_FONT_COLOR`, `EPIC_PURPLE_COLOR`) and `QuestDifficultyColors.header` for header grey (Blizzard's own quest-header colour, a plain `{r, g, b}` table in `Blizzard_FrameXMLBase/Constants.lua:201`). No literal `|cff` codes. The Elite (Group) tag is `NORMAL_FONT_COLOR`, the gold `GameFontNormal` Forever's quest log uses for its "(Elite)" tag (`QuestMapFrame.xml:215`). Owner-approved exceptions: level and name colours are Questie's difficulty colour (`CreateColor` of `GetDifficultyColorPercent`), and item-tooltip status suffixes use `Questie:Colorize` so they match Questie's own lines above them.
+- Colours are Blizzard colour objects (`GRAY`, `NORMAL`, `YELLOW`, `LIGHTBLUE`, `GREEN`, `ORANGE`, `LINK`, `RED`, `HIGHLIGHT` `_FONT_COLOR`, `EPIC_PURPLE_COLOR`) and `QuestDifficultyColors.header` for header grey (Blizzard's own quest-header colour, a plain `{r, g, b}` table in `Blizzard_FrameXMLBase/Constants.lua:201`). No literal `|cff` codes. The Elite (Group) tag is `NORMAL_FONT_COLOR`, the gold `GameFontNormal` Forever's quest log uses for its "(Elite)" tag (`QuestMapFrame.xml:215`). `[Requires Level N]` is `GRAY_FONT_COLOR`, like Questie's grey "!" pin. Owner-approved exceptions: level and name colours are Questie's difficulty colour (`CreateColor` of `GetDifficultyColorPercent`), and item-tooltip status suffixes use `Questie:Colorize` so they match Questie's own lines above them.
 - Chat: every line starts with `YELLOW_FONT_COLOR:WrapTextInColorCode("[Questie Guide]:") .. " "`, the prefix all the author's addons share.
 - Fonts: Blizzard font objects only. Tooltips: the `GameTooltip_*` helpers.
 - Minimap button: LibDBIcon with an LDB launcher "Questie Guide", icon = toc icon, db at `QuestieGuideDB.minimap`.
@@ -122,7 +153,7 @@ Questie calls that wrap natives: `QuestieDB.GetQuestTagInfo` (C_QuestLog.GetQues
 Forever facts:
 
 - `OpenWorldMap(mapID)` exists and honours the WorldMapDisabled game rule (`Blizzard_WorldMap.lua:1408-1414`).
-- `Enum.QuestTag` 1 is Group (`LuaEnum.lua:6714`, group icon at `Blizzard_FrameXMLBase/Constants.lua:527`). Camelot marks elites with `C_QuestLog.IsEliteQuest` (`Camelot/QuestMapFrameOverrides.lua:15-21`), which Questie doesn't expose. Its quest log shows the elite text and the type icon side by side (`Mainline/QuestMapFrame.lua:1833-1858`). The guide has one tag per row, so Dungeon, Raid and PvP keep their label and an elite quest otherwise reads Elite (Group).
+- `Enum.QuestTag` 1 is Group (`LuaEnum.lua:6714`, group icon at `Blizzard_FrameXMLBase/Constants.lua:527`). Camelot marks elites with `C_QuestLog.IsEliteQuest` (`Camelot/QuestMapFrameOverrides.lua:15-21`), which Questie doesn't expose. Its quest log shows the elite text and the type icon side by side (`Mainline/QuestMapFrame.lua:1833-1858`). The guide mirrors that: an elite Dungeon, Raid or PvP quest shows `[Elite (Group)] [Dungeon]` (elite first), and `passesTagFilter` needs every filter covering one of its tags (`TAG_FILTERS`), so an elite dungeon quest hides when either Dungeons or Elite (Group) is off.
 - Forever's yellow difficulty band is -4..+2 (`Mainline/DifficultyUtil.lua:36-47`); the guide uses Questie's tiers (yellow -2..+2), which only differ in colour, not in what counts as grey or orange.
 - `BreakUpLargeNumbers(number)` is a C API on Forever (`LocalizationDocumentation.lua:42`).
 
@@ -154,7 +185,7 @@ Fixed in the port and still valid:
 | QG-17 | Era and both-client comments | Rewritten |
 | QG-18 | Era README | Forever only |
 | QG-19 | toc metadata | `## Category: Quests`, `## RequiredDeps: Questie`, one icon path, 2.0.0 |
-| QG-20 | Near Lua 5.1 limits | Main chunk 134 active locals after round 2 (single-use helpers in `do` blocks), `renderList` 48 upvalues. Estimated from luac 5.5; no 5.1 compiler here |
+| QG-20 | Near Lua 5.1 limits | Main chunk 140 active locals after round 3 (single-use helpers in `do` blocks), `renderList` 49 upvalues. Estimated from luac 5.5; no 5.1 compiler here |
 | QG-21 | Caches survive a correction | Post-hook on `QuestieDB.RefreshAfterCorrectionApply`: NPC, object and quest writes clear the giver, turn-in and reachability caches and rescan; quest writes also drop the follower index and rebuild the item index; item-name repairs are ignored |
 | QG-22 | `wtqPulse` / `_wtqCount` on Questie's frames | `qgPulse` / `qgLoops` |
 
@@ -163,19 +194,35 @@ Fixed in the port and still valid:
 | Decision | Done |
 |---|---|
 | Remove TomTom completely | Branch, README line and checklist wording gone (QG-12). The map-pin hook comment now calls Questie's own Ctrl-click "Ctrl waypoint" |
-| Elite quests tagged Elite (Group) | `getQuestTagLabel` asks `C_QuestLog.IsEliteQuest` when Questie's tag is empty or Group. The Elite (Group) filter covers Elite (Group), Group and Raid. The tag is gold (`NORMAL_FONT_COLOR`) |
+| Elite quests tagged Elite (Group) | `C_QuestLog.IsEliteQuest` adds the tag. The Elite (Group) filter covers Elite (Group), Group and Raid. The tag is gold (`NORMAL_FONT_COLOR`). Round 3 changed how it combines with other tags |
 | "Use Questie Level Ranges" follows Questie's options | `getQuestieLevelBounds` and `isInQuestieRange` mirror Questie's bounds and quest-level test. The ranges hook rescans on option changes. Seven `Questie.db.profile` keys, three `Questie.LOWLEVEL_*` constants, `QuestieCompat.GetQuestGreenRange` and `AvailableQuests.ResetLevelRequirementCache` joined the fail-closed check |
 | Remove resizing, primary action bottom-right | `PanelResizeButtonTemplate`, `SetResizable`/`SetResizeBounds`, `DEFAULTS.frameSize` and the size half of `/qg reset` gone. Window fixed at 680x620. Current Zone at BOTTOMRIGHT, Collapse All to its left |
 | Colour objects and shared chat prefix | Already free of literal colour codes. The prefix is now written as the shared convention (`YELLOW_FONT_COLOR:WrapTextInColorCode(...)`) instead of through a one-use `COLOR.PREFIX` alias |
 
+## Owner answers, round 3 (2026-09-30, inside 2.0.0)
+
+| Answer | Done |
+|---|---|
+| Elite plus another tag: show both | `getQuestTags` returns elite first plus Questie's Dungeon, Raid or PvP tag. Rows, the quest tooltip and the chain tooltip show every tag. `passesTagFilter` needs every covering filter (`TAG_FILTERS`) |
+| XP only from green, yellow and orange quests, both modes | `countsTowardXp` and the per-row `countsXp` gate every XP sum, see "XP counting". Listing is unchanged |
+| Show Questie's above-your-level range quests with their own label | `getRequiredLevelCap` and `lockedLevel`; `[Requires Level N]` rows, dimmed, never XP, see the Questie range section |
+| Copy Questie's two exceptions under its range | `isQuestieRangeException`; `QuestieEvent.activeQuests` and `QuestieDB.questKeys.parentQuest` joined the fail-closed check. See the Questie range section |
+| Primary button | Left as is (Current Zone bottom-right) |
+| The guide's own slider mode unchanged | Verified by the slider-mode diff (see Offline checks). It lists exactly what it listed before; the only change is the owner's XP rule, so grey in-log quests inside a wide band no longer add XP |
+
 ## Open items
 
-Owner questions raised by the round-2 decisions:
+Owner questions still open:
 
-1. Elite plus another tag: an elite quest that Questie tags Dungeon, Raid or PvP keeps that label (a Dungeon one stays under the Dungeons filter). Keep: no change. Elite wins: drop the `not label or label == "Group"` condition (1 line), and elite dungeon quests move to the Elite (Group) filter. Both: show two tags, and the row passes only when both filters are on (about 10 lines).
-2. Red quests under Questie's range: Questie's range has no upper colour tier, so red quests with a met required level now count toward the XP figures when the checkbox is on. Keep: no change. Keep red out of XP in both modes: add the red test to the Questie branch of `passesPlayerBand` (1 line), which also hides those rows as out of range.
-3. Questie's "between two set levels" with a top above your level: Questie pins quests you can't accept yet (grey !), and the guide keeps them out. Keep: no change. Show them: let `meetsRequiredLevel` use `maxLevelFilter` in that style, and give those rows their own label instead of [Available] (about 15 lines).
-4. Questie's two exceptions (parent quest in the log; active event quests under the bottom, outside the range style): not mirrored. Keep: no change. Mirror them: pass the quest id and required levels into the band, and add `QuestieEvent.activeQuests` to the fail-closed check (about 15 lines).
+1. Primary button: Current Zone sits bottom-right as the primary action, with Collapse All to its left. Swapping them is two lines in `buildButtonBar`.
+
+New questions raised by the round-3 answers:
+
+2. Quest counts: XP now counts only green, yellow and orange quests. The header count "(N)", the Total Quest Count sort and the launcher tooltip's "N quests available" still count every listed in-range row, grey, red and `[Requires Level N]` included. Keep: no change. Match XP: count only rows with `countsXp` (about 3 lines in the scan and `renderList`).
+3. Group-tagged elite quests show only `[Elite (Group)]`, not `[Elite (Group)] [Group]`. Keep: no change. Show both: drop the `label ~= "Group"` test in `getQuestTags` (1 line).
+4. Item tooltips still call a quest you are too low for "(Upcoming)", in Questie's `Colorize` style, while the list now says `[Requires Level N]`. Keep: no change. Match: split the item tooltip's level case into "(Requires Level N)" (about 3 lines).
+5. Parent exception and `requiredMaxLevel`: Questie's parent-in-log exception also skips its `requiredMaxLevel` test; the guide keeps dropping a child quest the player has outlevelled. Keep: no change. Match Questie: waive `exceedsRequiredMaxLevel` for that exception too (1 line), and such a row would say Available although it can't be accepted.
+6. Key check: only `parentQuest` is checked in `QuestieDB.questKeys`. Keep: no change. Check every key the guide queries (about 20 names across quest, NPC, object and item keys): one list per key table in `QUESTIE_FIELDS`.
 
 Robustness notes (not changed):
 
@@ -198,7 +245,10 @@ Run `/console scriptErrors 1` first.
 - [ ] `/reload`: no errors and no "Questie has no …" line. `/qg` before Questie is ready says it's still loading; after it opens.
 - [ ] The window: portrait, strata over other panels, settings column left, list right, search top right, Current Zone bottom-right with Collapse All to its left, no resize grip. Fixed 680x620; the position survives `/reload`, and `/qg reset` recentres it. Escape closes it.
 - [ ] The dropdowns and sliders work. Search filters the list and the clear button resets it.
-- [ ] "Use Questie Level Ranges": with each of Questie's four Quest Level Options styles (and the Questie menu's "Trivial Quest" toggle), the list changes with the window open, and matches the "!" pins Questie draws, apart from quests you can't accept yet.
+- [ ] "Use Questie Level Ranges": with each of Questie's four Quest Level Options styles (and the Questie menu's "Trivial Quest" toggle), the list changes with the window open and matches the "!" pins Questie draws. With "between two set levels" reaching above your level, Questie's grey "!" quests list dimmed as [Requires Level N].
+- [ ] XP: with a red or grey quest listed (Questie's range) and a [Requires Level N] row, the zone header XP, the Next banner and the zone tooltip leave their XP out.
+- [ ] Questie's exceptions under "Use Questie Level Ranges": during a holiday, a low-level event quest Questie pins shows in the list. A follow-up whose parent quest is in your log shows even when it is outside the range.
+- [ ] Time the first open and a rescan with "Use Questie Level Ranges" on (the parent query runs for every quest outside the range).
 - [ ] Clicking an Available quest opens the map at the giver, with the Questie pin pulsing. Clicking a Missing Pre-Quest row jumps to the prerequisite. The selected row shows the quest-log glow.
 - [ ] Right-click → "Link in chat" inserts the link. A Questie map-icon click opens the guide, except while a chat box is open.
 - [ ] Quest items in bags show their status line once, under Questie's lines. The first hover of a quest-start item doesn't show "(Available)" twice (QG-05).
@@ -208,7 +258,7 @@ Run `/console scriptErrors 1` first.
 - [ ] Accept a quest with the guide open: within a second the row flips to [In Questlog] (QG-07). Turn one in and abandon one: the list updates. Complete an objective: the Completed section updates.
 - [ ] Time the first open and a level-up rescan (QG-10).
 - [ ] `/dump GetMaxPlayerLevel(), UnitQuestTrivialLevelRange("player")` (QG-09).
-- [ ] Elite: for a known elite quest, `/dump C_QuestLog.GetQuestTagInfo(id), C_QuestLog.IsEliteQuest(id)` once before accepting it and once after. Its row shows [Elite (Group)], and the Elite (Group) filter hides it together with Group quests.
+- [ ] Elite: for a known elite quest, `/dump C_QuestLog.GetQuestTagInfo(id), C_QuestLog.IsEliteQuest(id)` once before accepting it and once after. Its row shows [Elite (Group)], and the Elite (Group) filter hides it together with Group quests. An elite dungeon quest shows [Elite (Group)] [Dungeon] and hides when either filter is off.
 - [ ] Open the guide in combat and click a row: no "action blocked".
 - [ ] Fully quit and restart: filters and position survive.
 - [ ] Open the guide in every Forever-only zone and instance you reach: no error from `GetCurrentZoneId` (QG-23).

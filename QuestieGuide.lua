@@ -32,6 +32,9 @@ local COLOR = {
     IN_LOG = LIGHTBLUE_FONT_COLOR,
     READY = GREEN_FONT_COLOR,
     BLOCKED = ORANGE_FONT_COLOR,
+
+    -- Grey like the "!" Questie pins a quest with before its required level is reached.
+    LOCKED = GRAY_FONT_COLOR,
     REPEATABLE = LIGHTBLUE_FONT_COLOR,
     LINK = LINK_FONT_COLOR,
 }
@@ -134,6 +137,7 @@ local QuestieTooltips = QuestieLoader:ImportModule("QuestieTooltips")
 local QuestieFrame = QuestieLoader:ImportModule("QuestieFrame")
 local QuestieCompat = QuestieLoader:ImportModule("QuestieCompat")
 local AvailableQuests = QuestieLoader:ImportModule("AvailableQuests")
+local QuestieEvent = QuestieLoader:ImportModule("QuestieEvent")
 
 local mainFrame
 local scrollChild
@@ -176,6 +180,14 @@ local QUEST_TAG_COLORS = {
     PvP = NORMAL_FONT_COLOR,
 }
 
+-- The Quest Types filter that covers each tag; PvP has none.
+local TAG_FILTERS = {
+    Dungeon = "dungeons",
+    Group = "eliteGroup",
+    Raid = "eliteGroup",
+    [ELITE_TAG] = "eliteGroup",
+}
+
 -- Every Questie internal the guide reads, checked once when Questie.API reports ready. The check is per field because QuestieLoader:ImportModule hands back an empty table for an unknown module; one gap keeps the window closed and names the field instead of erroring mid-scan.
 local QUESTIE_FIELDS = {
     { module = "QuestieDB", fields = { "QuestPointers", "QueryQuestSingle", "QueryQuest", "QueryNPCSingle", "QueryObjectSingle", "QueryItemSingle", "GetNPC", "GetQuest", "IsDoable", "IsPreQuestSingleFulfilled", "IsPreQuestGroupFulfilled", "IsRepeatable", "IsComplete", "IsTrivial", "GetQuestTagInfo", "autoBlacklist", "RefreshAfterCorrectionApply" } },
@@ -189,6 +201,8 @@ local QUESTIE_FIELDS = {
     { module = "QuestieFrame", fields = { "CreateIconFrame" } },
     { module = "QuestieCompat", fields = { "GetQuestGreenRange" } },
     { module = "AvailableQuests", fields = { "ResetLevelRequirementCache" } },
+    { module = "QuestieEvent", fields = { "activeQuests" } },
+    { module = "QuestieDB.questKeys", fields = { "parentQuest" } },
     { module = "Questie", fields = { "Colorize", "db", "LOWLEVEL_ALL", "LOWLEVEL_OFFSET", "LOWLEVEL_RANGE" } },
     { module = "Questie.db.char", fields = { "complete", "hidden" } },
     { module = "Questie.db.profile", fields = { "lowLevelStyle", "manualLevelOffset", "minLevelFilter", "maxLevelFilter", "enableTooltips", "enableTooltipsQuestLevel", "showQuestsInNpcTooltip" } },
@@ -200,18 +214,17 @@ local questieReady = false
 -- First Questie field or API the running Questie lacks; once set, the window stays closed for the session.
 local missingQuestieField
 
--- Questie.db is a placeholder until Questie's init, so the character and profile namespaces resolve at check time.
-local function getFieldOwner(moduleName)
-    if moduleName == "Questie" then
-        return Questie
+-- Walks a dotted owner such as "Questie.db.profile" or "QuestieDB.questKeys" from the Questie global or a QuestieLoader module. It resolves at check time because Questie.db is a placeholder until Questie's init.
+local function getFieldOwner(path)
+    local root, rest = path:match("^([^.]+)%.?(.*)$")
+    local owner = root == "Questie" and Questie or QuestieLoader:ImportModule(root)
+    for key in rest:gmatch("[^.]+") do
+        if type(owner) ~= "table" then
+            return nil
+        end
+        owner = owner[key]
     end
-    if moduleName == "Questie.db.char" then
-        return Questie.db and Questie.db.char
-    end
-    if moduleName == "Questie.db.profile" then
-        return Questie.db and Questie.db.profile
-    end
-    return QuestieLoader:ImportModule(moduleName)
+    return owner
 end
 
 local function findMissingField()
@@ -239,23 +252,35 @@ local function isQuestCompleted(questId)
     return Questie.db.char.complete[questId] and true or false
 end
 
--- Repeatable lives in the specialFlags bit rather than the quest tag, so it needs its own lookup next to getQuestTagLabel.
+-- Repeatable lives in the specialFlags bit rather than the quest tag, so it needs its own lookup next to getQuestTags.
 local function isQuestRepeatable(questId)
     return QuestieDB.IsRepeatable(questId) and true or false
 end
 
--- Dungeon, Raid and PvP tags name the content and keep their label; an elite quest otherwise reads Elite (Group). Questie drops the client's elite flag (QuestieDB.GetQuestTagInfo returns only id and name), so the flag comes from C_QuestLog.IsEliteQuest, the call Camelot's quest log uses (QuestMapFrameOverrides.lua:15-21).
-local function getQuestTagLabel(questId)
+-- A row's tags, elite first, or nil. Forever's quest log shows the elite text beside the type icon (QuestMapFrame.lua:1833-1858), so an elite Dungeon, Raid or PvP quest carries both tags; Group says nothing Elite (Group) doesn't. Questie drops the client's elite flag (QuestieDB.GetQuestTagInfo returns only id and name), so it comes from C_QuestLog.IsEliteQuest, the call Camelot's quest log uses (QuestMapFrameOverrides.lua:15-21).
+local function getQuestTags(questId)
     local tagId = QuestieDB.GetQuestTagInfo(questId)
     local label = tagId and QUEST_TAG_LABELS[tagId]
-    if (not label or label == "Group") and C_QuestLog.IsEliteQuest(questId) then
-        return ELITE_TAG
+    if not C_QuestLog.IsEliteQuest(questId) then
+        return label and { label }
     end
-    return label
+    if label and label ~= "Group" then
+        return { ELITE_TAG, label }
+    end
+    return { ELITE_TAG }
 end
 
-local function formatTag(label)
-    return QUEST_TAG_COLORS[label]:WrapTextInColorCode("[" .. label .. "]")
+local function formatTags(tags)
+    local parts = {}
+    for i, label in ipairs(tags) do
+        parts[i] = QUEST_TAG_COLORS[label]:WrapTextInColorCode("[" .. label .. "]")
+    end
+    return table.concat(parts, " ")
+end
+
+-- Status label for a quest the player can't accept yet, in Blizzard's own "Requires Level %d" wording (ITEM_MIN_LEVEL).
+local function formatLevelLock(requiredLevel)
+    return COLOR.LOCKED:WrapTextInColorCode("[" .. ITEM_MIN_LEVEL:format(requiredLevel) .. "]")
 end
 
 -- Questie's XP estimate after its level and buff adjustments; pcall keeps one failing estimate from breaking the whole scan.
@@ -575,8 +600,8 @@ local function getLevelRange()
     return QuestieGuideDB.levelBelow, QuestieGuideDB.levelAbove
 end
 
--- Level band checks; only passesPlayerBand and isLevelExcluded leave the block.
-local passesPlayerBand, isLevelExcluded
+-- Level band and XP checks; only the five functions declared here leave the block.
+local passesPlayerBand, isLevelExcluded, countsTowardXp, getRequiredLevelCap, isQuestieRangeException
 do
     -- Quest passes when its effective level sits in [player - below, player + above].
     local function isLevelInBand(questLevel, playerLevel, below, above)
@@ -592,7 +617,7 @@ do
         return true
     end
 
-    -- True when the quest would render red on the player (5+ levels above, QuestieLib's red tier). Red quests never count toward the XP figures, even when the slider band reaches them.
+    -- True when the quest would render red on the player (5+ levels above, QuestieLib's red tier). The sliders never list red quests, and no mode counts their XP.
     local function isQuestRedForPlayer(questLevel, playerLevel)
         if not questLevel or questLevel <= 0 then
             return false
@@ -644,6 +669,39 @@ do
             return false
         end
         return QuestieDB.IsTrivial(level)
+    end
+
+    -- True when the quest's XP joins the totals, trip XP and zone rating: green, yellow or orange for the player, in both modes. Grey and red rows still list where the range allows them, but a trip should only be rated by quests worth doing now.
+    function countsTowardXp(level, playerLevel)
+        if not level or level <= 0 then
+            return true
+        end
+        return not QuestieDB.IsTrivial(level) and not isQuestRedForPlayer(level, playerLevel)
+    end
+
+    -- Highest required level a listed quest may have: the player's level, or the top of Questie's own range, which only its two-set-levels style can lift above the player (IsLevelRequirementFulfilled.lua:61).
+    function getRequiredLevelCap(playerLevel)
+        if not QuestieGuideDB.useQuestieLevelRange then
+            return playerLevel
+        end
+        local _, maxLevel = getQuestieLevelBounds(playerLevel)
+        return maxLevel
+    end
+
+    -- Questie's two exceptions ahead of its level test (IsLevelRequirementFulfilled.lua:28-39), only under its range. A quest whose parent quest is in the log is always in range. Outside the two-set-levels style, so is an active event quest whose required level sits under the bottom, while the player hasn't outlevelled it. The event lookup runs first because the parent query costs a database read.
+    function isQuestieRangeException(questId, requiredLevel, requiredMaxLevel, playerLevel)
+        if not QuestieGuideDB.useQuestieLevelRange then
+            return false
+        end
+        if QuestieEvent.activeQuests[questId] then
+            local minLevel, _, style = getQuestieLevelBounds(playerLevel)
+            if style ~= Questie.LOWLEVEL_RANGE and minLevel > requiredLevel
+                and (requiredMaxLevel == 0 or playerLevel < requiredMaxLevel) then
+                return true
+            end
+        end
+        local parentId = QuestieDB.QueryQuestSingle(questId, "parentQuest")
+        return parentId ~= nil and QuestiePlayer.currentQuestlog[parentId] ~= nil
     end
 end
 
@@ -915,7 +973,7 @@ do
     end
 
     -- Projects which not-yet-doable quests unlock inside the zone once its seed quests are done, without leaving the zone. BFS over the reverse prereq index: a follower joins when it is set in the zone or starts at a giver in the zone, passes the same level and faction gates as the discovery scan, and every prereq is completed or already part of the projection. Accepted followers re-enter the frontier so deep chains resolve, and an AND-gated follower is re-examined via the edge from whichever prereq settles last. requiredLevel is deliberately not gated: the player levels up while clearing the zone, and the level band already bounds how far ahead the projection reaches. Repeatables are skipped, they are turn-in loops rather than one-trip chain XP.
-    function collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, passesLevelGate)
+    function collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, isFollowerInRange)
         local index = ensureFollowerIndex()
         local counted = {}
         local frontier = {}
@@ -943,8 +1001,7 @@ do
                             local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(followerId, playerLevel)
                             if passesLevelCap(level, requiredLevel)
                                 and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
-                                and passesLevelGate(level)
-                                and not isLevelExcluded(level, playerLevel)
+                                and isFollowerInRange(followerId, level, requiredLevel, requiredMaxLevel)
                                 and not isQuestHidden(followerId)
                                 and hasReachableStarter(followerId)
                                 and matchesPlayerFaction(followerId)
@@ -954,8 +1011,12 @@ do
                                 counted[followerId] = true
                                 nextFrontier[#nextFrontier + 1] = followerId
                                 ids[followerId] = true
-                                xpTotal = xpTotal + getQuestXp(followerId)
-                                count = count + 1
+
+                                -- Grey and red followers stay in the projection so their own followers and the blocked rows still resolve, but add no XP.
+                                if countsTowardXp(level, playerLevel) then
+                                    xpTotal = xpTotal + getQuestXp(followerId)
+                                    count = count + 1
+                                end
                             end
                         end
                     end
@@ -984,10 +1045,24 @@ end
 local function scanQuestsByZone()
     local playerLevel = UnitLevel("player")
     local currentLog = QuestiePlayer.currentQuestlog
+    local requiredCap = getRequiredLevelCap(playerLevel)
 
-    -- Gate failures render only under an active search downstream and contribute no XP; see passesPlayerBand for the band semantics.
-    local function passesLevelGate(level)
+    -- The active level range for one quest: the slider band, or Questie's range plus its two exceptions. Failing quests are flagged outOfRange; only in-log rows still render then, and none add XP.
+    local function passesLevelGate(questId, level, requiredLevel, requiredMaxLevel)
         return passesPlayerBand(level, playerLevel)
+            or isQuestieRangeException(questId, requiredLevel, requiredMaxLevel, playerLevel)
+    end
+
+    -- The discovery sections' hard level gates, the required-level cap and isLevelExcluded; Questie's exceptions waive them too, as its early returns skip its whole test.
+    local function passesListingGates(questId, level, requiredLevel, requiredMaxLevel)
+        return (meetsRequiredLevel(requiredLevel, requiredCap) and not isLevelExcluded(level, playerLevel))
+            or isQuestieRangeException(questId, requiredLevel, requiredMaxLevel, playerLevel)
+    end
+
+    -- Follow-ups skip the required-level gate by design (see collectZoneFollowups), so only the band and isLevelExcluded apply, again waived by Questie's exceptions.
+    local function isFollowerInRange(questId, level, requiredLevel, requiredMaxLevel)
+        return (passesPlayerBand(level, playerLevel) and not isLevelExcluded(level, playerLevel))
+            or isQuestieRangeException(questId, requiredLevel, requiredMaxLevel, playerLevel)
     end
 
     local byZone = {}
@@ -1007,7 +1082,7 @@ local function scanQuestsByZone()
     -- Quests already in the player's log obey the level band like everything else: out-of-band log quests hide from the list, XP and routing, surfacing only under an active search. They render inside the pickup buckets with an [In Questlog] label, split by giver zone like every other quest.
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
-        local level, requiredLevel = getEffectiveLevel(questId, playerLevel)
+        local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(questId, playerLevel)
         if zoneOrSort and passesLevelCap(level, requiredLevel) then
             local questZoneName = getZoneName(zoneOrSort)
             local _, giverZoneName = getQuestStartInfo(questId)
@@ -1016,12 +1091,13 @@ local function scanQuestsByZone()
                 level = level,
                 name = getQuestName(questId),
 
-                -- Questie's QuestXP already applies the level reduction, so grey log quests contribute their real reduced XP.
+                -- Questie's QuestXP already applies the level reduction; grey and red log quests still list but add none of it to the totals.
                 xp = getQuestXp(questId),
-                tag = getQuestTagLabel(questId),
+                countsXp = countsTowardXp(level, playerLevel),
+                tags = getQuestTags(questId),
                 repeatable = isQuestRepeatable(questId),
                 inLog = true,
-                outOfRange = not passesLevelGate(level),
+                outOfRange = not passesLevelGate(questId, level, requiredLevel, requiredMaxLevel),
             }
             local entry = ensureZone(questZoneName)
             local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
@@ -1040,11 +1116,13 @@ local function scanQuestsByZone()
 
             -- Out-of-range quests stay in the list, tagged so renderList can hide or fade their rows; only the level cap, the required-level gates, isLevelExcluded (grey quests, or quests outside Questie's own range), and quests without a reachable starter exclude quests entirely from the discovery sections.
             if passesLevelCap(level, requiredLevel)
-                and meetsRequiredLevel(requiredLevel, playerLevel)
                 and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
-                and not isLevelExcluded(level, playerLevel)
+                and passesListingGates(questId, level, requiredLevel, requiredMaxLevel)
                 and hasReachableStarter(questId) then
-                local outOfRange = not passesLevelGate(level)
+                local outOfRange = not passesLevelGate(questId, level, requiredLevel, requiredMaxLevel)
+
+                -- Only Questie's two-set-levels style lets a required level above the player's through. Questie pins those quests with its grey "!" (QuestieLib.lua:779-780); they list with a Requires Level label and never add XP.
+                local canAccept = meetsRequiredLevel(requiredLevel, playerLevel)
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
@@ -1056,7 +1134,9 @@ local function scanQuestsByZone()
                             level = level,
                             name = getQuestName(questId),
                             xp = getQuestXp(questId),
-                            tag = getQuestTagLabel(questId),
+                            countsXp = canAccept and countsTowardXp(level, playerLevel),
+                            lockedLevel = not canAccept and requiredLevel or nil,
+                            tags = getQuestTags(questId),
                             repeatable = isQuestRepeatable(questId),
                             outOfRange = outOfRange,
                         }
@@ -1073,7 +1153,7 @@ local function scanQuestsByZone()
                             giverEntry.available[#giverEntry.available + 1] = quest
                         end
                     end
-                elseif not isQuestHidden(questId) and isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
+                elseif canAccept and not isQuestHidden(questId) and isBlockedByPrereqs(questId) and matchesPlayerFaction(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
                         -- Pick the shortest prereq chain. We don't require the chain initial to be doable; if it is, its tooltip badge shows `[Available]`, otherwise the chain is informational. Each blocked quest contributes ONE row keyed by its own questId — quests in `available` never reappear here.
@@ -1093,7 +1173,8 @@ local function scanQuestsByZone()
                                     level = level,
                                     name = getQuestName(questId),
                                     xp = getQuestXp(questId),
-                                    tag = getQuestTagLabel(questId),
+                                    countsXp = countsTowardXp(level, playerLevel),
+                                    tags = getQuestTags(questId),
                                     repeatable = isQuestRepeatable(questId),
                                     chain = bestChain,
                                     blocked = true,
@@ -1116,10 +1197,10 @@ local function scanQuestsByZone()
         end
     end
 
-    -- Actionable rows stay at the top of each bucket: in-range doable first, then in-range blocked (greyed), then out-of-range, level/name ordered within each tier.
+    -- Actionable rows stay at the top of each bucket: in-range doable first, then in-range blocked or level-locked (greyed), then out-of-range, level/name ordered within each tier.
     local function sortQuests(list)
         local function tier(q)
-            return (q.outOfRange and 2 or 0) + (q.blocked and 1 or 0)
+            return (q.outOfRange and 2 or 0) + ((q.blocked or q.lockedLevel) and 1 or 0)
         end
         table.sort(list, function(a, b)
             local ta, tb = tier(a), tier(b)
@@ -1147,8 +1228,14 @@ local function scanQuestsByZone()
             for _, q in ipairs(list) do
                 if not q.blocked and not q.outOfRange then
                     countInRange = countInRange + 1
-                    xpNow = xpNow + (q.xp or 0)
-                    seeds[#seeds + 1] = q.id
+                    if q.countsXp then
+                        xpNow = xpNow + (q.xp or 0)
+                    end
+
+                    -- A level-locked quest can't be picked up this trip, so nothing it unlocks can be either.
+                    if not q.lockedLevel then
+                        seeds[#seeds + 1] = q.id
+                    end
                 end
             end
         end
@@ -1156,7 +1243,7 @@ local function scanQuestsByZone()
         tallyDoable(entry.pickedUpElsewhere)
 
         -- Follow-up projection: chains that keep unlocking in this zone (set here or starting here) once the seeds are done. Blocked quests whose chain runs through another zone stay out of the XP total and are reported separately, so a zone is never credited XP that requires traveling elsewhere to unlock.
-        entry.followups = collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, passesLevelGate)
+        entry.followups = collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, isFollowerInRange)
         local travelXp, travelCount = 0, 0
         local function tallyBlocked(list)
             for _, q in ipairs(list) do
@@ -1164,7 +1251,7 @@ local function scanQuestsByZone()
                     q.unlocksHere = entry.followups.ids[q.id] == true
                     if not q.outOfRange then
                         countInRange = countInRange + 1
-                        if not q.unlocksHere then
+                        if not q.unlocksHere and q.countsXp then
                             travelXp = travelXp + (q.xp or 0)
                             travelCount = travelCount + 1
                         end
@@ -1177,13 +1264,13 @@ local function scanQuestsByZone()
 
         local levelSum, levelCount = 0, 0
         for _, q in ipairs(entry.available) do
-            if not q.blocked and not q.inLog and not q.outOfRange and q.level and q.level > 0 then
+            if not q.blocked and not q.inLog and not q.outOfRange and not q.lockedLevel and q.level and q.level > 0 then
                 levelSum = levelSum + q.level
                 levelCount = levelCount + 1
             end
         end
 
-        -- xp is the one-trip value: everything grabbable now plus everything that unlocks in-zone along the way. It drives the XP sort and the best-zone marker.
+        -- xp is the one-trip value: everything grabbable now plus everything that unlocks in-zone along the way, green, yellow and orange quests only (countsTowardXp). It drives the XP sort, the best-zone marker and the Next banner.
         entry.stats = {
             count = countInRange,
             xp = xpNow + entry.followups.xp,
@@ -1298,9 +1385,8 @@ local function showQuestTooltip(anchor, questId)
     if isQuestRepeatable(questId) then
         GameTooltip_AddColoredLine(GameTooltip, "Repeatable", COLOR.REPEATABLE)
     end
-    local tagLabel = getQuestTagLabel(questId)
-    if tagLabel then
-        GameTooltip_AddColoredLine(GameTooltip, tagLabel, QUEST_TAG_COLORS[tagLabel])
+    for _, tag in ipairs(getQuestTags(questId) or {}) do
+        GameTooltip_AddColoredLine(GameTooltip, tag, QUEST_TAG_COLORS[tag])
     end
 
     local npcName, npcZone, npcSpawn = getQuestStartInfo(questId)
@@ -1338,8 +1424,8 @@ end
 local function formatRowLines(level, name, quest, badge)
     local diff = getDifficultyColor(level)
     local line1 = diff:WrapTextInColorCode("[" .. tostring(level or 0) .. "]")
-    if quest and quest.tag then
-        line1 = line1 .. " " .. formatTag(quest.tag)
+    if quest and quest.tags then
+        line1 = line1 .. " " .. formatTags(quest.tags)
     end
     line1 = line1 .. " " .. diff:WrapTextInColorCode(name or "")
     if badge then
@@ -1353,12 +1439,17 @@ end
 -- Missing-prerequisite chain tooltip; only showChainTooltip leaves the block.
 local showChainTooltip
 do
-    -- Status badge for prior quests in the chain tooltip. `[In Questlog]` if the player has the quest in their log, `[Available]` if it can be picked up right now, otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
+    -- Status badge for prior quests in the chain tooltip. `[In Questlog]` if the player has the quest in their log, `[Available]` if it can be picked up right now, `[Requires Level N]` if only its level requirement stands in the way (IsDoable ignores it), otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
     local function getStatusBadge(questId)
         if QuestiePlayer.currentQuestlog[questId] then
             return COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
         end
         if QuestieDB.IsDoable(questId) then
+            local playerLevel = UnitLevel("player")
+            local _, requiredLevel = getEffectiveLevel(questId, playerLevel)
+            if not meetsRequiredLevel(requiredLevel, playerLevel) then
+                return formatLevelLock(requiredLevel)
+            end
             return COLOR.READY:WrapTextInColorCode("[Available]")
         end
         return nil
@@ -1371,7 +1462,7 @@ do
             id = questId,
             level = level,
             name = getQuestName(questId),
-            tag = getQuestTagLabel(questId),
+            tags = getQuestTags(questId),
         }
     end
 
@@ -1385,8 +1476,8 @@ do
 
         -- Title: the hovered (blocked) quest, in the tooltip's larger title font so it stands out above the prior-quests list.
         local title = getDifficultyColor(mpe.level):WrapTextInColorCode(string.format("[%d] %s", mpe.level or 0, mpe.name or ""))
-        if mpe.tag then
-            title = title .. " " .. formatTag(mpe.tag)
+        if mpe.tags then
+            title = title .. " " .. formatTags(mpe.tags)
         end
         GameTooltip_SetTitle(GameTooltip, title)
 
@@ -1696,7 +1787,7 @@ local function collectCompletedByZone()
                 level = getEffectiveLevel(questId, playerLevel),
                 name = getQuestName(questId),
                 xp = getQuestXp(questId),
-                tag = getQuestTagLabel(questId),
+                tags = getQuestTags(questId),
                 completed = true,
 
                 -- Finisher stands in for startInfo so row line 2, map clicks, and the waypoint all point at the turn-in target instead of the giver.
@@ -1854,17 +1945,18 @@ function renderList()
     local zoneCollapsedDB = QuestieGuideDB.zoneCollapsed
     local groupCollapsedDB = QuestieGuideDB.groupCollapsed
 
+    -- A row passes only when every filter covering it is on: repeatable rides a specialFlags bit orthogonal to the tags, and an elite dungeon quest needs both Dungeons and Elite (Group).
     local function passesTagFilter(quest)
-        -- Repeatable is tested before the tag switch because it rides a specialFlags bit, orthogonal to the tag: a repeatable quest can still carry Dungeon or Group.
         if quest.repeatable and not filters.repeatable then
             return false
         end
-        local tag = quest.tag
-        if tag == "Dungeon" then
-            return filters.dungeons
-        end
-        if tag == "Group" or tag == "Raid" or tag == ELITE_TAG then
-            return filters.eliteGroup
+        if quest.tags then
+            for _, tag in ipairs(quest.tags) do
+                local filterKey = TAG_FILTERS[tag]
+                if filterKey and not filters[filterKey] then
+                    return false
+                end
+            end
         end
         return true
     end
@@ -2071,7 +2163,7 @@ function renderList()
                         inRangeTotal = inRangeTotal + 1
 
                         -- Blocked-quest XP is carried by the zone-level follow-up figure (only chains that unlock in-zone count), never by row summation.
-                        if not q.blocked and not q.outOfRange then
+                        if not q.blocked and not q.outOfRange and q.countsXp then
                             inRangeXp = inRangeXp + (q.xp or 0)
                         end
                     end
@@ -2170,10 +2262,15 @@ function renderList()
                                             function() linkQuestInChat(quest) end,
                                             0.5, quest)
                                     else
-                                        -- In-log rows open the native quest log; pickable rows open the map at their giver. Both register as jump targets for blocked rows' chains.
-                                        local badge = quest.inLog
-                                            and COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
-                                            or COLOR.READY:WrapTextInColorCode("[Available]")
+                                        -- In-log rows open the native quest log; pickable and level-locked rows open the map at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. All register as jump targets for blocked rows' chains.
+                                        local badge
+                                        if quest.inLog then
+                                            badge = COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
+                                        elseif quest.lockedLevel then
+                                            badge = formatLevelLock(quest.lockedLevel)
+                                        else
+                                            badge = COLOR.READY:WrapTextInColorCode("[Available]")
+                                        end
                                         local line1, line2 = formatRowLines(quest.level, quest.name, quest, badge)
                                         local label = line2 and (line1 .. "\n" .. line2) or line1
                                         local onLeftClick = quest.inLog
@@ -2184,7 +2281,7 @@ function renderList()
                                             onLeftClick,
                                             function(self) showQuestContextMenu(self, quest) end,
                                             function() linkQuestInChat(quest) end,
-                                            1, quest)
+                                            quest.lockedLevel and 0.5 or 1, quest)
                                         if not rowTargets[quest.id] then
                                             rowTargets[quest.id] = { row = row, top = rowTop }
                                         end
