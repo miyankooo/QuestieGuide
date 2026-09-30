@@ -1,10 +1,11 @@
-## Interface: 11509, 16001
+## Interface: 16001
 ## Title: Questie Guide
-## Notes: Find currently available quests within a level range around your character level.
+## Notes: Lists the quests you can pick up now, grouped by zone and rated by XP, from Questie's database.
 ## Author: miyanko
-## Version: 1.1.0
-## IconTexture: 237381
-## Dependencies: Questie
+## Version: 2.0.0
+## Category: Quests
+## IconTexture: Interface\Icons\INV_Misc_Map02
+## RequiredDeps: Questie
 ## SavedVariables: QuestieGuideDB
 ## AddonCompartmentFunc: QuestieGuide_CompartmentClick
 ## AddonCompartmentFuncOnEnter: QuestieGuide_CompartmentEnter
