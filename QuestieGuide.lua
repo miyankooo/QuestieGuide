@@ -13,7 +13,6 @@ local DEFAULTS = {
         eliteGroup = true,
         repeatable = true,
     },
-    frameSize = { w = 680, h = 620 },
     zoneCollapsed = {},
     groupCollapsed = {},
     minimap = { hide = false, minimapPos = 215 },
@@ -30,7 +29,6 @@ local LEVEL_RANGE = { MIN = 0, MAX = 10 }
 local COLOR = {
     MUTED = GRAY_FONT_COLOR,
     ACCENT = NORMAL_FONT_COLOR,
-    PREFIX = YELLOW_FONT_COLOR,
     IN_LOG = LIGHTBLUE_FONT_COLOR,
     READY = GREEN_FONT_COLOR,
     BLOCKED = ORANGE_FONT_COLOR,
@@ -41,7 +39,8 @@ local COLOR = {
 -- Blizzard's quest log header grey; headers whiten to HIGHLIGHT_FONT_COLOR while hovered.
 local HEADER_COLOR = QuestDifficultyColors.header
 
-local INTRO_PREFIX = COLOR.PREFIX:WrapTextInColorCode("[Questie Guide]:") .. " "
+-- Every chat line starts with the spaced addon name in yellow, the prefix the author's addons share.
+local INTRO_PREFIX = YELLOW_FONT_COLOR:WrapTextInColorCode("[Questie Guide]:") .. " "
 
 local SORT_BY_OPTIONS = {
     { value = "xp",       label = "Total XP" },
@@ -67,16 +66,11 @@ local COMPLETED_LABEL = "Completed Quests"
 
 -- Window metrics beyond Blizzard's PANEL_INSET_* offsets: the search box sits where AddonList's does, the settings column has a fixed width and the quest list takes the rest.
 local LAYOUT = {
-    MIN_W = 640,
+    FRAME_W = 680,
 
     -- Tall enough for the settings column with its sliders shown.
-    MIN_H = 480,
-    MAX_W = 1200,
-    MAX_H = 960,
+    FRAME_H = 620,
     COLUMN_GAP = 2,
-
-    -- PanelResizeButtonTemplate's corner offset in Blizzard's EventTrace.
-    GRIP_PAD = 4,
     BUTTON_W = 120,
     BUTTON_H = 22,
     SEARCH_W = 200,
@@ -138,6 +132,8 @@ local QuestieMap = QuestieLoader:ImportModule("QuestieMap")
 local QuestieCorrections = QuestieLoader:ImportModule("QuestieCorrections")
 local QuestieTooltips = QuestieLoader:ImportModule("QuestieTooltips")
 local QuestieFrame = QuestieLoader:ImportModule("QuestieFrame")
+local QuestieCompat = QuestieLoader:ImportModule("QuestieCompat")
+local AvailableQuests = QuestieLoader:ImportModule("AvailableQuests")
 
 local mainFrame
 local scrollChild
@@ -167,8 +163,14 @@ local QUEST_TAG_LABELS = {
     [81] = "Dungeon",
 }
 
+-- Label for quests C_QuestLog.IsEliteQuest flags; they share the Elite (Group) filter with Group quests.
+local ELITE_TAG = "Elite (Group)"
+
 local QUEST_TAG_COLORS = {
     Group = ORANGE_FONT_COLOR,
+
+    -- Forever's quest log prints its "(Elite)" tag in GameFontNormal gold (QuestMapFrame.xml:215).
+    [ELITE_TAG] = NORMAL_FONT_COLOR,
     Dungeon = EPIC_PURPLE_COLOR,
     Raid = RED_FONT_COLOR,
     PvP = NORMAL_FONT_COLOR,
@@ -185,8 +187,11 @@ local QUESTIE_FIELDS = {
     { module = "QuestieCorrections", fields = { "hiddenQuests" } },
     { module = "QuestieTooltips", fields = { "lookupByKey" } },
     { module = "QuestieFrame", fields = { "CreateIconFrame" } },
-    { module = "Questie", fields = { "Colorize", "db" } },
+    { module = "QuestieCompat", fields = { "GetQuestGreenRange" } },
+    { module = "AvailableQuests", fields = { "ResetLevelRequirementCache" } },
+    { module = "Questie", fields = { "Colorize", "db", "LOWLEVEL_ALL", "LOWLEVEL_OFFSET", "LOWLEVEL_RANGE" } },
     { module = "Questie.db.char", fields = { "complete", "hidden" } },
+    { module = "Questie.db.profile", fields = { "lowLevelStyle", "manualLevelOffset", "minLevelFilter", "maxLevelFilter", "enableTooltips", "enableTooltipsQuestLevel", "showQuestsInNpcTooltip" } },
 }
 
 -- True once Questie.API reported ready and every field checked out; every launcher waits for it.
@@ -195,13 +200,16 @@ local questieReady = false
 -- First Questie field or API the running Questie lacks; once set, the window stays closed for the session.
 local missingQuestieField
 
--- Questie.db is a placeholder until Questie's init, so the character namespace resolves at check time.
+-- Questie.db is a placeholder until Questie's init, so the character and profile namespaces resolve at check time.
 local function getFieldOwner(moduleName)
     if moduleName == "Questie" then
         return Questie
     end
     if moduleName == "Questie.db.char" then
         return Questie.db and Questie.db.char
+    end
+    if moduleName == "Questie.db.profile" then
+        return Questie.db and Questie.db.profile
     end
     return QuestieLoader:ImportModule(moduleName)
 end
@@ -236,9 +244,14 @@ local function isQuestRepeatable(questId)
     return QuestieDB.IsRepeatable(questId) and true or false
 end
 
+-- Dungeon, Raid and PvP tags name the content and keep their label; an elite quest otherwise reads Elite (Group). Questie drops the client's elite flag (QuestieDB.GetQuestTagInfo returns only id and name), so the flag comes from C_QuestLog.IsEliteQuest, the call Camelot's quest log uses (QuestMapFrameOverrides.lua:15-21).
 local function getQuestTagLabel(questId)
     local tagId = QuestieDB.GetQuestTagInfo(questId)
-    return tagId and QUEST_TAG_LABELS[tagId]
+    local label = tagId and QUEST_TAG_LABELS[tagId]
+    if (not label or label == "Group") and C_QuestLog.IsEliteQuest(questId) then
+        return ELITE_TAG
+    end
+    return label
 end
 
 local function formatTag(label)
@@ -535,21 +548,9 @@ do
             return
         end
 
-        -- Spawn coords belong to uiMapId's coordinate space, so a waypoint is only set when that map is the one shown. TomTom wins when installed; otherwise the native waypoint and beacon are used.
+        -- Spawn coords belong to uiMapId's coordinate space, so a waypoint is only set when that map is the one shown.
         if renderMapId == uiMapId and startInfo.spawn then
-            local x, y = startInfo.spawn[1] / 100, startInfo.spawn[2] / 100
-            if type(TomTom) == "table" and TomTom.AddWaypoint then
-                pcall(function()
-                    TomTom:AddWaypoint(uiMapId, x, y, {
-                        title = quest.name or getQuestName(quest.id),
-                        persistent = false,
-                        minimap = true,
-                        world = true,
-                    })
-                end)
-            else
-                setNativeWaypoint(uiMapId, x, y)
-            end
+            setNativeWaypoint(uiMapId, startInfo.spawn[1] / 100, startInfo.spawn[2] / 100)
         end
 
         -- Questie draws icons asynchronously after the map changes, so wait a tick before pulsing.
@@ -574,16 +575,8 @@ local function getLevelRange()
     return QuestieGuideDB.levelBelow, QuestieGuideDB.levelAbove
 end
 
--- True when Questie colours the quest grey for the player. Used to exclude outgrown quests from the discovery sections.
-local function isQuestTrivialForPlayer(questLevel)
-    if not questLevel or questLevel <= 0 then
-        return false
-    end
-    return QuestieDB.IsTrivial(questLevel)
-end
-
--- Level band checks; only passesPlayerBand leaves the block.
-local passesPlayerBand
+-- Level band checks; only passesPlayerBand and isLevelExcluded leave the block.
+local passesPlayerBand, isLevelExcluded
 do
     -- Quest passes when its effective level sits in [player - below, player + above].
     local function isLevelInBand(questLevel, playerLevel, below, above)
@@ -607,22 +600,50 @@ do
         return (questLevel - playerLevel) >= 5
     end
 
-    -- True when Questie colours the quest yellow or green: not grey by its trivial check, and below orange, which QuestieLib starts 3 levels above the player.
-    local function isQuestYellowOrGreen(questLevel, playerLevel)
+    -- The bounds Questie's own available-quest pins use, from its Quest Level Options (AvailableQuests.lua:576-585): the green range below the player by default, a set offset below, or two set levels. The top is the player's level unless two set levels are chosen.
+    local function getQuestieLevelBounds(playerLevel)
+        local profile = Questie.db.profile
+        local style = profile.lowLevelStyle
+        if style == Questie.LOWLEVEL_RANGE then
+            return profile.minLevelFilter, profile.maxLevelFilter, style
+        end
+        if style == Questie.LOWLEVEL_OFFSET then
+            return playerLevel - profile.manualLevelOffset, playerLevel, style
+        end
+        return playerLevel - QuestieCompat.GetQuestGreenRange("player"), playerLevel, style
+    end
+
+    -- The quest-level half of AvailableQuests.IsLevelRequirementsFulfilled (IsLevelRequirementFulfilled.lua:47-59). Up to the top, every style but "show all low level quests" drops quests under the bottom; above it only two set levels drop the quest, the other styles leave it to the required-level gate.
+    local function isInQuestieRange(questLevel, playerLevel)
         if not questLevel or questLevel <= 0 then
             return true
         end
-        return not QuestieDB.IsTrivial(questLevel) and (questLevel - playerLevel) < 3
+        local minLevel, maxLevel, style = getQuestieLevelBounds(playerLevel)
+        if questLevel <= maxLevel then
+            return style == Questie.LOWLEVEL_ALL or questLevel >= minLevel
+        end
+        return style ~= Questie.LOWLEVEL_RANGE
     end
 
-    -- Single authority for the player's level band, shared by display, XP and routing: the explicit ± slider band minus red quests, or Questie's yellow/green tier when the bypass checkbox is on.
+    -- Single authority for the player's level band, shared by display, XP and routing: the explicit ± slider band minus red quests, or Questie's own level range when the checkbox is on.
     function passesPlayerBand(level, playerLevel)
         if QuestieGuideDB.useQuestieLevelRange then
-            return isQuestYellowOrGreen(level, playerLevel)
+            return isInQuestieRange(level, playerLevel)
         end
         local below, above = getLevelRange()
         return isLevelInBand(level, playerLevel, below, above)
             and not isQuestRedForPlayer(level, playerLevel)
+    end
+
+    -- True when the quest's level keeps it out of the discovery sections entirely. The sliders drop quests Questie colours grey; Questie's own range drops whatever it would not pin, so its "show all low level quests" style lists grey quests too.
+    function isLevelExcluded(level, playerLevel)
+        if QuestieGuideDB.useQuestieLevelRange then
+            return not isInQuestieRange(level, playerLevel)
+        end
+        if not level or level <= 0 then
+            return false
+        end
+        return QuestieDB.IsTrivial(level)
     end
 end
 
@@ -923,7 +944,7 @@ do
                             if passesLevelCap(level, requiredLevel)
                                 and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
                                 and passesLevelGate(level)
-                                and not isQuestTrivialForPlayer(level)
+                                and not isLevelExcluded(level, playerLevel)
                                 and not isQuestHidden(followerId)
                                 and hasReachableStarter(followerId)
                                 and matchesPlayerFaction(followerId)
@@ -1017,11 +1038,11 @@ local function scanQuestsByZone()
         if not currentLog[questId] and not isQuestCompleted(questId) then
             local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(questId, playerLevel)
 
-            -- Out-of-range quests stay in the list, tagged so renderList can hide or fade their rows; only the level cap, the required-level gates, grey (trivial) quests, and quests without a reachable starter exclude quests entirely from the discovery sections.
+            -- Out-of-range quests stay in the list, tagged so renderList can hide or fade their rows; only the level cap, the required-level gates, isLevelExcluded (grey quests, or quests outside Questie's own range), and quests without a reachable starter exclude quests entirely from the discovery sections.
             if passesLevelCap(level, requiredLevel)
                 and meetsRequiredLevel(requiredLevel, playerLevel)
                 and not exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
-                and not isQuestTrivialForPlayer(level)
+                and not isLevelExcluded(level, playerLevel)
                 and hasReachableStarter(questId) then
                 local outOfRange = not passesLevelGate(level)
                 if QuestieDB.IsDoable(questId) then
@@ -1842,7 +1863,7 @@ function renderList()
         if tag == "Dungeon" then
             return filters.dungeons
         end
-        if tag == "Group" or tag == "Raid" then
+        if tag == "Group" or tag == "Raid" or tag == ELITE_TAG then
             return filters.eliteGroup
         end
         return true
@@ -2324,7 +2345,7 @@ do
         return slider
     end
 
-    -- Quest Level Range block: "Use Questie Level Ranges" above the below / above sliders. Ticking it hides the sliders, and the scan switches from the band to Questie's yellow/green tiers (see passesPlayerBand).
+    -- Quest Level Range block: "Use Questie Level Ranges" above the below / above sliders. Ticking it hides the sliders, and the scan switches from the band to the range set in Questie's Quest Level Options (see passesPlayerBand).
     local function buildRangeGroup(frame, parent)
         local expandedHeight = LAYOUT.CHECK_SIZE + (LAYOUT.CONTROL_GAP + LAYOUT.SLIDER_H) * 2
         local group = createGroup(parent, nil, "Quest Level Range")
@@ -2583,30 +2604,22 @@ do
         return button
     end
 
-    -- Button bar chained from the bottom-left corner, because the resize grip owns the bottom-right corner (PanelResizeButtonTemplate always sizes from BOTTOMRIGHT).
+    -- Button bar chained leftwards from the bottom-right corner, where the shared spec puts the primary action: Current Zone, with Collapse All beside it.
     local function buildButtonBar(frame)
-        local toggleAllButton = createBarButton(frame, "Collapse All", toggleAllZones, "BOTTOMLEFT", frame, "BOTTOMLEFT")
-        createBarButton(frame, "Current Zone", jumpToCurrentZone, "LEFT", toggleAllButton, "RIGHT")
-        frame.toggleAllButton = toggleAllButton
+        local currentZoneButton = createBarButton(frame, "Current Zone", jumpToCurrentZone, "BOTTOMRIGHT", frame, "BOTTOMRIGHT")
+        frame.toggleAllButton = createBarButton(frame, "Collapse All", toggleAllZones, "RIGHT", currentZoneButton, "LEFT")
     end
 
-    -- The window: Blizzard's ButtonFrameTemplate with its portrait, title bar, close button, attic and button bar. Movable, clamped, resizable and closed by Escape; UIPanelWindows is avoided because of taint.
+    -- The window: Blizzard's ButtonFrameTemplate with its portrait, title bar, close button, attic and button bar. Fixed size, movable, clamped and closed by Escape; UIPanelWindows is avoided because of taint.
     local function createWindow()
         local frame = CreateFrame("Frame", "QuestieGuideFrame", UIParent, "ButtonFrameTemplate")
-
-        -- Clamp the saved size to this layout's bounds.
-        local savedSize = QuestieGuideDB.frameSize
-        local width = math.min(math.max(savedSize.w, LAYOUT.MIN_W), LAYOUT.MAX_W)
-        local height = math.min(math.max(savedSize.h, LAYOUT.MIN_H), LAYOUT.MAX_H)
-        frame:SetSize(width, height)
+        frame:SetSize(LAYOUT.FRAME_W, LAYOUT.FRAME_H)
         frame:SetTitle("Questie Guide")
         frame:SetPortraitToAsset(ADDON_ICON)
         frame:SetFrameStrata("HIGH")
         frame:SetToplevel(true)
         frame:SetClampedToScreen(true)
         frame:SetMovable(true)
-        frame:SetResizable(true)
-        frame:SetResizeBounds(LAYOUT.MIN_W, LAYOUT.MIN_H, LAYOUT.MAX_W, LAYOUT.MAX_H)
         frame:EnableMouse(true)
         frame:RegisterForDrag("LeftButton")
         frame:SetScript("OnDragStart", frame.StartMoving)
@@ -2624,15 +2637,6 @@ do
             frame:SetPoint("CENTER")
         end
         frame:Hide()
-
-        -- PanelResizeButtonTemplate is the corner grip of Blizzard's resizable EventTrace. Its Init replaces the frame's OnSizeChanged script with a wrapper, so the size-saving hook goes on afterwards.
-        local resizeButton = CreateFrame("Button", nil, frame, "PanelResizeButtonTemplate")
-        resizeButton:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -LAYOUT.GRIP_PAD, LAYOUT.GRIP_PAD)
-        resizeButton:Init(frame, LAYOUT.MIN_W, LAYOUT.MIN_H, LAYOUT.MAX_W, LAYOUT.MAX_H)
-        frame:HookScript("OnSizeChanged", function(self)
-            QuestieGuideDB.frameSize = { w = math.floor(self:GetWidth()), h = math.floor(self:GetHeight()) }
-        end)
-
         tinsert(UISpecialFrames, "QuestieGuideFrame")
         return frame
     end
@@ -2705,7 +2709,7 @@ do
         end)
     end
 
-    -- Runs after Questie's own pin OnClick. Plain left click on a quest icon opens the quest: in-log quests jump to the native quest log, everything else opens the guide at the quest row. Modified clicks (Shift hide, Ctrl TomTom) and chat-link insertion stay Questie's; a world-map click that changed the shown map was a zoom-to-zone click, detected against the map id captured on mouse-down.
+    -- Runs after Questie's own pin OnClick. Plain left click on a quest icon opens the quest: in-log quests jump to the native quest log, everything else opens the guide at the quest row. Modified clicks (Questie's Shift hide and Ctrl waypoint) and chat-link insertion stay Questie's; a world-map click that changed the shown map was a zoom-to-zone click, detected against the map id captured on mouse-down.
     local function onMapIconClick(pin, button)
         if button ~= "LeftButton" or IsModifierKeyDown() then
             return
@@ -2785,13 +2789,11 @@ SlashCmdList["QUESTIEGUIDE"] = function(msg)
     local command = strtrim(string.lower(msg or ""))
     if command == "reset" then
         QuestieGuideDB.framePos = nil
-        QuestieGuideDB.frameSize = CopyTable(DEFAULTS.frameSize)
         if mainFrame then
-            mainFrame:SetSize(DEFAULTS.frameSize.w, DEFAULTS.frameSize.h)
             mainFrame:ClearAllPoints()
             mainFrame:SetPoint("CENTER")
         end
-        print(INTRO_PREFIX .. "Window position and size reset.")
+        print(INTRO_PREFIX .. "Window position reset.")
         return
     end
     toggleIfReady()
@@ -3121,6 +3123,14 @@ do
         scheduleRefresh()
     end
 
+    -- Questie resets its level-requirement cache whenever its Quest Level Options change and on level-up, so under Questie's range the list rescans with it.
+    local function onQuestieLevelRangeChanged()
+        if QuestieGuideDB.useQuestieLevelRange then
+            invalidateScan()
+            scheduleRefresh()
+        end
+    end
+
     -- Runs once Questie.API reports ready: after Questie's Stage 3 installed its tooltip post-calls and filled its quest log and completed set.
     local function onQuestieReady()
         missingQuestieField = findMissingField()
@@ -3132,6 +3142,7 @@ do
         installItemTooltipHooks()
         installMapIconHooks()
         hooksecurefunc(QuestieDB, "RefreshAfterCorrectionApply", onCorrectionApplied)
+        hooksecurefunc(AvailableQuests, "ResetLevelRequirementCache", onQuestieLevelRangeChanged)
         Questie.API.RegisterForQuestUpdates(onQuestUpdate)
         scheduleItemQuestIndexBuild()
     end
