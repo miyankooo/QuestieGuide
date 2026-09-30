@@ -16,7 +16,7 @@ Lists every quest currently available to your character, grouped by zone, with t
 - **Completed quests** — a category at the top grouping everything ready to turn in, by turn-in zone
 - **You are here** — your current zone carries a gold tag, and the Current Zone button jumps to it
 - **Focus mode** — right-click a zone header to expand it and collapse everything else
-- **Item tooltips** — list every quest an item belongs to that is not in your log, marked Available, Upcoming or Completed Before
+- **Item tooltips** — list every quest an item belongs to that is not in your log, marked Available, Requires Level N (too low for it yet), Upcoming (a pre-quest is missing) or Completed Before
 - **Level-up report** — on level up, an on-screen message and clickable chat lines name the newly available quests per zone
 - **Empty-list help** — when nothing shows, a button offers the likely fix: enable the disabled filters, clear the search, or widen the level band
 - **Native look** — the window is Blizzard's own panel frame with the game's dropdowns, sliders, buttons, scroll bar and tooltips

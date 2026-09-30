@@ -26,7 +26,7 @@ Lists every quest you can pick up now, grouped by zone, from Questie's database.
 | Version | 2.0.0: `## Interface: 16001`, `## Category: Quests`, `## RequiredDeps: Questie`, `## IconTexture: Interface\Icons\INV_Misc_Map02`, Addon Compartment fields |
 | Files | One Lua file (`QuestieGuide.lua`, 3,328 lines; 3,219 after the split, 3,557 before it), `Bindings.xml`, the toc, and the four tracked libs in `Libs/` (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0) |
 | Git | `1.15.x-backup` = `origin/1.15.x-backup` = `c50c068` (the dual-client 1.1.0, created by the lead). `main` carries the 2.0.0 commits, not pushed |
-| Offline checks | `luac -p` passes (5.5). Lua 5.1 limits estimated from the luac 5.5 listing: main chunk at most 140 active locals (limit 200), `renderList` 49 upvalues, `scanQuestsByZone` 24 (limit 60). The lead's throwaway smoke harness (mocked WoW API and fake Questie, kept in the session scratchpad, not in the repo) passes 76/76. It covers both tags and both filters, zone XP with red, grey and level-locked quests present, `[Requires Level N]` rows and the chain badge, all four Questie level styles, both Questie exceptions, the bar anchors and the missing-field path for the profile, `activeQuests` and `parentQuest`. Every new check was confirmed to fail when its code is removed. A slider-mode diff against `7cfb487` (16 below/above settings, same mock data) renders identical rows; the only difference is that a grey in-log quest inside a wide band no longer adds XP |
+| Offline checks | `luac -p` passes (5.5). Lua 5.1 limits estimated from the luac 5.5 listing: main chunk at most 140 active locals (limit 200), `renderList` 49 upvalues, `scanQuestsByZone` 24 (limit 60). The lead's throwaway smoke harness (mocked WoW API and fake Questie, kept in the session scratchpad, not in the repo) passes 78/78. It covers both tags and both filters, the item tooltip's "(Requires Level N)", zone XP with red, grey and level-locked quests present, `[Requires Level N]` rows and the chain badge, all four Questie level styles, both Questie exceptions, the bar anchors and the missing-field path for the profile, `activeQuests` and `parentQuest`. Every new check was confirmed to fail when its code is removed. A slider-mode diff against `7cfb487` (16 below/above settings, same mock data) renders identical rows; the only difference is that a grey in-log quest inside a wide band no longer adds XP |
 
 ## How it talks to Questie
 
@@ -208,21 +208,18 @@ Fixed in the port and still valid:
 | Show Questie's above-your-level range quests with their own label | `getRequiredLevelCap` and `lockedLevel`; `[Requires Level N]` rows, dimmed, never XP, see the Questie range section |
 | Copy Questie's two exceptions under its range | `isQuestieRangeException`; `QuestieEvent.activeQuests` and `QuestieDB.questKeys.parentQuest` joined the fail-closed check. See the Questie range section |
 | Primary button | Left as is (Current Zone bottom-right) |
+| Item tooltips use the list's wording (lead decision, round 3) | A quest the player is too low for reads "(Requires Level N)" (`ITEM_MIN_LEVEL`) in Questie's grey instead of "(Upcoming)"; "(Upcoming)" stays for prereq-blocked quests |
 | The guide's own slider mode unchanged | Verified by the slider-mode diff (see Offline checks). It lists exactly what it listed before; the only change is the owner's XP rule, so grey in-log quests inside a wide band no longer add XP |
 
 ## Open items
 
-Owner questions still open:
+Left as is, decided by lead (round 3):
 
-1. Primary button: Current Zone sits bottom-right as the primary action, with Collapse All to its left. Swapping them is two lines in `buildButtonBar`.
-
-New questions raised by the round-3 answers:
-
-2. Quest counts: XP now counts only green, yellow and orange quests. The header count "(N)", the Total Quest Count sort and the launcher tooltip's "N quests available" still count every listed in-range row, grey, red and `[Requires Level N]` included. Keep: no change. Match XP: count only rows with `countsXp` (about 3 lines in the scan and `renderList`).
-3. Group-tagged elite quests show only `[Elite (Group)]`, not `[Elite (Group)] [Group]`. Keep: no change. Show both: drop the `label ~= "Group"` test in `getQuestTags` (1 line).
-4. Item tooltips still call a quest you are too low for "(Upcoming)", in Questie's `Colorize` style, while the list now says `[Requires Level N]`. Keep: no change. Match: split the item tooltip's level case into "(Requires Level N)" (about 3 lines).
-5. Parent exception and `requiredMaxLevel`: Questie's parent-in-log exception also skips its `requiredMaxLevel` test; the guide keeps dropping a child quest the player has outlevelled. Keep: no change. Match Questie: waive `exceedsRequiredMaxLevel` for that exception too (1 line), and such a row would say Available although it can't be accepted.
-6. Key check: only `parentQuest` is checked in `QuestieDB.questKeys`. Keep: no change. Check every key the guide queries (about 20 names across quest, NPC, object and item keys): one list per key table in `QUESTIE_FIELDS`.
+- Counts list shown rows: the header count "(N)", the Total Quest Count sort and the launcher tooltip's "N quests available" count every listed in-range row (grey, red and `[Requires Level N]` included); only XP follows `countsXp`.
+- Group-tagged elite shows one tag: `[Elite (Group)]`, not `[Elite (Group)] [Group]` (`getQuestTags`).
+- Outlevelled child quests stay hidden: `exceedsRequiredMaxLevel` still applies under Questie's parent-in-log exception.
+- The fail-closed check covers only `parentQuest` among the query keys.
+- Current Zone stays the primary button.
 
 Robustness notes (not changed):
 
@@ -251,7 +248,7 @@ Run `/console scriptErrors 1` first.
 - [ ] Time the first open and a rescan with "Use Questie Level Ranges" on (the parent query runs for every quest outside the range).
 - [ ] Clicking an Available quest opens the map at the giver, with the Questie pin pulsing. Clicking a Missing Pre-Quest row jumps to the prerequisite. The selected row shows the quest-log glow.
 - [ ] Right-click → "Link in chat" inserts the link. A Questie map-icon click opens the guide, except while a chat box is open.
-- [ ] Quest items in bags show their status line once, under Questie's lines. The first hover of a quest-start item doesn't show "(Available)" twice (QG-05).
+- [ ] Quest items in bags show their status line once, under Questie's lines. An item for a quest you are too low for says "(Requires Level N)" in grey. The first hover of a quest-start item doesn't show "(Available)" twice (QG-05).
 - [ ] The compartment lists Questie Guide; the minimap button tooltip shows the zone count after the first scan.
 - [ ] An Available quest sets the native pin and beacon. `/dump C_Map.HasUserWaypoint(), C_SuperTrack.IsSuperTrackingUserWaypoint()` prints `true true`, and the pin sits on the NPC.
 - [ ] An In Questlog row opens the quest map log on that quest.
