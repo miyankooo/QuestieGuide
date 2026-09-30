@@ -1,6 +1,6 @@
 # QuestieGuide
 
-Lists every quest currently available to your character, grouped by zone, with the XP each zone is worth. Trivial grey quests are hidden automatically.
+Lists every quest currently available to your character, grouped by zone, with the XP each zone is worth. Trivial grey quests are hidden automatically, unless you let Questie's own level range decide.
 
 ## Features
 
@@ -9,8 +9,9 @@ Lists every quest currently available to your character, grouped by zone, with t
 - **Status labels** — **[In Questlog]**, **[Available]**, **[Missing Pre-Quest]** and **[Completed]**
 - **Click to locate** — Available opens the world map at the start NPC with the Questie pin pulsing and a map pin on the NPC, In Questlog opens the quest log, Missing Pre-Quest jumps to the chain step you can pick up right now
 - **Search** — the box at the top right matches quest names, zone names and NPC names
-- **Level range sliders** — include 0–10 levels below and above you (default 5/5), or switch to Questie's own yellow/green difficulty gating
+- **Level range sliders** — include 0–10 levels below and above you (default 5/5), or tick **Use Questie Level Ranges** to follow the range set in Questie's own **Quest Level Options** (Questie options > General)
 - **Filters** — In Questlog, Picked Up in Zone, Picked Up Outside of Zone, Missing Pre-Quest, Dungeons, Elite (Group), Repeatable
+- **Quest type tags** — **[Elite (Group)]** for elite quests, plus **[Group]**, **[Dungeon]**, **[Raid]** and **[PvP]**; the Elite (Group) filter covers elite, group and raid quests
 - **Sort modes** — Total XP, Total Quest Count, Average Quest Level or Alphabetical by Zone, ascending or descending
 - **Completed quests** — a category at the top grouping everything ready to turn in, by turn-in zone
 - **You are here** — your current zone carries a gold tag, and the Current Zone button jumps to it
@@ -19,7 +20,7 @@ Lists every quest currently available to your character, grouped by zone, with t
 - **Level-up report** — on level up, an on-screen message and clickable chat lines name the newly available quests per zone
 - **Empty-list help** — when nothing shows, a button offers the likely fix: enable the disabled filters, clear the search, or widen the level band
 - **Native look** — the window is Blizzard's own panel frame with the game's dropdowns, sliders, buttons, scroll bar and tooltips
-- Window position, size, collapsed state and every filter persist between sessions
+- Window position, collapsed state and every filter persist between sessions
 
 ## Installation
 
@@ -33,7 +34,7 @@ Lists every quest currently available to your character, grouped by zone, with t
 2. Type in the search box to narrow by quest, zone or NPC name.
 3. Use the dropdowns on the left to include or exclude categories and quest types and to change the sort order.
 4. Click a quest to open the map at its start NPC; right-click for **Show on map** and **Link in chat**.
-5. Drag the bottom-right corner to resize. `/qg reset` rescues a window dragged off-screen.
+5. Drag the window to move it. `/qg reset` moves it back to the middle of the screen.
 
 Shift-click a quest to link it into an open chat box.
 
@@ -42,10 +43,10 @@ Shift-click a quest to link it into an open chat box.
 - WoW Forever 1.60.x
 - [Questie](https://github.com/Questie/Questie) 12 with the separate QuestieDB addon, installed and enabled. Every quest, giver, prerequisite, completion state and XP figure comes from Questie; QuestieGuide has no quest data of its own, so it only loads with Questie
 - If a Questie update removes something QuestieGuide relies on, it names the missing piece in chat and keeps the window closed
-- [TomTom](https://www.curseforge.com/wow/addons/tomtom) is optional; with it installed, clicking a quest sets a TomTom waypoint instead of the game's own map pin
 
 ## Restrictions
 
 - Clicking a quest replaces any map pin you placed yourself.
-- Red (too high) quests are shown but never counted toward the XP figures.
+- With the level sliders, red (too high) quests never count toward the XP figures. **Use Questie Level Ranges** follows Questie instead, which also lists red quests you meet the required level for.
+- Quests you can't accept yet stay hidden, even when Questie's "between two set levels" range reaches above your level.
 - Quests filed under a sort category rather than a zone (class and profession quests) are grouped under **Other**.
