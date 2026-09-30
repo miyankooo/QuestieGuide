@@ -950,9 +950,10 @@ do
 end
 
 -- Zone name the player is standing in, per Questie's area mapping; nil when unresolved.
+-- ZoneDB:GetAreaIdByUiMapId raises on a map it has no area for, so an unmapped zone must not break every render.
 local function getCurrentZoneName()
-    local areaId = QuestiePlayer:GetCurrentZoneId()
-    if not areaId or areaId <= 0 then
+    local ok, areaId = pcall(QuestiePlayer.GetCurrentZoneId, QuestiePlayer)
+    if not ok or not areaId or areaId <= 0 then
         return nil
     end
     return getZoneName(areaId)

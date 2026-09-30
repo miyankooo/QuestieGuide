@@ -148,12 +148,11 @@ Owner questions:
 
 Robustness notes (not changed):
 
-- QG-23: `QuestiePlayer:GetCurrentZoneId()` can raise an error through `ZoneDB:GetAreaIdByUiMapId` when a map has no area id (`zoneDB.lua:152-174`). `renderList` calls it every render, so an unmapped map would break the list. Questie itself calls it unguarded (for example `QuestiePlayer:GetCurrentContinentId`). A `pcall` in `getCurrentZoneName` would contain it.
+- QG-23 (fixed after the main commit): `QuestiePlayer:GetCurrentZoneId()` can raise through `ZoneDB:GetAreaIdByUiMapId` when a map has no area id (`zoneDB.lua:152-174`), and `renderList` calls it every render. `getCurrentZoneName` now runs it in `pcall` and treats a failure as "zone unknown".
 - The dungeon-map art walk (`resolveRenderableMapId`) came from Era, where art-less maps crashed the map canvas. Unverified on Forever; kept as a harmless guard.
 
 Unverified:
 
-- Whether toc icon file ID `237381` (1.1.0) was `INV_Misc_Map02`. The toc now uses the path the portrait and minimap button already used, so the AddOn list icon changes if it wasn't.
 - The `questlog-quest-glow-yellow` atlas and the plus/minus textures at our row sizes (stretched with `SetAllPoints`, toggles forced to 16x16).
 - Whether opening the modern world map and quest log from addon code taints `WorldMapFrame` in combat.
 - Whether the waypoint sits on the NPC. Setting it replaces the player's own waypoint.
