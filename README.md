@@ -4,14 +4,14 @@ Lists every quest currently available to your character, grouped by zone, with t
 
 ## Features
 
-- **Zone list with XP** — collapsible zone headers showing the in-range quest count and the total XP for one trip through the zone, with a percent-of-level breakdown on hover
+- **Zone list with XP** — collapsible zone headers showing the in-range quest count and the total XP for one trip through the zone (green, yellow and orange quests only), with a percent-of-level breakdown on hover
 - **Next-trip banner** — names the best zone for your next trip and jumps to it on click
-- **Status labels** — **[In Questlog]**, **[Available]**, **[Missing Pre-Quest]** and **[Completed]**
+- **Status labels** — **[In Questlog]**, **[Available]**, **[Requires Level N]**, **[Missing Pre-Quest]** and **[Completed]**
 - **Click to locate** — Available opens the world map at the start NPC with the Questie pin pulsing and a map pin on the NPC, In Questlog opens the quest log, Missing Pre-Quest jumps to the chain step you can pick up right now
 - **Search** — the box at the top right matches quest names, zone names and NPC names
-- **Level range sliders** — include 0–10 levels below and above you (default 5/5), or tick **Use Questie Level Ranges** to follow the range set in Questie's own **Quest Level Options** (Questie options > General)
+- **Level range sliders** — include 0–10 levels below and above you (default 5/5), or tick **Use Questie Level Ranges** to follow the range set in Questie's own **Quest Level Options** (Questie options > General). When Questie's "between two set levels" range reaches above your level, the quests you can't accept yet show dimmed as **[Requires Level N]**, the way Questie pins them with a grey "!". Like Questie, this mode also lists quests whose parent quest is in your log, and active holiday quests below the range
 - **Filters** — In Questlog, Picked Up in Zone, Picked Up Outside of Zone, Missing Pre-Quest, Dungeons, Elite (Group), Repeatable
-- **Quest type tags** — **[Elite (Group)]** for elite quests, plus **[Group]**, **[Dungeon]**, **[Raid]** and **[PvP]**; the Elite (Group) filter covers elite, group and raid quests
+- **Quest type tags** — **[Elite (Group)]** for elite quests, plus **[Group]**, **[Dungeon]**, **[Raid]** and **[PvP]**. An elite dungeon, raid or PvP quest shows both tags, for example **[Elite (Group)] [Dungeon]**. The Elite (Group) filter covers elite, group and raid quests, and a quest with two tags shows only while both filters are on
 - **Sort modes** — Total XP, Total Quest Count, Average Quest Level or Alphabetical by Zone, ascending or descending
 - **Completed quests** — a category at the top grouping everything ready to turn in, by turn-in zone
 - **You are here** — your current zone carries a gold tag, and the Current Zone button jumps to it
@@ -47,6 +47,6 @@ Shift-click a quest to link it into an open chat box.
 ## Restrictions
 
 - Clicking a quest replaces any map pin you placed yourself.
-- With the level sliders, red (too high) quests never count toward the XP figures. **Use Questie Level Ranges** follows Questie instead, which also lists red quests you meet the required level for.
-- Quests you can't accept yet stay hidden, even when Questie's "between two set levels" range reaches above your level.
+- Only green, yellow and orange quests count toward the XP figures, the trip XP, the zone rating and the Next banner. Grey and red quests, and **[Requires Level N]** rows, still list where the level range allows them but never add XP.
+- The level sliders never list red (too high) quests; **Use Questie Level Ranges** lists them when Questie does.
 - Quests filed under a sort category rather than a zone (class and profession quests) are grouped under **Other**.
