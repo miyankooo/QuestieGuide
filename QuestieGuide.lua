@@ -1,6 +1,12 @@
 -- QuestieGuide: zone-bucketed quest browser sourced from Questie.
 local ADDON_NAME = ...
 
+-- The shared native design system: tokens on the 8px grid, Blizzard font and colour roles, and the window, launcher and chat builders.
+local UI = LibStub("LibNativeUI-1.0")
+
+-- The spaced name every player-facing surface shows: window title, launcher, addon menu and chat prefix.
+local ADDON_TITLE = "Questie Guide"
+
 local DEFAULTS = {
     sortMode = "xp",
     sortDir = "desc",
@@ -16,6 +22,9 @@ local DEFAULTS = {
     zoneCollapsed = {},
     groupCollapsed = {},
     minimap = { hide = false, minimapPos = 215 },
+
+    -- The window reads and writes its position in this table in place, so it always exists.
+    framePos = {},
     useQuestieLevelRange = false,
     levelBelow = 5,
     levelAbove = 5,
@@ -25,25 +34,22 @@ local DEFAULTS = {
 -- Bounds of the below / above level sliders.
 local LEVEL_RANGE = { MIN = 0, MAX = 10 }
 
--- Colour roles, each a Blizzard colour object so rows, badges and tooltips use the native palette.
+-- Colour roles: the shared UI.Color roles where one fits, other Blizzard colour objects for the quest states it has no role for.
 local COLOR = {
-    MUTED = GRAY_FONT_COLOR,
-    ACCENT = NORMAL_FONT_COLOR,
+    MUTED = UI.Color.muted,
+    ACCENT = UI.Color.heading,
     IN_LOG = LIGHTBLUE_FONT_COLOR,
-    READY = GREEN_FONT_COLOR,
+    READY = UI.Color.good,
     BLOCKED = ORANGE_FONT_COLOR,
 
     -- Grey like the "!" Questie pins a quest with before its required level is reached.
-    LOCKED = GRAY_FONT_COLOR,
+    LOCKED = UI.Color.muted,
     REPEATABLE = LIGHTBLUE_FONT_COLOR,
     LINK = LINK_FONT_COLOR,
 }
 
--- Blizzard's quest log header grey; headers whiten to HIGHLIGHT_FONT_COLOR while hovered.
+-- Blizzard's quest log header grey; headers whiten to the body colour while hovered.
 local HEADER_COLOR = QuestDifficultyColors.header
-
--- Every chat line starts with the spaced addon name in yellow, the prefix the author's addons share.
-local INTRO_PREFIX = YELLOW_FONT_COLOR:WrapTextInColorCode("[Questie Guide]:") .. " "
 
 local SORT_BY_OPTIONS = {
     { value = "xp",       label = "Total XP" },
@@ -67,50 +73,35 @@ local SUBCAT_LABEL = {
 local COMPLETED_KEY = "||completed"
 local COMPLETED_LABEL = "Completed Quests"
 
--- Window metrics beyond Blizzard's PANEL_INSET_* offsets: the search box sits where AddonList's does, the settings column has a fixed width and the quest list takes the rest.
+-- Window metrics on the 8px grid beyond Blizzard's PANEL_INSET_* offsets: the settings column has a fixed width and the quest list takes the rest.
 local LAYOUT = {
-    FRAME_W = 680,
+    -- 680 x 624, fixed (owner decision): tall enough for the settings column with its sliders shown.
+    FRAME_W = UI.GRID * 85,
+    FRAME_H = UI.GRID * 78,
+    PANE_W = UI.GRID * 32,
 
-    -- Tall enough for the settings column with its sliders shown.
-    FRAME_H = 620,
-    COLUMN_GAP = 2,
-    BUTTON_W = 120,
-    BUTTON_H = 22,
-    SEARCH_W = 200,
-    SEARCH_H = 22,
-    SEARCH_TOP = 31,
+    -- Wide enough for the "Quest, zone or NPC name" placeholder.
+    SEARCH_W = UI.GRID * 25,
+
+    -- Native geometry: AddonList.xml anchors its attic search box 10px in from the frame's right edge.
     SEARCH_RIGHT = 10,
-    PANE_W = 260,
-    PANE_PAD = 12,
-    HEADING_H = 18,
-    GROUP_GAP = 12,
-    CONTROL_GAP = 6,
-    CHECK_SIZE = 26,
-    DROPDOWN_H = 25,
 
-    -- WowStyle1DropdownTemplate's art bleeds past its frame, so dropdowns sit this far in from the column edges.
-    DROPDOWN_INDENT = 6,
+    -- Native geometry: MinimalSliderWithSteppersTemplate's own height (MinimalSlider.xml), which holds its top and min/max labels.
     SLIDER_H = 40,
-    LIST_PAD = 4,
+
+    -- WowStyle1DropdownTemplate draws its background 8px past each side of its frame (MenuTemplates.xml), so dropdowns sit that far in to line the art up with the column.
+    DROPDOWN_INDENT = UI.GRID,
 }
 
--- Quest list metrics: 16px title rows, the +/- toggle 3px in and header text 20px in, header grey that whitens on hover. Rows grow to fit their wrapped two-line text, and gaps loosen per nesting level so zones, buckets and quests read as separate tiers.
+-- Quest list metrics on the 8px grid. Rows snap their centred text to the grid, one 16px line at least; quest rows add one grid step of air around their text, so a two-line quest lands on 32px. The +/- toggle sits flush left with header text right after it, and gaps grow per tier (none between quests, one gap before a bucket, two before a zone) so quests, buckets and zones read apart.
 local LIST = {
-    ROW_HEIGHT = 16,
-    SUBHEADER_HEIGHT = 16,
-    HEADER_HEIGHT = 20,
-    ROW_GAP = 2,
-    GROUP_GAP = 6,
-    ZONE_GAP = 12,
-    INDENT_STEP = 16,
-    TEXT_PAD = 4,
-    TEXT_INSET = 20,
-    TOGGLE_INSET = 3,
-    TOGGLE_SIZE = 16,
-
-    -- Centers one 12px GameFontHighlight line in a 16px row.
-    ROW_PAD = 2,
-    LINE_GAP = 2,
+    ROW_HEIGHT = UI.GRID * 2,
+    ROW_PADDING = UI.GRID,
+    GROUP_GAP = UI.Space.gap,
+    ZONE_GAP = UI.GRID * 2,
+    INDENT_STEP = UI.GRID * 2,
+    TEXT_INSET = UI.Size.icon,
+    TOGGLE_SIZE = UI.Size.icon,
 }
 
 -- The toc's IconTexture, shared by the portrait and the minimap button.
@@ -1351,11 +1342,11 @@ local function formatLocation(zoneName, spawn)
 end
 
 -- One label/value tooltip row in Blizzard's own pairing: gold label, white value.
-local function addTooltipField(label, value)
+local function addTooltipField(tooltip, label, value)
     if value == nil or value == "" then
         return
     end
-    GameTooltip_AddColoredDoubleLine(GameTooltip, label, tostring(value), NORMAL_FONT_COLOR, HIGHLIGHT_FONT_COLOR)
+    GameTooltip_AddColoredDoubleLine(tooltip, label, tostring(value), UI.Color.heading, UI.Color.body)
 end
 
 -- Questie's difficulty-coloured quest title, the same one Questie's own tooltips show.
@@ -1374,39 +1365,38 @@ local function showQuestTooltip(anchor, questId)
         return
     end
 
-    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
-    GameTooltip_SetTitle(GameTooltip, getColoredQuestName(questId, true))
-    GameTooltip_AddBlankLineToTooltip(GameTooltip)
+    UI.ShowTooltip(anchor, function(tooltip)
+        GameTooltip_SetTitle(tooltip, getColoredQuestName(questId, true))
+        GameTooltip_AddBlankLineToTooltip(tooltip)
 
-    if quest.requiredLevel and quest.requiredLevel > 0 then
-        addTooltipField("Required level", quest.requiredLevel)
-    end
-
-    if isQuestRepeatable(questId) then
-        GameTooltip_AddColoredLine(GameTooltip, "Repeatable", COLOR.REPEATABLE)
-    end
-    for _, tag in ipairs(getQuestTags(questId) or {}) do
-        GameTooltip_AddColoredLine(GameTooltip, tag, QUEST_TAG_COLORS[tag])
-    end
-
-    local npcName, npcZone, npcSpawn = getQuestStartInfo(questId)
-    addTooltipField("NPC", npcName)
-    addTooltipField("Location", formatLocation(npcZone, npcSpawn))
-
-    local xp = getQuestXp(questId)
-    if xp > 0 then
-        addTooltipField("XP", BreakUpLargeNumbers(xp))
-    end
-
-    if type(quest.objectivesText) == "table" and #quest.objectivesText > 0 then
-        GameTooltip_AddBlankLineToTooltip(GameTooltip)
-        GameTooltip_AddNormalLine(GameTooltip, "Objectives")
-        for _, line in ipairs(quest.objectivesText) do
-            GameTooltip_AddHighlightLine(GameTooltip, line)
+        if quest.requiredLevel and quest.requiredLevel > 0 then
+            addTooltipField(tooltip, "Required level", quest.requiredLevel)
         end
-    end
 
-    GameTooltip:Show()
+        if isQuestRepeatable(questId) then
+            GameTooltip_AddColoredLine(tooltip, "Repeatable", COLOR.REPEATABLE)
+        end
+        for _, tag in ipairs(getQuestTags(questId) or {}) do
+            GameTooltip_AddColoredLine(tooltip, tag, QUEST_TAG_COLORS[tag])
+        end
+
+        local npcName, npcZone, npcSpawn = getQuestStartInfo(questId)
+        addTooltipField(tooltip, "NPC", npcName)
+        addTooltipField(tooltip, "Location", formatLocation(npcZone, npcSpawn))
+
+        local xp = getQuestXp(questId)
+        if xp > 0 then
+            addTooltipField(tooltip, "XP", BreakUpLargeNumbers(xp))
+        end
+
+        if type(quest.objectivesText) == "table" and #quest.objectivesText > 0 then
+            GameTooltip_AddBlankLineToTooltip(tooltip)
+            GameTooltip_AddNormalLine(tooltip, "Objectives")
+            for _, line in ipairs(quest.objectivesText) do
+                GameTooltip_AddHighlightLine(tooltip, line)
+            end
+        end
+    end)
 end
 
 -- Giver text under a row, "zone, NPC", or nil when neither is known.
@@ -1466,27 +1456,23 @@ do
         }
     end
 
-    function showChainTooltip(anchor, mpe)
+    -- The chain tooltip's lines: the blocked quest as the title, then every prior step with its status badge.
+    local function fillChainTooltip(tooltip, mpe)
         local chain = mpe.chain
-        if type(chain) ~= "table" or #chain < 2 then
-            return
-        end
-
-        GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
 
         -- Title: the hovered (blocked) quest, in the tooltip's larger title font so it stands out above the prior-quests list.
         local title = getDifficultyColor(mpe.level):WrapTextInColorCode(string.format("[%d] %s", mpe.level or 0, mpe.name or ""))
         if mpe.tags then
             title = title .. " " .. formatTags(mpe.tags)
         end
-        GameTooltip_SetTitle(GameTooltip, title)
+        GameTooltip_SetTitle(tooltip, title)
 
         local giverLine = formatGiverLine(resolveStartInfo(mpe))
         if giverLine then
-            GameTooltip_AddDisabledLine(GameTooltip, giverLine)
+            GameTooltip_AddDisabledLine(tooltip, giverLine)
         end
 
-        GameTooltip_AddBlankLineToTooltip(GameTooltip)
+        GameTooltip_AddBlankLineToTooltip(tooltip)
 
         -- Prior quests that must be completed before the hovered quest unlocks. The hovered quest itself is the chain tail (chain[#chain]); skip it.
         local priorCount = #chain - 1
@@ -1494,16 +1480,23 @@ do
             local qid = chain[i]
             local spec = buildQuestSpec(qid)
             local line1, line2 = formatRowLines(spec.level, spec.name, spec, getStatusBadge(qid))
-            GameTooltip_AddHighlightLine(GameTooltip, string.format("%d. %s", i, line1))
+            GameTooltip_AddHighlightLine(tooltip, string.format("%d. %s", i, line1))
             if line2 then
-                GameTooltip_AddHighlightLine(GameTooltip, line2)
+                GameTooltip_AddHighlightLine(tooltip, line2)
             end
             if i ~= priorCount then
-                GameTooltip_AddBlankLineToTooltip(GameTooltip)
+                GameTooltip_AddBlankLineToTooltip(tooltip)
             end
         end
+    end
 
-        GameTooltip:Show()
+    function showChainTooltip(anchor, mpe)
+        if type(mpe.chain) ~= "table" or #mpe.chain < 2 then
+            return
+        end
+        UI.ShowTooltip(anchor, function(tooltip)
+            fillChainTooltip(tooltip, mpe)
+        end)
     end
 end
 
@@ -1520,8 +1513,8 @@ local function acquireRow(index)
         -- Reset the header dressing so a row reused for a quest or message doesn't keep the toggle, text inset, or grey header color.
         row.toggle:Hide()
         row.toggleHighlight:SetTexture("")
-        row.text:SetPoint("TOPLEFT", row, "TOPLEFT", LIST.TEXT_PAD, -LIST.ROW_PAD)
-        row.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
+        row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
+        row.text:SetTextColor(UI.Color.body:GetRGB())
         return row
     end
     row = CreateFrame("Button", nil, scrollChild)
@@ -1542,21 +1535,17 @@ local function acquireRow(index)
     row.selection:SetAtlas("questlog-quest-glow-yellow")
     row.selection:SetAllPoints(true)
     row.selection:Hide()
-    row.text = row:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
 
-    -- Anchor text from the top so wrapped lines grow downward; row height is sized to fit the measured text + LIST.ROW_PAD padding (see renderList).
-    row.text:SetPoint("TOPLEFT", row, "TOPLEFT", LIST.TEXT_PAD, -LIST.ROW_PAD)
-    row.text:SetPoint("TOPRIGHT", row, "TOPRIGHT", -LIST.TEXT_PAD, -LIST.ROW_PAD)
-    row.text:SetJustifyH("LEFT")
-    row.text:SetJustifyV("TOP")
+    -- Anchored only across the row, so the text is centred vertically and its height follows the wrapped lines; renderList sizes the row from that height (see sizeRow).
+    row.text = UI.CreateText(row, "body")
+    row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
+    row.text:SetPoint("RIGHT", row, "RIGHT", 0, 0)
     row.text:SetWordWrap(true)
-    row.text:SetSpacing(LIST.LINE_GAP)
-    row.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
 
     -- Expand/collapse toggle for header rows. The hilight sits on the HIGHLIGHT layer so the button shows it automatically on mouse-over; quest rows keep its texture empty so nothing renders there.
     row.toggle = row:CreateTexture(nil, "ARTWORK")
     row.toggle:SetSize(LIST.TOGGLE_SIZE, LIST.TOGGLE_SIZE)
-    row.toggle:SetPoint("TOPLEFT", row, "TOPLEFT", LIST.TOGGLE_INSET, 0)
+    row.toggle:SetPoint("LEFT", row, "LEFT", 0, 0)
     row.toggle:Hide()
     row.toggleHighlight = row:CreateTexture(nil, "HIGHLIGHT")
     row.toggleHighlight:SetBlendMode("ADD")
@@ -1570,10 +1559,10 @@ local function styleHeaderRow(row, collapsed)
     row.toggle:SetTexture(collapsed and TOGGLE_ART.PLUS or TOGGLE_ART.MINUS)
     row.toggle:Show()
     row.toggleHighlight:SetTexture(TOGGLE_ART.HILIGHT)
-    row.text:SetPoint("TOPLEFT", row, "TOPLEFT", LIST.TEXT_INSET, -LIST.ROW_PAD)
+    row.text:SetPoint("LEFT", row, "LEFT", LIST.TEXT_INSET, 0)
     row.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
     row:SetScript("OnEnter", function(self)
-        self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
+        self.text:SetTextColor(UI.Color.body:GetRGB())
     end)
     row:SetScript("OnLeave", function(self)
         self.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
@@ -1650,33 +1639,33 @@ local function showZoneTooltip(anchor, zoneName, stats, isBest, focusHint)
     if not stats then
         return
     end
-    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
-    GameTooltip_SetTitle(GameTooltip, zoneName)
-    if isBest then
-        GameTooltip_AddNormalLine(GameTooltip, "Best zone for your next trip")
-    end
-    GameTooltip_AddBlankLineToTooltip(GameTooltip)
-    local total = stats.xp or 0
-    local share = getLevelShare(total)
-    if share then
-        addTooltipField("Total XP",
-            string.format("%s XP, covers %d%% of level %d", BreakUpLargeNumbers(total), share, UnitLevel("player")))
-    else
-        addTooltipField("Total XP", BreakUpLargeNumbers(total) .. " XP")
-    end
-    if (stats.followupCount or 0) > 0 then
-        addTooltipField("Includes follow-ups",
-            string.format("%s XP (%d quests)", BreakUpLargeNumbers(stats.xpFollowup or 0), stats.followupCount))
-    end
-    if (stats.travelCount or 0) > 0 then
-        addTooltipField("Gated outside this zone",
-            string.format("%s XP (%d quests, not counted)", BreakUpLargeNumbers(stats.travelXp or 0), stats.travelCount))
-    end
-    if focusHint then
-        GameTooltip_AddBlankLineToTooltip(GameTooltip)
-        GameTooltip_AddInstructionLine(GameTooltip, "Right-click to focus this zone")
-    end
-    GameTooltip:Show()
+    UI.ShowTooltip(anchor, function(tooltip)
+        GameTooltip_SetTitle(tooltip, zoneName)
+        if isBest then
+            GameTooltip_AddNormalLine(tooltip, "Best zone for your next trip")
+        end
+        GameTooltip_AddBlankLineToTooltip(tooltip)
+        local total = stats.xp or 0
+        local share = getLevelShare(total)
+        if share then
+            addTooltipField(tooltip, "Total XP",
+                string.format("%s XP, covers %d%% of level %d", BreakUpLargeNumbers(total), share, UnitLevel("player")))
+        else
+            addTooltipField(tooltip, "Total XP", BreakUpLargeNumbers(total) .. " XP")
+        end
+        if (stats.followupCount or 0) > 0 then
+            addTooltipField(tooltip, "Includes follow-ups",
+                string.format("%s XP (%d quests)", BreakUpLargeNumbers(stats.xpFollowup or 0), stats.followupCount))
+        end
+        if (stats.travelCount or 0) > 0 then
+            addTooltipField(tooltip, "Gated outside this zone",
+                string.format("%s XP (%d quests, not counted)", BreakUpLargeNumbers(stats.travelXp or 0), stats.travelCount))
+        end
+        if focusHint then
+            GameTooltip_AddBlankLineToTooltip(tooltip)
+            GameTooltip_AddInstructionLine(tooltip, "Right-click to focus this zone")
+        end
+    end)
 end
 
 -- Opens the quest map log at the quest, which selects and scrolls on its own. The details view needs a quest that is in the log, so Questie's quest log gates the call.
@@ -1760,17 +1749,17 @@ end
 
 -- Tooltip for a ready-to-turn-in quest: Questie-colored name plus the turn-in target, mirroring showQuestTooltip's field styling. The quest's startInfo carries the finisher (see collectCompletedByZone).
 local function showTurnInTooltip(anchor, quest)
-    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
-    GameTooltip_SetTitle(GameTooltip, getColoredQuestName(quest.id, true))
-    GameTooltip_AddColoredLine(GameTooltip, "Completed", GREEN_FONT_COLOR)
-    GameTooltip_AddBlankLineToTooltip(GameTooltip)
-    local info = quest.startInfo
-    addTooltipField("Turn in to", info and info.npcName)
-    addTooltipField("Location", info and formatLocation(info.zoneName, info.spawn))
-    if quest.xp and quest.xp > 0 then
-        addTooltipField("XP", BreakUpLargeNumbers(quest.xp))
-    end
-    GameTooltip:Show()
+    UI.ShowTooltip(anchor, function(tooltip)
+        GameTooltip_SetTitle(tooltip, getColoredQuestName(quest.id, true))
+        GameTooltip_AddColoredLine(tooltip, "Completed", COLOR.READY)
+        GameTooltip_AddBlankLineToTooltip(tooltip)
+        local info = quest.startInfo
+        addTooltipField(tooltip, "Turn in to", info and info.npcName)
+        addTooltipField(tooltip, "Location", info and formatLocation(info.zoneName, info.spawn))
+        if quest.xp and quest.xp > 0 then
+            addTooltipField(tooltip, "XP", BreakUpLargeNumbers(quest.xp))
+        end
+    end)
 end
 
 -- Quests in the log that are ready to turn in, bucketed by the turn-in target's zone. Detection uses QuestieDB.IsComplete, which also settles no-objective auto-complete quests; the zone grouping needs Questie's finishedBy data either way. Cheap (the log holds few quests), so it runs fresh every render instead of joining the scan cache.
@@ -1842,8 +1831,7 @@ local emptyActionButton
 
 local function getEmptyActionButton()
     if not emptyActionButton then
-        emptyActionButton = CreateFrame("Button", nil, scrollChild, "UIPanelButtonTemplate")
-        emptyActionButton:SetHeight(LAYOUT.BUTTON_H)
+        emptyActionButton = UI.CreateButton(scrollChild, "")
     end
     return emptyActionButton
 end
@@ -1888,17 +1876,16 @@ function renderList()
         row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -y)
     end
 
-    -- Sizes the row to fit its wrapped text; minHeight keeps short rows on the grid. The text fontstring already has LEFT/RIGHT anchors inside the row, so wrap width is bounded and GetStringHeight reflects the wrapped result.
-    local function sizeRow(row, minHeight)
-        local textHeight = math.ceil(row.text:GetStringHeight())
-        local h = textHeight + LIST.ROW_PAD * 2
+    -- Sizes the row to its wrapped text plus padding, snapped to the grid; minHeight keeps short rows one line tall. The text already spans the row's width, so GetStringHeight reflects the wrapped result, rounded first so a fractional pixel can't add a grid step.
+    local function sizeRow(row, minHeight, padding)
+        local textHeight = math.floor(row.text:GetStringHeight() + 0.5)
+        local h = UI.Snap(textHeight + (padding or 0))
         if h < minHeight then h = minHeight end
         row:SetHeight(h)
         return h
     end
 
     local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha, quest)
-        y = y + LIST.ROW_GAP
         local rowTop = y
         local row = acquireRow(index)
         placeRow(row, LIST.INDENT_STEP * 2)
@@ -1917,7 +1904,7 @@ function renderList()
         end)
         row:SetScript("OnLeave", function()
             row.highlight:Hide()
-            GameTooltip:Hide()
+            GameTooltip_Hide()
         end)
         if onLeftClick or onRightClick or onShiftClick then
             row:SetScript("OnClick", function(self, btn)
@@ -1937,7 +1924,7 @@ function renderList()
         else
             row:SetScript("OnClick", nil)
         end
-        y = y + sizeRow(row, LIST.ROW_HEIGHT)
+        y = y + sizeRow(row, LIST.ROW_HEIGHT, LIST.ROW_PADDING)
         index = index + 1
         return row, rowTop
     end
@@ -2041,19 +2028,17 @@ function renderList()
             zoneCollapsedDB[COMPLETED_KEY] = not collapsed
             renderList()
         end)
-        y = y + sizeRow(header, LIST.HEADER_HEIGHT)
+        y = y + sizeRow(header, LIST.ROW_HEIGHT)
         index = index + 1
 
         if not collapsed then
-            local subIndex = 0
             for _, zoneName in ipairs(completedZoneOrder) do
                 local list = visibleByZone[zoneName]
                 if list then
-                    subIndex = subIndex + 1
                     local groupKey = COMPLETED_KEY .. "||" .. zoneName
                     local groupHidden = groupCollapsedDB[groupKey] == true
 
-                    y = y + (subIndex == 1 and LIST.ROW_GAP or LIST.GROUP_GAP)
+                    y = y + LIST.GROUP_GAP
 
                     local sub = acquireRow(index)
                     placeRow(sub, LIST.INDENT_STEP)
@@ -2063,7 +2048,7 @@ function renderList()
                         groupCollapsedDB[groupKey] = not groupHidden
                         renderList()
                     end)
-                    y = y + sizeRow(sub, LIST.SUBHEADER_HEIGHT)
+                    y = y + sizeRow(sub, LIST.ROW_HEIGHT)
                     index = index + 1
 
                     if not groupHidden then
@@ -2104,12 +2089,14 @@ function renderList()
         end)
         row:SetScript("OnLeave", function(self)
             self.highlight:Hide()
-            GameTooltip:Hide()
+            GameTooltip_Hide()
         end)
         row:SetScript("OnClick", function()
             expandAndScrollToZone(bannerZone)
         end)
-        y = y + sizeRow(row, LIST.HEADER_HEIGHT) + LIST.GROUP_GAP
+
+        -- The banner highlights on hover like a quest row, so it gets the same air around its text.
+        y = y + sizeRow(row, LIST.ROW_HEIGHT, LIST.ROW_PADDING) + LIST.GROUP_GAP
         index = index + 1
     end
 
@@ -2202,12 +2189,12 @@ function renderList()
                 header.text:SetText(headerText)
                 local zoneStats = entry.stats
                 header:SetScript("OnEnter", function(self)
-                    self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
+                    self.text:SetTextColor(UI.Color.body:GetRGB())
                     showZoneTooltip(self, zoneName, zoneStats, isBestZone, true)
                 end)
                 header:SetScript("OnLeave", function(self)
                     self.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
-                    GameTooltip:Hide()
+                    GameTooltip_Hide()
                 end)
 
                 -- Zone toggle only flips the zone itself; subcategory state is independent and survives so Collapse All's collapsed subs stay collapsed. Right-click focuses the zone: everything else collapses, this zone expands.
@@ -2222,19 +2209,17 @@ function renderList()
                     end
                     renderList()
                 end)
-                y = y + sizeRow(header, LIST.HEADER_HEIGHT)
+                y = y + sizeRow(header, LIST.ROW_HEIGHT)
                 index = index + 1
 
                 if not collapsed then
-                    local subIndex = 0
                     for _, subKey in ipairs(SUBCAT_ORDER) do
                         local list = visible[subKey]
                         if filters[subKey] and #list > 0 then
-                            subIndex = subIndex + 1
                             local groupKey = zoneName .. "||" .. subKey
                             local groupHidden = groupCollapsedDB[groupKey] == true
 
-                            y = y + (subIndex == 1 and LIST.ROW_GAP or LIST.GROUP_GAP)
+                            y = y + LIST.GROUP_GAP
 
                             local sub = acquireRow(index)
                             placeRow(sub, LIST.INDENT_STEP)
@@ -2245,7 +2230,7 @@ function renderList()
                                 groupCollapsedDB[groupKey] = not groupHidden
                                 renderList()
                             end)
-                            y = y + sizeRow(sub, LIST.SUBHEADER_HEIGHT)
+                            y = y + sizeRow(sub, LIST.ROW_HEIGHT)
                             index = index + 1
 
                             if not groupHidden then
@@ -2344,12 +2329,16 @@ function renderList()
         if actionText then
             local button = getEmptyActionButton()
             button:SetText(actionText)
-            button:SetWidth(math.max(LAYOUT.BUTTON_W, button:GetFontString():GetStringWidth() + 32))
+
+            -- At least the shared button width; a longer label keeps one padding either side, snapped to the grid.
+            button:SetWidth(math.max(UI.Size.button, UI.Snap(button:GetFontString():GetStringWidth() + UI.Space.padding * 2)))
             button:ClearAllPoints()
             button:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -(y + LIST.GROUP_GAP))
             button:SetScript("OnClick", action)
             button:Show()
-            y = y + LIST.GROUP_GAP + LAYOUT.BUTTON_H
+
+            -- The 22px UIPanelButtonTemplate takes one row slot.
+            y = y + LIST.GROUP_GAP + UI.Size.row
         end
     end
 
@@ -2382,46 +2371,46 @@ function expandAndScrollToZone(zoneName)
     return scrollListTo(top)
 end
 
+-- One muted line while the first render waits a tick, so an open never shows the last session's rows.
+local function renderLoadingPlaceholder()
+    if emptyActionButton then
+        emptyActionButton:Hide()
+    end
+    hideUnusedRows(1)
+    local row = acquireRow(1)
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -LIST.ROW_HEIGHT)
+    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -LIST.ROW_HEIGHT)
+    row:SetHeight(LIST.ROW_HEIGHT)
+    row.text:SetText(COLOR.MUTED:WrapTextInColorCode("Scanning quest database\226\128\166"))
+    scrollChild:SetHeight(LIST.ROW_HEIGHT * 3)
+end
+
 -- Window builders; only buildMainFrame leaves the block.
 local buildMainFrame
 do
-    -- A settings block: gold GameFontNormal heading over a body frame. Blocks chain below the previous one, so resizing one (the level range hides its sliders) moves every block below it.
-    local function createGroup(parent, previous, labelText)
-        local group = CreateFrame("Frame", nil, parent)
+    -- Width inside the settings column's padding, shared by its sliders and dropdowns.
+    local COLUMN_W = LAYOUT.PANE_W - UI.Space.padding * 2
+    local DROPDOWN_W = COLUMN_W - LAYOUT.DROPDOWN_INDENT * 2
+
+    -- Stacked dropdowns take one row each, a gap apart; WowStyle1DropdownTemplate keeps its native 25px height (MenuTemplates.xml), a pixel over the row.
+    local DROPDOWN_STEP = UI.Size.row + UI.Space.gap
+
+    -- A settings section: the first sits one padding inside the column, later ones stack a section break below the one above, so resizing one (the level range hides its sliders) moves every section below it.
+    local function addSection(column, previous, title)
+        local section = UI.CreateSection(column, title)
         if previous then
-            group:SetPoint("TOPLEFT", previous, "BOTTOMLEFT", 0, -LAYOUT.GROUP_GAP)
+            UI.StackBelow(section, previous)
         else
-            group:SetPoint("TOPLEFT", parent, "TOPLEFT", LAYOUT.PANE_PAD, -LAYOUT.PANE_PAD)
+            section:SetPoint("TOPLEFT", column, "TOPLEFT", UI.Space.padding, -UI.Space.padding)
+            section:SetPoint("TOPRIGHT", column, "TOPRIGHT", -UI.Space.padding, -UI.Space.padding)
         end
-        group:SetPoint("RIGHT", parent, "RIGHT", -LAYOUT.PANE_PAD, 0)
-        local label = group:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-        label:SetPoint("TOPLEFT", group, "TOPLEFT", 0, 0)
-        label:SetText(labelText)
-        local body = CreateFrame("Frame", nil, group)
-        body:SetPoint("TOPLEFT", group, "TOPLEFT", 0, -LAYOUT.HEADING_H)
-        body:SetPoint("BOTTOMRIGHT", group, "BOTTOMRIGHT", 0, 0)
-        group.body = body
-        return group
+        return section
     end
 
-    -- Explicit heights let the chained blocks below find their place.
-    local function sizeGroup(group, bodyHeight)
-        group:SetHeight(LAYOUT.HEADING_H + bodyHeight)
-    end
-
-    -- UICheckButtonTemplate keeps its own label anchor; only the font changes to white GameFontHighlight, the color Blizzard's option labels use.
-    local function buildCheckbox(parent, name, labelText, onClick)
-        local box = CreateFrame("CheckButton", name, parent, "UICheckButtonTemplate")
-        box:SetSize(LAYOUT.CHECK_SIZE, LAYOUT.CHECK_SIZE)
-        box.Text:SetFontObject("GameFontHighlight")
-        box.Text:SetText(labelText)
-        box:SetScript("OnClick", onClick)
-        return box
-    end
-
-    -- MinimalSliderWithSteppersTemplate is the slider Blizzard's Settings panel uses: a Slider with - / + steppers and top, min and max labels, its width taken from the caller's anchors.
+    -- MinimalSliderWithSteppersTemplate is the slider Blizzard's Settings panel uses: a Slider with - / + steppers and top, min and max labels.
     local function buildRangeSlider(parent, name, labelPrefix, dbKey)
-        local slider = CreateFrame("Frame", name, parent, "MinimalSliderWithSteppersTemplate")
+        local slider = UI.CreateSlider(parent, COLUMN_W, name)
         local steps = LEVEL_RANGE.MAX - LEVEL_RANGE.MIN
         local Label = MinimalSliderWithSteppersMixin.Label
         local formatters = {
@@ -2442,25 +2431,23 @@ do
         return slider
     end
 
-    -- Quest Level Range block: "Use Questie Level Ranges" above the below / above sliders. Ticking it hides the sliders, and the scan switches from the band to the range set in Questie's Quest Level Options (see passesPlayerBand).
-    local function buildRangeGroup(frame, parent)
-        local expandedHeight = LAYOUT.CHECK_SIZE + (LAYOUT.CONTROL_GAP + LAYOUT.SLIDER_H) * 2
-        local group = createGroup(parent, nil, "Quest Level Range")
-        local body = group.body
+    -- Quest Level Range section: "Use Questie Level Ranges" above the below / above sliders. Ticking it hides the sliders, and the scan switches from the band to the range set in Questie's Quest Level Options (see passesPlayerBand).
+    local function buildRangeGroup(frame, column)
+        local section = addSection(column, nil, "Quest Level Range")
+        local body = section.body
 
-        local useQuestieCheckbox = buildCheckbox(body, "QuestieGuideUseQuestieLevelRange", "Use Questie Level Ranges")
+        local useQuestieCheckbox = UI.CreateCheckbox(body, "Use Questie Level Ranges")
         useQuestieCheckbox:SetPoint("TOPLEFT", body, "TOPLEFT", 0, 0)
 
-        local belowTop = LAYOUT.CHECK_SIZE + LAYOUT.CONTROL_GAP
+        local belowTop = UI.Size.row + UI.Space.gap
         local belowSlider = buildRangeSlider(body, "QuestieGuideRangeSlider1", "Quest Level Below: -", "levelBelow")
         belowSlider:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -belowTop)
-        belowSlider:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, -belowTop)
 
-        local aboveTop = belowTop + LAYOUT.SLIDER_H + LAYOUT.CONTROL_GAP
+        local aboveTop = belowTop + LAYOUT.SLIDER_H + UI.Space.gap
         local aboveSlider = buildRangeSlider(body, "QuestieGuideRangeSlider2", "Quest Level Above: +", "levelAbove")
         aboveSlider:SetPoint("TOPLEFT", body, "TOPLEFT", 0, -aboveTop)
-        aboveSlider:SetPoint("TOPRIGHT", body, "TOPRIGHT", 0, -aboveTop)
 
+        local expandedHeight = aboveTop + LAYOUT.SLIDER_H
         local function applySliderLock(locked)
             belowSlider:SetShown(not locked)
             aboveSlider:SetShown(not locked)
@@ -2468,7 +2455,7 @@ do
                 belowSlider:SetEnabled(true)
                 aboveSlider:SetEnabled(true)
             end
-            sizeGroup(group, locked and LAYOUT.CHECK_SIZE or expandedHeight)
+            section:SetBodyHeight(locked and UI.Size.row or expandedHeight)
         end
 
         useQuestieCheckbox:SetChecked(QuestieGuideDB.useQuestieLevelRange)
@@ -2488,7 +2475,7 @@ do
             belowSlider:SetValue(below)
             aboveSlider:SetValue(above)
         end
-        return group
+        return section
     end
 
     -- Filter families, one multi-select dropdown each; the keys live under QuestieGuideDB.filters.
@@ -2512,13 +2499,18 @@ do
         },
     }
 
-    -- Filters block: one full-width WowStyle1 dropdown per family. The button text stays on the family title because a multi-select would otherwise list every enabled option (OverrideText sets disableSelectionText), and the menu rereads its checked state from the saved variables on every open, so nothing needs refreshing.
-    local function buildFilterGroup(parent, previous)
+    -- Places one dropdown in its row of a section body, indented to line its art up with the column.
+    local function placeDropdown(dropdown, body, rowIndex)
+        dropdown:SetPoint("TOPLEFT", body, "TOPLEFT", LAYOUT.DROPDOWN_INDENT, -(rowIndex - 1) * DROPDOWN_STEP)
+    end
+
+    -- Filters section: one WowStyle1 dropdown per family. The button text stays on the family title because a multi-select would otherwise list every enabled option (OverrideText sets disableSelectionText), and the menu rereads its checked state from the saved variables on every open, so nothing needs refreshing.
+    local function buildFilterGroup(column, previous)
         local filters = QuestieGuideDB.filters
-        local group = createGroup(parent, previous, "Filters")
-        sizeGroup(group, LAYOUT.DROPDOWN_H * #FILTER_FAMILIES + LAYOUT.CONTROL_GAP * (#FILTER_FAMILIES - 1))
+        local section = addSection(column, previous, "Filters")
+        section:SetBodyHeight(DROPDOWN_STEP * #FILTER_FAMILIES - UI.Space.gap)
         for i, family in ipairs(FILTER_FAMILIES) do
-            local dd = CreateFrame("DropdownButton", "QuestieGuideFilterDropdown" .. i, group.body, "WowStyle1DropdownTemplate")
+            local dd = UI.CreateDropdown(section.body, DROPDOWN_W, "QuestieGuideFilterDropdown" .. i)
             dd:OverrideText(family.title)
             dd:SetupMenu(function(_, rootDescription)
                 for _, spec in ipairs(family.specs) do
@@ -2532,16 +2524,14 @@ do
                         end)
                 end
             end)
-            local top = (i - 1) * (LAYOUT.DROPDOWN_H + LAYOUT.CONTROL_GAP)
-            dd:SetPoint("TOPLEFT", group.body, "TOPLEFT", LAYOUT.DROPDOWN_INDENT, -top)
-            dd:SetPoint("RIGHT", group.body, "RIGHT", -LAYOUT.DROPDOWN_INDENT, 0)
+            placeDropdown(dd, section.body, i)
         end
-        return group
+        return section
     end
 
     -- Single-select dropdown bound to one saved key; the button text follows the selected radio through DropdownSelectionTextMixin, with defaultLabel shown when nothing matches.
     local function buildSortDropdown(parent, name, dbKey, options, defaultLabel)
-        local dd = CreateFrame("DropdownButton", name, parent, "WowStyle1DropdownTemplate")
+        local dd = UI.CreateDropdown(parent, DROPDOWN_W, name)
         dd:SetDefaultText(defaultLabel)
         dd:SetupMenu(function(_, rootDescription)
             for _, opt in ipairs(options) do
@@ -2559,46 +2549,45 @@ do
         return dd
     end
 
-    -- Sorting block: sort key above direction, each full width like the filter dropdowns.
-    local function buildSortGroup(frame, parent, previous)
-        local group = createGroup(parent, previous, "Sorting")
-        sizeGroup(group, LAYOUT.DROPDOWN_H * 2 + LAYOUT.CONTROL_GAP)
-        local body = group.body
+    -- Sorting section: sort key above direction, each as wide as the filter dropdowns.
+    local function buildSortGroup(frame, column, previous)
+        local section = addSection(column, previous, "Sorting")
+        section:SetBodyHeight(DROPDOWN_STEP * 2 - UI.Space.gap)
+        local body = section.body
 
         local sortByDropdown = buildSortDropdown(body, "QuestieGuideSortByDropdown", "sortMode", SORT_BY_OPTIONS, "Sort By")
-        sortByDropdown:SetPoint("TOPLEFT", body, "TOPLEFT", LAYOUT.DROPDOWN_INDENT, 0)
-        sortByDropdown:SetPoint("RIGHT", body, "RIGHT", -LAYOUT.DROPDOWN_INDENT, 0)
+        placeDropdown(sortByDropdown, body, 1)
 
         local sortDirDropdown = buildSortDropdown(body, "QuestieGuideSortDirDropdown", "sortDir", SORT_DIR_OPTIONS, "Direction")
-        sortDirDropdown:SetPoint("TOPLEFT", body, "TOPLEFT", LAYOUT.DROPDOWN_INDENT, -(LAYOUT.DROPDOWN_H + LAYOUT.CONTROL_GAP))
-        sortDirDropdown:SetPoint("RIGHT", body, "RIGHT", -LAYOUT.DROPDOWN_INDENT, 0)
+        placeDropdown(sortDirDropdown, body, 2)
 
         -- Regenerating the menus re-evaluates the radios, which refreshes the button text after the saved sort changed elsewhere.
         frame.refreshSortDropdown = function()
             sortByDropdown:GenerateMenu()
             sortDirDropdown:GenerateMenu()
         end
-        return group
+        return section
     end
 
-    -- Visibility block: toggles that add whole sections to the list. The completed section reads the live quest log each render, so no rescan is needed.
-    local function buildVisibilityGroup(frame, parent, previous)
-        local group = createGroup(parent, previous, "Visibility Filters")
-        sizeGroup(group, LAYOUT.CHECK_SIZE)
-        local showCompletedCheckbox = buildCheckbox(group.body, "QuestieGuideShowCompleted", "Show Completed Quests", function(self)
+    -- Visibility section: toggles that add whole sections to the list. The completed section reads the live quest log each render, so no rescan is needed.
+    local function buildVisibilityGroup(frame, column, previous)
+        local section = addSection(column, previous, "Visibility Filters")
+        section:SetBodyHeight(UI.Size.row)
+        local showCompletedCheckbox = UI.CreateCheckbox(section.body, "Show Completed Quests")
+        showCompletedCheckbox:SetScript("OnClick", function(self)
             QuestieGuideDB.showCompleted = self:GetChecked() and true or false
             renderList()
         end)
-        showCompletedCheckbox:SetPoint("TOPLEFT", group.body, "TOPLEFT", 0, 0)
+        showCompletedCheckbox:SetPoint("TOPLEFT", section.body, "TOPLEFT", 0, 0)
         frame.refreshShowCompleted = function()
             showCompletedCheckbox:SetChecked(QuestieGuideDB.showCompleted)
         end
-        return group
+        return section
     end
 
     -- Left column: every option in its own InsetFrameTemplate, the way ChannelFrame splits its ButtonFrameTemplate window into a LeftInset and a RightInset.
     local function buildSettingsColumn(frame)
-        local inset = CreateFrame("Frame", nil, frame, "InsetFrameTemplate")
+        local inset = UI.CreateInset(frame)
         inset:SetPoint("TOPLEFT", frame, "TOPLEFT", PANEL_INSET_LEFT_OFFSET, PANEL_INSET_ATTIC_OFFSET)
         inset:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", PANEL_INSET_LEFT_OFFSET, PANEL_INSET_BOTTOM_BUTTON_OFFSET)
         inset:SetWidth(LAYOUT.PANE_W)
@@ -2609,26 +2598,22 @@ do
         return inset
     end
 
-    -- Right column: the quest list in the template's own Inset, moved beside the settings column. ScrollFrameTemplate is what Forever's quest log (QuestScrollFrame) uses; it creates MinimalScrollBar and wires wheel, range and thumb itself.
+    -- Right column: the quest list in the template's own Inset, against the settings column like ChannelFrame.xml's RightInset against its LeftInset. ScrollFrameTemplate is what Forever's quest log (QuestScrollFrame) uses; it creates MinimalScrollBar and wires wheel, range and thumb itself.
     local function buildQuestList(frame, settingsInset)
         local inset = frame.Inset
         inset:ClearAllPoints()
-        inset:SetPoint("TOPLEFT", settingsInset, "TOPRIGHT", LAYOUT.COLUMN_GAP, 0)
+        inset:SetPoint("TOPLEFT", settingsInset, "TOPRIGHT")
         inset:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", PANEL_INSET_RIGHT_OFFSET, PANEL_INSET_BOTTOM_BUTTON_OFFSET)
 
-        local scroll = CreateFrame("ScrollFrame", nil, inset, "ScrollFrameTemplate")
+        -- The list sits one padding inside the inset, leaving the gutter the bar hangs into on the right.
+        local scroll = UI.CreateScroll(inset)
         scroll.ScrollBar:SetHideIfUnscrollable(true)
+        scroll:SetPoint("TOPLEFT", inset, "TOPLEFT", UI.Space.padding, -UI.Space.padding)
+        scroll:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", -UI.ScrollGutter(), UI.Space.padding)
 
-        -- The bar hangs off the scroll frame's right edge and above its top by ScrollDefine's offsets, so the frame leaves exactly that room inside the inset.
-        local barRight = scroll.ScrollBar:GetWidth() + SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT
-        local barTop = SCROLL_FRAME_SCROLL_BAR_OFFSET_TOP
-        scroll:SetPoint("TOPLEFT", inset, "TOPLEFT", LAYOUT.LIST_PAD, -(LAYOUT.LIST_PAD + barTop))
-        scroll:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", -(LAYOUT.LIST_PAD + barRight), LAYOUT.LIST_PAD)
-
-        -- The scroll child has no anchors so SetScrollChild can position it; its width follows the viewport so rows wrap inside it.
-        local child = CreateFrame("Frame", nil, scroll)
-        child:SetSize(math.max(1, scroll:GetWidth()), 1)
-        scroll:SetScrollChild(child)
+        -- The scroll child's width follows the viewport so rows wrap inside it.
+        local child = scroll.content
+        child:SetWidth(math.max(1, scroll:GetWidth()))
         scroll:HookScript("OnSizeChanged", function(self)
             child:SetWidth(math.max(1, self:GetWidth()))
             renderList()
@@ -2637,11 +2622,10 @@ do
         frame.scroll = scroll
     end
 
-    -- Attic search box, sized and placed like AddonList's; SearchBoxTemplate brings the magnifier, clear button and placeholder.
+    -- Attic search box on AddonList's right edge, centred between the title bar and the inset; SearchBoxTemplate brings the magnifier, clear button and placeholder.
     local function buildSearchBox(frame)
-        local searchBox = CreateFrame("EditBox", "QuestieGuideSearchBox", frame, "SearchBoxTemplate")
-        searchBox:SetSize(LAYOUT.SEARCH_W, LAYOUT.SEARCH_H)
-        searchBox:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -LAYOUT.SEARCH_RIGHT, -LAYOUT.SEARCH_TOP)
+        local searchBox = UI.CreateSearchBox(frame, LAYOUT.SEARCH_W, "QuestieGuideSearchBox")
+        searchBox:SetPoint("RIGHT", frame, "TOPRIGHT", -LAYOUT.SEARCH_RIGHT, (PANEL_INSET_TOP_OFFSET + PANEL_INSET_ATTIC_OFFSET) / 2)
         searchBox.Instructions:SetText("Quest, zone or NPC name")
         searchBox:HookScript("OnTextChanged", function(self)
             local newText = string.lower(self:GetText() or "")
@@ -2686,109 +2670,53 @@ do
             return
         end
         if not expandAndScrollToZone(zoneName) then
-            print(INTRO_PREFIX .. "No quests listed for " .. zoneName .. ".")
+            UI.Print(ADDON_TITLE, "No quests listed for " .. zoneName .. ".")
         end
     end
 
-    -- One MagicButtonTemplate bar button. MagicButton_OnLoad runs after the zero-offset anchor so it can apply Blizzard's corner and neighbour offsets.
-    local function createBarButton(frame, text, onClick, point, relativeTo, relativePoint)
-        local button = CreateFrame("Button", nil, frame, "MagicButtonTemplate")
-        button:SetWidth(LAYOUT.BUTTON_W)
-        button:SetPoint(point, relativeTo, relativePoint)
-        MagicButton_OnLoad(button)
-        button:SetText(text)
-        button:SetScript("OnClick", onClick)
-        return button
-    end
-
-    -- Button bar chained leftwards from the bottom-right corner, where the shared spec puts the primary action: Current Zone, with Collapse All beside it.
-    local function buildButtonBar(frame)
-        local currentZoneButton = createBarButton(frame, "Current Zone", jumpToCurrentZone, "BOTTOMRIGHT", frame, "BOTTOMRIGHT")
-        frame.toggleAllButton = createBarButton(frame, "Collapse All", toggleAllZones, "RIGHT", currentZoneButton, "LEFT")
-    end
-
-    -- The window: Blizzard's ButtonFrameTemplate with its portrait, title bar, close button, attic and button bar. Fixed size, movable, clamped and closed by Escape; UIPanelWindows is avoided because of taint.
-    local function createWindow()
-        local frame = CreateFrame("Frame", "QuestieGuideFrame", UIParent, "ButtonFrameTemplate")
-        frame:SetSize(LAYOUT.FRAME_W, LAYOUT.FRAME_H)
-        frame:SetTitle("Questie Guide")
-        frame:SetPortraitToAsset(ADDON_ICON)
-        frame:SetFrameStrata("HIGH")
-        frame:SetToplevel(true)
-        frame:SetClampedToScreen(true)
-        frame:SetMovable(true)
-        frame:EnableMouse(true)
-        frame:RegisterForDrag("LeftButton")
-        frame:SetScript("OnDragStart", frame.StartMoving)
-        frame:SetScript("OnDragStop", function(self)
-            self:StopMovingOrSizing()
-            local point, _, relPoint, x, y = self:GetPoint(1)
-            QuestieGuideDB.framePos = { point = point, relPoint = relPoint, x = x, y = y }
+    -- Every open rereads the settings and lays the list out on the next tick: row wrapping needs the scroll child's width, which the scroll frame only resolves after its first layout.
+    local function onWindowShow(frame)
+        frame.refreshSortDropdown()
+        frame.refreshRangeSliders()
+        frame.refreshShowCompleted()
+        renderLoadingPlaceholder()
+        C_Timer.After(0, function()
+            if frame:IsShown() then
+                renderList()
+            end
         end)
-
-        local savedPos = QuestieGuideDB.framePos
-        if type(savedPos) == "table" and savedPos.point then
-            frame:ClearAllPoints()
-            frame:SetPoint(savedPos.point, UIParent, savedPos.relPoint or savedPos.point, savedPos.x or 0, savedPos.y or 0)
-        else
-            frame:SetPoint("CENTER")
-        end
-        frame:Hide()
-        tinsert(UISpecialFrames, "QuestieGuideFrame")
-        return frame
     end
 
-    -- Builds the window on first open and returns it afterwards.
+    -- Builds the window on first open and returns it afterwards. The shared tool window keeps its position in framePos; the primary action, Current Zone, takes the bar's bottom-right corner with Collapse All beside it.
     function buildMainFrame()
         if mainFrame then
             return mainFrame
         end
-        local frame = createWindow()
+        local frame = UI.CreateWindow({
+            name = "QuestieGuideFrame",
+            title = ADDON_TITLE,
+            icon = ADDON_ICON,
+            width = LAYOUT.FRAME_W,
+            height = LAYOUT.FRAME_H,
+            position = QuestieGuideDB.framePos,
+        })
         local settingsInset = buildSettingsColumn(frame)
         buildQuestList(frame, settingsInset)
         buildSearchBox(frame)
-        buildButtonBar(frame)
+        UI.AddBarButton(frame, "Current Zone", jumpToCurrentZone)
+        frame.toggleAllButton = UI.AddBarButton(frame, "Collapse All", toggleAllZones)
+        frame:HookScript("OnShow", onWindowShow)
         mainFrame = frame
         return frame
     end
 end
 
-local function renderLoadingPlaceholder()
-    if emptyActionButton then
-        emptyActionButton:Hide()
-    end
-    hideUnusedRows(1)
-    local row = acquireRow(1)
-    row:ClearAllPoints()
-    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -LIST.ROW_HEIGHT)
-    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -LIST.ROW_HEIGHT)
-    row:SetHeight(LIST.ROW_HEIGHT)
-    row.text:SetText(COLOR.MUTED:WrapTextInColorCode("Scanning quest database\226\128\166"))
-    scrollChild:SetHeight(LIST.ROW_HEIGHT * 3)
-end
+-- One toggle for every launcher; the window is built on first use.
+local toggleWindow = UI.CreateToggle(buildMainFrame)
 
+-- Opens the window without ever closing it, for jumps from Questie's map icons and chat links.
 local function showFrame()
-    local frame = buildMainFrame()
-    frame.refreshSortDropdown()
-    frame.refreshRangeSliders()
-    frame.refreshShowCompleted()
-    frame:Show()
-    renderLoadingPlaceholder()
-
-    -- Defer the first real layout pass to the next tick: row wrapping needs the scroll child's width, which the scroll frame only resolves after its first layout.
-    C_Timer.After(0, function()
-        if not frame:IsShown() then return end
-        renderList()
-    end)
-end
-
-local function toggleFrame()
-    local frame = buildMainFrame()
-    if frame:IsShown() then
-        frame:Hide()
-    else
-        showFrame()
-    end
+    buildMainFrame():Show()
 end
 
 -- Click-through from Questie's map icons; only installMapIconHooks leaves the block.
@@ -2798,10 +2726,10 @@ do
     local function openGuideAtQuest(questId)
         showFrame()
 
-        -- showFrame defers its first layout pass one tick, so the jump waits one tick too.
+        -- The window's first layout pass waits a tick after it shows, so the jump waits too.
         C_Timer.After(0.1, function()
             if not jumpToQuestInList(questId) then
-                print(INTRO_PREFIX .. getQuestName(questId) .. " is not listed with the current filters.")
+                UI.Print(ADDON_TITLE, getQuestName(questId) .. " is not listed with the current filters.")
             end
         end)
     end
@@ -2861,15 +2789,14 @@ end
 -- Every launcher's click: toggles the window once Questie is ready, otherwise says why it can't open.
 local function toggleIfReady()
     if not questieReady then
-        print(INTRO_PREFIX .. describeQuestieState())
+        UI.Print(ADDON_TITLE, describeQuestieState())
         return
     end
-    toggleFrame()
+    toggleWindow()
 end
 
--- Hover text shared by the minimap button and the addon compartment. The zone count reads the warm scan cache only; a hover must never start the expensive database walk.
+-- Lines under the title the launcher adds, shared by the minimap button and the addon menu. The zone count reads the warm scan cache only; a hover must never start the expensive database walk.
 local function fillLauncherTooltip(tooltip)
-    GameTooltip_SetTitle(tooltip, "Questie Guide")
     local zoneName = scanCache.valid and getCurrentZoneName()
     if zoneName then
         local entry = scanCache.byZone[zoneName]
@@ -2879,43 +2806,26 @@ local function fillLauncherTooltip(tooltip)
     GameTooltip_AddInstructionLine(tooltip, "Left-click to open the quest panel.")
 end
 
--- /qg toggles the window even when the minimap button is hidden; /qg reset rescues a window dragged off-screen.
-SLASH_QUESTIEGUIDE1 = "/questieguide"
-SLASH_QUESTIEGUIDE2 = "/qg"
-SlashCmdList["QUESTIEGUIDE"] = function(msg)
+-- /qg toggles the window even when the minimap button is hidden; /qg reset rescues a window dragged off-screen. The window holds framePos itself, so reset empties it in place.
+UI.RegisterSlash("QUESTIEGUIDE", { "/questieguide", "/qg" }, function(msg)
     local command = strtrim(string.lower(msg or ""))
     if command == "reset" then
-        QuestieGuideDB.framePos = nil
+        wipe(QuestieGuideDB.framePos)
         if mainFrame then
             mainFrame:ClearAllPoints()
             mainFrame:SetPoint("CENTER")
         end
-        print(INTRO_PREFIX .. "Window position reset.")
+        UI.Print(ADDON_TITLE, "Window position reset.")
         return
     end
     toggleIfReady()
-end
+end)
 
 -- Key binding entry point; Bindings.xml can only call named globals. The name global labels the entry under Key Bindings, mirroring how Questie registers its Journey toggle.
 BINDING_NAME_QUESTIEGUIDE_TOGGLE = "Toggle Quest Panel"
 
 function QuestieGuide_Toggle()
     toggleIfReady()
-end
-
--- The addon compartment calls these through the toc's AddonCompartmentFunc fields, with (addonName, mouseButton) and (addonName, menuButton).
-function QuestieGuide_CompartmentClick()
-    toggleIfReady()
-end
-
-function QuestieGuide_CompartmentEnter(_, menuButton)
-    GameTooltip:SetOwner(menuButton, "ANCHOR_LEFT")
-    fillLauncherTooltip(GameTooltip)
-    GameTooltip:Show()
-end
-
-function QuestieGuide_CompartmentLeave()
-    GameTooltip:Hide()
 end
 
 do
@@ -2932,27 +2842,26 @@ do
         local zoneName = getZoneName(areaId)
         showFrame()
 
-        -- showFrame defers its first layout pass one tick, so the jump waits one tick too.
+        -- The window's first layout pass waits a tick after it shows, so the jump waits too.
         C_Timer.After(0.1, function()
             expandAndScrollToZone(zoneName)
         end)
     end)
 end
 
--- Registers the launcher with LibDBIcon so any addon-manager UI (Titan Panel, ChocolateBar, edge-snap bars) can manage it consistently.
-local function setupMinimapButton()
-    local dataObject = LibStub("LibDataBroker-1.1"):NewDataObject("Questie Guide", {
-        type = "launcher",
-        text = "Questie Guide",
+-- One launcher for the minimap button and the addon menu: LibDBIcon draws the button, keeps its position in QuestieGuideDB.minimap and adds the addon menu entry through Blizzard's AddonCompartmentFrame. Addon-manager bars (Titan Panel, ChocolateBar) pick up the same LDB launcher.
+local function setupLauncher()
+    UI.CreateLauncher({
+        title = ADDON_TITLE,
         icon = ADDON_ICON,
-        OnClick = function(_, button)
+        db = QuestieGuideDB.minimap,
+        onClick = function(button)
             if button == "LeftButton" then
                 toggleIfReady()
             end
         end,
-        OnTooltipShow = fillLauncherTooltip,
+        tooltip = fillLauncherTooltip,
     })
-    LibStub("LibDBIcon-1.0"):Register("Questie Guide", dataObject, QuestieGuideDB.minimap)
 end
 
 local refreshTimer
@@ -3190,7 +3099,7 @@ local function announceNewQuests(newLevel)
         parts[i] = string.format("%d in %s", counts[zoneName], label)
     end
     local more = #zones > 3 and string.format(" and %d more zones", #zones - 3) or ""
-    print(INTRO_PREFIX .. "New quests at level " .. newLevel .. ": " .. table.concat(parts, ", ") .. more .. ".")
+    UI.Print(ADDON_TITLE, "New quests at level " .. newLevel .. ": " .. table.concat(parts, ", ") .. more .. ".")
 end
 
 -- Questie readiness, saved variables and events; nothing leaves this block.
@@ -3232,7 +3141,7 @@ do
     local function onQuestieReady()
         missingQuestieField = findMissingField()
         if missingQuestieField then
-            print(INTRO_PREFIX .. describeQuestieState())
+            UI.Print(ADDON_TITLE, describeQuestieState())
             return
         end
         questieReady = true
@@ -3294,8 +3203,8 @@ do
             return
         end
         QuestieGuideDB.introSeen = true
-        print(INTRO_PREFIX .. "Finds every quest you can pick up and rates the best zones for your level.")
-        print(INTRO_PREFIX .. "Left-click the minimap button to open the quest panel, or type /qg.")
+        UI.Print(ADDON_TITLE, "Finds every quest you can pick up and rates the best zones for your level.")
+        UI.Print(ADDON_TITLE, "Left-click the minimap button to open the quest panel, or type /qg.")
     end
 
     -- Quest events come from Questie (onQuestUpdate); only the player's own level and location are native events.
@@ -3321,7 +3230,7 @@ do
             loadSavedVariables()
             registerWithQuestie()
         elseif event == "PLAYER_LOGIN" then
-            setupMinimapButton()
+            setupLauncher()
             printIntroOnce()
         end
     end)

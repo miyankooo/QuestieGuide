@@ -19,7 +19,7 @@ Lists every quest currently available to your character, grouped by zone, with t
 - **Item tooltips** — list every quest an item belongs to that is not in your log, marked Available, Requires Level N (too low for it yet), Upcoming (a pre-quest is missing) or Completed Before
 - **Level-up report** — on level up, an on-screen message and clickable chat lines name the newly available quests per zone
 - **Empty-list help** — when nothing shows, a button offers the likely fix: enable the disabled filters, clear the search, or widen the level band
-- **Native look** — the window is Blizzard's own panel frame with the game's dropdowns, sliders, buttons, scroll bar and tooltips
+- **Native look** — the window is Blizzard's own panel frame with the game's dropdowns, sliders, buttons, scroll bar and tooltips, laid out on the same grid and text sizes as the author's other addons
 - Window position, collapsed state and every filter persist between sessions
 
 ## Installation
@@ -30,7 +30,7 @@ Lists every quest currently available to your character, grouped by zone, with t
 
 ## Usage
 
-1. Open the window with the minimap button, the addon compartment next to the minimap, `/qg`, or a key binding (Key Bindings > Questie Guide).
+1. Open or close the window with a left-click on the minimap button or on Questie Guide in the addon menu next to the minimap, with `/qg`, or with a key binding (Key Bindings > Questie Guide).
 2. Type in the search box to narrow by quest, zone or NPC name.
 3. Use the dropdowns on the left to include or exclude categories and quest types and to change the sort order.
 4. Click a quest to open the map at its start NPC; right-click for **Show on map** and **Link in chat**.
