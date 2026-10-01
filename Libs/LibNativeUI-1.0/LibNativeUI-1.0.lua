@@ -1,7 +1,7 @@
 -- LibNativeUI-1.0: a native UI design system for WoW Forever addons. Style tokens on an 8px grid, font
 -- roles on a 4px scale of Blizzard's own font objects, and window, control, launcher and options builders
 -- made only from Blizzard templates. Every addon embeds an identical copy; LibStub keeps the highest MINOR.
-local MAJOR, MINOR = "LibNativeUI-1.0", 1
+local MAJOR, MINOR = "LibNativeUI-1.0", 2
 local UI = LibStub:NewLibrary(MAJOR, MINOR)
 if not UI then return end
 
@@ -108,10 +108,17 @@ function UI.CreateEditBox(parent, width)
     return box
 end
 
+-- SearchBoxTemplate types and hints in 10px fonts; both move to the 12px roles. The hint keeps the grey the
+-- template gives it (InputBoxTemplates.xml, InputBoxInstructionsTemplate), so its colour is read before the
+-- font object changes and put back after.
 function UI.CreateSearchBox(parent, width, name)
     local box = CreateFrame("EditBox", name, parent, "SearchBoxTemplate")
     box:SetSize(width or UI.Size.input, UI.Native.inputHeight)
     box:SetAutoFocus(false)
+    box:SetFontObject(UI.Font.body)
+    local r, g, b = box.Instructions:GetTextColor()
+    box.Instructions:SetFontObject(UI.Font.muted)
+    box.Instructions:SetTextColor(r, g, b)
     return box
 end
 

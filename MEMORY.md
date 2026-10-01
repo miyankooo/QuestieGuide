@@ -299,3 +299,7 @@ Run `/console scriptErrors 1` first.
 - [ ] Open the guide in combat and click a row: no "action blocked".
 - [ ] Fully quit and restart: filters and position survive.
 - [ ] Open the guide in every Forever-only zone and instance you reach: no error from `GetCurrentZoneId` (QG-23).
+
+## LibNativeUI-1.0 version
+
+- The embedded copy is MINOR 2, byte-identical in ChatScan, QuestieGuide and TargetFinder; the reference copy is `ChatScan/Libs/LibNativeUI-1.0/`. MINOR 2 moves `UI.CreateSearchBox`'s typed text and hint from the template's 10px fonts to the 12px body and muted roles, keeping the template's hint grey.

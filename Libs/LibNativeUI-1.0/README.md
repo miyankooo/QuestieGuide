@@ -101,7 +101,7 @@ Building blocks:
   - `UI.CreateButton(parent, label, width)`
   - `UI.CreateCheckbox(parent, label)`
   - `UI.CreateEditBox(parent, width)`
-  - `UI.CreateSearchBox(parent, width, name)`
+  - `UI.CreateSearchBox(parent, width, name)`, with its typed text and hint moved to the 12 px roles
   - `UI.CreateDropdown(parent, width, name)`
   - `UI.CreateSlider(parent, width, name)`
   - `UI.CreateRemoveButton(parent)`
