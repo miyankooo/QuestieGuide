@@ -1,6 +1,6 @@
 # QuestieGuide — Memory
 
-Updated 2026-09-30 after the Forever-only rework (2.0.0) the owner's round-2 decisions (TomTom, elite quests, Questie level ranges, fixed window size, colours) and round-3 answers (both tags, XP only from green/yellow/orange, level-locked quests, Questie's two range exceptions), all still inside 2.0.0, which has not shipped. The owner's decision: WoW Forever 1.60.x only. `main` holds only the Forever version; `1.15.x-backup` keeps the Classic version. Quest data comes only from Questie.
+Updated 2026-10-01 after adopting the shared design system LibNativeUI-1.0 (see "Design system" below), still inside 2.0.0. Before that, updated 2026-09-30 after the Forever-only rework (2.0.0) the owner's round-2 decisions (TomTom, elite quests, Questie level ranges, fixed window size, colours) and round-3 answers (both tags, XP only from green/yellow/orange, level-locked quests, Questie's two range exceptions), all still inside 2.0.0, which has not shipped. The owner's decision: WoW Forever 1.60.x only. `main` holds only the Forever version; `1.15.x-backup` keeps the Classic version. Quest data comes only from Questie.
 
 Verified against:
 
@@ -19,14 +19,14 @@ Lists every quest you can pick up now, grouped by zone, from Questie's database.
 - Status labels (In Questlog, Available, Requires Level N, Missing Pre-Quest, Completed) and a chain tooltip that jumps to the step you can do.
 - A map jump to the quest giver with the native user waypoint and beacon.
 - Quest type tags (Elite (Group), Group, Dungeon, Raid, PvP), filters, sorting, a completed-quests section, item-tooltip lines and a level-up toast.
-- A minimap button, the Addon Compartment, `/qg`, a key binding, and click-through from Questie's map icons.
+- A minimap button, the addon menu (Addon Compartment), `/qg`, a key binding, and click-through from Questie's map icons.
 
 | Item | State |
 |---|---|
-| Version | 2.0.0: `## Interface: 16001`, `## Category: Quests`, `## RequiredDeps: Questie`, `## IconTexture: Interface\Icons\INV_Misc_Map02`, Addon Compartment fields |
-| Files | One Lua file (`QuestieGuide.lua`, 3,328 lines; 3,219 after the split, 3,557 before it), `Bindings.xml`, the toc, and the four tracked libs in `Libs/` (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0) |
+| Version | 2.0.0: `## Interface: 16001`, `## Category: Quests`, `## RequiredDeps: Questie`, `## IconTexture: Interface\Icons\INV_Misc_Map02`. No `## AddonCompartmentFunc*` lines since the design-system adoption: LibDBIcon registers the addon menu entry |
+| Files | One Lua file (`QuestieGuide.lua`, 3,237 lines; 3,328 before the design system, 3,219 after the split, 3,557 before it), `Bindings.xml`, the toc, and the five tracked libs in `Libs/` (LibStub, CallbackHandler-1.0, LibDataBroker-1.1, LibDBIcon-1.0, LibNativeUI-1.0) |
 | Git | `1.15.x-backup` = `origin/1.15.x-backup` = `c50c068` (the dual-client 1.1.0, created by the lead). `main` carries the 2.0.0 commits, not pushed |
-| Offline checks | `luac -p` passes (5.5). Lua 5.1 limits estimated from the luac 5.5 listing: main chunk at most 140 active locals (limit 200), `renderList` 49 upvalues, `scanQuestsByZone` 24 (limit 60). The lead's throwaway smoke harness (mocked WoW API and fake Questie, kept in the session scratchpad, not in the repo) passes 78/78. It covers both tags and both filters, the item tooltip's "(Requires Level N)", zone XP with red, grey and level-locked quests present, `[Requires Level N]` rows and the chain badge, all four Questie level styles, both Questie exceptions, the bar anchors and the missing-field path for the profile, `activeQuests` and `parentQuest`. Every new check was confirmed to fail when its code is removed. A slider-mode diff against `7cfb487` (16 below/above settings, same mock data) renders identical rows; the only difference is that a grey in-log quest inside a wide band no longer adds XP |
+| Offline checks | `luac -p` passes (5.5) for every Lua file. Lua 5.1 limits estimated from the luac 5.5 listing (`_ENV` not counted): main chunk at most 141 active locals (limit 200), `renderList` 49 upvalues, `scanQuestsByZone` 24 (limit 60). Design-system harness (2026-10-01, throwaway, session scratchpad, not in the repo): loads the toc files in order against a WoW mock with an anchor resolver and a fake Questie, passes 112/112; the same checks run against the pre-adoption code fail 23 (grid, toc, compartment, sizes, sections, search box, scroll padding). The rendered row text and indents are identical to `7f94bf3` on the same data. Before that, the lead's throwaway smoke harness (mocked WoW API and fake Questie, kept in the session scratchpad, not in the repo) passes 78/78. It covers both tags and both filters, the item tooltip's "(Requires Level N)", zone XP with red, grey and level-locked quests present, `[Requires Level N]` rows and the chain badge, all four Questie level styles, both Questie exceptions, the bar anchors and the missing-field path for the profile, `activeQuests` and `parentQuest`. Every new check was confirmed to fail when its code is removed. A slider-mode diff against `7cfb487` (16 below/above settings, same mock data) renders identical rows; the only difference is that a grey in-log quest inside a wide band no longer adds XP |
 
 ## How it talks to Questie
 
@@ -138,17 +138,19 @@ Questie calls that wrap natives: `QuestieDB.GetQuestTagInfo` (C_QuestLog.GetQues
 
 ## Native UI
 
-- The window is `ButtonFrameTemplate` (`QuestieGuideFrame`), strata HIGH, toplevel, clamped, movable, portrait from the toc icon, title "Questie Guide", Escape via `UISpecialFrames`, built lazily. One toggle (`toggleIfReady`) serves `/qg`, the key binding, the minimap button and the compartment.
-- Layout follows ChannelFrame: settings column in an `InsetFrameTemplate`, the list in the template's `.Inset`, both placed with `PANEL_INSET_*`. The search box (`SearchBoxTemplate`) sits in the attic like AddonList's.
-- The list uses `ScrollFrameTemplate` (MinimalScrollBar); the gutter comes from the real bar width plus `SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT`, and `SCROLL_FRAME_SCROLL_BAR_OFFSET_TOP` (2) keeps the bar inside the inset.
-- Fixed size 680x620 (owner decision round 2): no resize grip, no saved size, `/qg reset` only recentres. Position still persists (`framePos`). An old `frameSize` key in existing SavedVariables stays unread.
-- Bottom bar: two `MagicButtonTemplate` buttons. The primary, Current Zone, sits at BOTTOMRIGHT; Collapse All is anchored RIGHT to its LEFT. Both use zero offsets, then `MagicButton_OnLoad`, which applies -6/4 at the corner and -1 to the neighbour (`SharedUIPanelTemplates.lua:12-46`). Left to right they read Collapse All, Current Zone, as before.
-- Controls: `WowStyle1DropdownTemplate`, `MinimalSliderWithSteppersTemplate`, `UICheckButtonTemplate` (`.Text`), `UIPanelButtonTemplate` for the empty-state action, `MenuUtil.CreateContextMenu`.
+Built from LibNativeUI-1.0 since 2026-10-01 (see "Design system" below).
+
+- The window is `UI.CreateWindow` (`ButtonFrameTemplate`, `QuestieGuideFrame`): strata HIGH, toplevel, clamped, movable, portrait from the toc icon, title "Questie Guide", Escape via `UISpecialFrames`, and a close button that also works in combat (`onCloseCallback`). It is built lazily. One toggle (`UI.CreateToggle(buildMainFrame)`, wrapped by `toggleIfReady`) serves `/qg`, the key binding, the minimap button and the addon menu. The window's `OnShow` hook rereads the settings and defers the first render a tick, whichever path opened it.
+- Layout follows ChannelFrame: settings column in `UI.CreateInset` (`InsetFrameTemplate`) at `PANEL_INSET_*`, the list in the template's `.Inset` directly against it (gap 0, as `ChannelFrame.xml` puts its RightInset against its LeftInset). The search box (`UI.CreateSearchBox`, `SearchBoxTemplate`) sits in the attic on AddonList's right edge (x -10, `AddonList.xml`), centred between `PANEL_INSET_TOP_OFFSET` and `PANEL_INSET_ATTIC_OFFSET` (y -42), 200 wide.
+- The list uses `UI.CreateScroll` (`ScrollFrameTemplate`, MinimalScrollBar), padded 16 inside the inset with `UI.ScrollGutter()` (24) free on the right for the bar.
+- Fixed size 680x624 (owner decision round 2, snapped from 620 to the grid): no resize grip, no saved size, `/qg reset` only recentres. Position still persists in `framePos`, which `DEFAULTS` now always creates because the window reads and writes that table in place; `/qg reset` wipes it. An old `frameSize` key in existing SavedVariables stays unread.
+- Bottom bar: two `UI.AddBarButton` buttons (`MagicButtonTemplate`, 128 wide). The primary, Current Zone, takes BOTTOMRIGHT; Collapse All chains to its left. `MagicButton_OnLoad` applies -6/4 at the corner and -1 to the neighbour (`SharedUIPanelTemplates.lua:12-46`).
+- Controls: `UI.CreateDropdown` (`WowStyle1DropdownTemplate`), `UI.CreateSlider` (`MinimalSliderWithSteppersTemplate`), `UI.CreateCheckbox` (`UICheckButtonTemplate`, 24px, body font), `UI.CreateButton` (`UIPanelButtonTemplate`) for the empty-state action, `MenuUtil.CreateContextMenu`. Settings blocks are `UI.CreateSection` chained with `UI.StackBelow`.
 - Row art from Forever's quest UI: hover `Interface\QuestFrame\UI-QuestTitleHighlight` (Forever's GossipFrame and quest greeting rows), selection atlas `questlog-quest-glow-yellow` (the called-out quest in Forever's quest log, `QuestMapFrame.xml:227`, `QuestMapFrame.lua:1956`), header toggles `UI-PlusButton-Up` / `UI-MinusButton-Up` / `UI-PlusButton-Hilight` (Forever's Group Finder listing, `Blizzard_LFGVanilla_Listing.lua:956-958`).
-- Colours are Blizzard colour objects (`GRAY`, `NORMAL`, `YELLOW`, `LIGHTBLUE`, `GREEN`, `ORANGE`, `LINK`, `RED`, `HIGHLIGHT` `_FONT_COLOR`, `EPIC_PURPLE_COLOR`) and `QuestDifficultyColors.header` for header grey (Blizzard's own quest-header colour, a plain `{r, g, b}` table in `Blizzard_FrameXMLBase/Constants.lua:201`). No literal `|cff` codes. The Elite (Group) tag is `NORMAL_FONT_COLOR`, the gold `GameFontNormal` Forever's quest log uses for its "(Elite)" tag (`QuestMapFrame.xml:215`). `[Requires Level N]` is `GRAY_FONT_COLOR`, like Questie's grey "!" pin. Owner-approved exceptions: level and name colours are Questie's difficulty colour (`CreateColor` of `GetDifficultyColorPercent`), and item-tooltip status suffixes use `Questie:Colorize` so they match Questie's own lines above them.
-- Chat: every line starts with `YELLOW_FONT_COLOR:WrapTextInColorCode("[Questie Guide]:") .. " "`, the prefix all the author's addons share.
-- Fonts: Blizzard font objects only. Tooltips: the `GameTooltip_*` helpers.
-- Minimap button: LibDBIcon with an LDB launcher "Questie Guide", icon = toc icon, db at `QuestieGuideDB.minimap`.
+- Colours are `UI.Color` roles where one fits (`COLOR.MUTED`/`LOCKED` = `muted`, `ACCENT` = `heading`, `READY` = `good`, tooltip field pairs = `heading`/`body`) and other Blizzard colour objects for the rest (`LIGHTBLUE`, `ORANGE`, `LINK`, `RED`, `NORMAL` `_FONT_COLOR`, `EPIC_PURPLE_COLOR`), plus `QuestDifficultyColors.header` for header grey (Blizzard's own quest-header colour, a plain `{r, g, b}` table in `Blizzard_FrameXMLBase/Constants.lua:201`). No literal `|cff` codes. The Elite (Group) tag is `NORMAL_FONT_COLOR`, the gold `GameFontNormal` Forever's quest log uses for its "(Elite)" tag (`QuestMapFrame.xml:215`). `[Requires Level N]` is grey, like Questie's grey "!" pin. Owner-approved exceptions: level and name colours are Questie's difficulty colour (`CreateColor` of `GetDifficultyColorPercent`), and item-tooltip status suffixes use `Questie:Colorize` so they match Questie's own lines above them.
+- Chat: `UI.Print("Questie Guide", message)`, the yellow `[Questie Guide]:` prefix all the author's addons share.
+- Fonts: `UI.Font` roles only (body for rows and labels, heading for section titles). Tooltips: `UI.ShowTooltip` filled with the `GameTooltip_*` helpers, hidden with `GameTooltip_Hide`.
+- Minimap button and addon menu: `UI.CreateLauncher`, LDB launcher "Questie Guide", icon = toc icon, db at `QuestieGuideDB.minimap` (so the saved button position carries over). LibDBIcon adds the addon menu entry through `AddonCompartmentFrame:RegisterAddon` and stores `showInCompartment` in that table.
 
 Forever facts:
 
@@ -211,6 +213,41 @@ Fixed in the port and still valid:
 | Item tooltips use the list's wording (lead decision, round 3) | A quest the player is too low for reads "(Requires Level N)" (`ITEM_MIN_LEVEL`) in Questie's grey instead of "(Upcoming)"; "(Upcoming)" stays for prereq-blocked quests |
 | The guide's own slider mode unchanged | Verified by the slider-mode diff (see Offline checks). It lists exactly what it listed before; the only change is the owner's XP rule, so grey in-log quests inside a wide band no longer add XP |
 
+## Design system (LibNativeUI-1.0, 2026-10-01, inside 2.0.0)
+
+The shared design system of the author's addons, embedded as a byte-identical copy in `Libs/LibNativeUI-1.0/` (`README.md` is the spec; the reference copy lives in ChatScan). The toc loads it right after LibDBIcon. Do not edit the copy here; the lead changes the reference copy and syncs it. No options page (owner decision).
+
+Components adopted: `UI.CreateWindow`, `UI.AddBarButton`, `UI.CreateToggle`, `UI.CreateInset`, `UI.CreateSection`, `UI.StackBelow`, `UI.CreateCheckbox`, `UI.CreateSlider`, `UI.CreateDropdown`, `UI.CreateSearchBox`, `UI.CreateScroll`, `UI.CreateButton`, `UI.CreateText`, `UI.ShowTooltip`, `UI.CreateLauncher`, `UI.RegisterSlash`, `UI.Print`, and the `UI.GRID`/`Space`/`Size`/`Native`/`Font`/`Color` tokens. Removed local duplicates: `createGroup`/`sizeGroup`, `buildCheckbox`, `createBarButton`, `createWindow`, `setupMinimapButton`, `toggleFrame`, `INTRO_PREFIX`, the `GameTooltip:SetOwner`/`Show` boilerplate, and the three `QuestieGuide_Compartment*` globals. The quest list rows (`acquireRow`, `styleHeaderRow`, `renderList`) stay addon-specific, built from `UI.CreateText` and the tokens.
+
+Constants on the 8px grid (old → new):
+
+| Where | Old | New |
+|---|---|---|
+| Window | 680 x 620 | 680 x 624 |
+| Settings column | 260 wide, padding 12 | 256 (`UI.GRID * 32`), padding 16 |
+| Column gap | 2 | 0, as ChannelFrame |
+| Section heading + gap | 18 | 16 + 8 (`UI.CreateSection`) |
+| Between sections | 12 | 24 (`UI.Space.section`) |
+| Between controls | 6 | 8 (`UI.Space.gap`) |
+| Checkbox | 26 | 24 (`UI.Size.row`) |
+| Dropdown step | 25 + 6 | one row + gap (32); the 25px template keeps its height, a pixel over the row |
+| Dropdown indent | 6 | 8, the template's own art bleed (`MenuTemplates.xml` Background x=-8/+8) |
+| Dropdown / slider width | 224 / 236 | 208 / 224 |
+| Bar and empty-state buttons | 120 | 128 (`UI.Size.button`); the empty-state button grows on the grid for longer labels |
+| Search box | 200 x 22 at TOPRIGHT -10, -31 | 200 x 20 (`UI.Native.inputHeight`), RIGHT at -10, -42 (attic centre) |
+| List padding | 4, bar gutter 14, top +2 | 16, `UI.ScrollGutter()` 24 |
+| Rows | text top-anchored with 2px pad, line spacing 2, min 16/16/20 | text centred, no extra line spacing, height snapped to the grid; quest rows and the Next banner add 8 of air (two-line quest = 32), headers and buckets are one 16px line |
+| List gaps (quest / bucket / zone) | 2 / 6 / 12 | 0 / 8 / 16 |
+| Header text after the toggle | toggle at 3, text at 20 | toggle at 0, text at 16 (`UI.Size.icon`) |
+
+Off-grid values left, all native geometry named as such: `SEARCH_RIGHT` 10 (AddonList.xml's search box), `SLIDER_H` 40 (MinimalSlider.xml, on the grid anyway), `PANEL_INSET_*`, `UI.Native.*`.
+
+Fonts: the addon's own text was already 12px (`GameFontHighlight` rows, `GameFontNormal` headings); it now goes through `UI.Font.body`/`heading`. The search box keeps SearchBoxTemplate's 10px fonts (`GameFontHighlightSmall` text, `GameFontDisableSmall` placeholder), because `UI.CreateSearchBox` does not set them; reported to the lead as a library gap, not patched here.
+
+Launcher and toc: `UI.CreateLauncher` replaced the hand-made LDB object and `LibDBIcon:Register`; the same "Questie Guide" name and db table, so the minimap position carries over. The three `## AddonCompartmentFunc*` toc lines and their globals are gone, because LibDBIcon now registers the addon menu entry itself and keeping both would list the addon twice. Same left-click behaviour; a right-click on the addon menu entry no longer toggles (the old compartment function ignored the button).
+
+Visible changes for the owner: window 4px taller; settings column 4px narrower with roomier spacing; quest list 12px narrower (scroll width 374, was 386) because of the 16px inset padding and the 24px bar gutter; the list about 5% taller on the same data; title and giver lines of a quest sit closer together (no extra line spacing) while quests sit further apart; header rows 16 instead of 20; bar buttons 128 wide; the search box 2px shorter.
+
 ## Open items
 
 Left as is, decided by lead (round 3):
@@ -228,6 +265,8 @@ Robustness notes (not changed):
 
 Unverified:
 
+- The search box's text and placeholder stay at SearchBoxTemplate's 10px until `UI.CreateSearchBox` sets the body/muted roles (library gap, reported).
+- Whether LibDBIcon's compartment entry appears before or after other addons' toc entries, and that the old toc-based entry is gone after a full client restart (the toc is read at startup).
 - The `questlog-quest-glow-yellow` atlas and the plus/minus textures at our row sizes (stretched with `SetAllPoints`, toggles forced to 16x16).
 - Whether opening the modern world map and quest log from addon code taints `WorldMapFrame` in combat.
 - Whether the waypoint sits on the NPC. Setting it replaces the player's own waypoint.
@@ -240,7 +279,8 @@ Unverified:
 Run `/console scriptErrors 1` first.
 
 - [ ] `/reload`: no errors and no "Questie has no …" line. `/qg` before Questie is ready says it's still loading; after it opens.
-- [ ] The window: portrait, strata over other panels, settings column left, list right, search top right, Current Zone bottom-right with Collapse All to its left, no resize grip. Fixed 680x620; the position survives `/reload`, and `/qg reset` recentres it. Escape closes it.
+- [ ] The window: portrait, strata over other panels, settings column left, list right, search top right, Current Zone bottom-right with Collapse All to its left, no resize grip. Fixed 680x624; the position survives `/reload` (an old saved position too), and `/qg reset` recentres it. Escape closes it, and so does the close button in combat.
+- [ ] Design system: every text in the window reads 12px (section titles gold, labels and rows white) and the title 16px; nothing is clipped at 12px (checkbox labels, dropdown texts, slider labels, bar buttons, "Expand All"). Spacing reads even: 16 inside both insets, 24 between settings sections, the dropdown art lines up with the section titles, the scroll bar sits inside the list inset. Quest rows: title and giver lines readable together, quests clearly apart.
 - [ ] The dropdowns and sliders work. Search filters the list and the clear button resets it.
 - [ ] "Use Questie Level Ranges": with each of Questie's four Quest Level Options styles (and the Questie menu's "Trivial Quest" toggle), the list changes with the window open and matches the "!" pins Questie draws. With "between two set levels" reaching above your level, Questie's grey "!" quests list dimmed as [Requires Level N].
 - [ ] XP: with a red or grey quest listed (Questie's range) and a [Requires Level N] row, the zone header XP, the Next banner and the zone tooltip leave their XP out.
@@ -249,7 +289,7 @@ Run `/console scriptErrors 1` first.
 - [ ] Clicking an Available quest opens the map at the giver, with the Questie pin pulsing. Clicking a Missing Pre-Quest row jumps to the prerequisite. The selected row shows the quest-log glow.
 - [ ] Right-click → "Link in chat" inserts the link. A Questie map-icon click opens the guide, except while a chat box is open.
 - [ ] Quest items in bags show their status line once, under Questie's lines. An item for a quest you are too low for says "(Requires Level N)" in grey. The first hover of a quest-start item doesn't show "(Available)" twice (QG-05).
-- [ ] The compartment lists Questie Guide; the minimap button tooltip shows the zone count after the first scan.
+- [ ] The addon menu (compartment) lists Questie Guide exactly once, with the toc icon; left-click toggles the window, and its tooltip matches the minimap button's (title once, the zone count after the first scan, the instruction line). The minimap button keeps its old position.
 - [ ] An Available quest sets the native pin and beacon. `/dump C_Map.HasUserWaypoint(), C_SuperTrack.IsSuperTrackingUserWaypoint()` prints `true true`, and the pin sits on the NPC.
 - [ ] An In Questlog row opens the quest map log on that quest.
 - [ ] Accept a quest with the guide open: within a second the row flips to [In Questlog] (QG-07). Turn one in and abandon one: the list updates. Complete an objective: the Completed section updates.
