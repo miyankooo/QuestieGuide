@@ -1,0 +1,10 @@
+package-as: QuestieGuide
+manual-changelog: CHANGELOG.md
+
+ignore:
+  - CLAUDE.md
+  - Tests
+  - Tools
+
+required-dependencies:
+  - questie

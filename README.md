@@ -1,52 +1,81 @@
-# QuestieGuide
+# Questie Guide
 
-Lists every quest currently available to your character, grouped by zone, with the XP each zone is worth. Trivial grey quests are hidden automatically, unless you let Questie's own level range decide.
+An unofficial Questie companion that lists every quest you can pick up now, grouped by zone and rated by the XP of one trip through each zone.
 
 ## Features
 
-- **Zone list with XP** — collapsible zone headers showing the in-range quest count and the total XP for one trip through the zone (green, yellow and orange quests only), with a percent-of-level breakdown on hover
-- **Next-trip banner** — names the best zone for your next trip and jumps to it on click
-- **Status labels** — **[In Questlog]**, **[Available]**, **[Requires Level N]**, **[Missing Pre-Quest]** and **[Completed]**
-- **Click to locate** — Available opens the world map at the start NPC with the Questie pin pulsing and a map pin on the NPC, In Questlog opens the quest log, Missing Pre-Quest jumps to the chain step you can pick up right now
-- **Search** — the box at the top right matches quest names, zone names and NPC names
-- **Level range sliders** — include 0–10 levels below and above you (default 5/5), or tick **Use Questie Level Ranges** to follow the range set in Questie's own **Quest Level Options** (Questie options > General). When Questie's "between two set levels" range reaches above your level, the quests you can't accept yet show dimmed as **[Requires Level N]**, the way Questie pins them with a grey "!". Like Questie, this mode also lists quests whose parent quest is in your log, and active holiday quests below the range
-- **Filters** — In Questlog, Picked Up in Zone, Picked Up Outside of Zone, Missing Pre-Quest, Dungeons, Elite (Group), Repeatable
-- **Quest type tags** — **[Elite (Group)]** for elite quests, plus **[Group]**, **[Dungeon]**, **[Raid]** and **[PvP]**. An elite dungeon, raid or PvP quest shows both tags, for example **[Elite (Group)] [Dungeon]**. The Elite (Group) filter covers elite, group and raid quests, and a quest with two tags shows only while both filters are on
-- **Sort modes** — Total XP, Total Quest Count, Average Quest Level or Alphabetical by Zone, ascending or descending
-- **Completed quests** — a category at the top grouping everything ready to turn in, by turn-in zone
-- **You are here** — your current zone carries a gold tag, and the Current Zone button jumps to it
-- **Focus mode** — right-click a zone header to expand it and collapse everything else
-- **Item tooltips** — list every quest an item belongs to that is not in your log, marked Available, Requires Level N (too low for it yet), Upcoming (a pre-quest is missing) or Completed Before
-- **Level-up report** — on level up, an on-screen message and clickable chat lines name the newly available quests per zone
-- **Empty-list help** — when nothing shows, a button offers the likely fix: enable the disabled filters, clear the search, or widen the level band
-- **Native look** — the window is Blizzard's own panel frame with the game's dropdowns, sliders, buttons, scroll bar and tooltips, laid out on the same grid and text sizes as the author's other addons
-- Window position, collapsed state and every filter persist between sessions
+- A Next banner names the best zone for your next trip and jumps to it.
+- Zone headers show the quest count and trip XP, with a breakdown on hover that includes follow-up quests unlocking in the same zone.
+- Rows read like Forever's quest log, for example `[24+] Quest Name (Dungeon)`, with a status only when it matters: In Questlog, Requires Level N or Missing Pre-Quest.
+- Click a quest to open the world map at its giver with a waypoint, or the quest log for a quest you already have. A Missing Pre-Quest row jumps to the chain step you can do now.
+- One Filter menu holds availability, quest types, completed quests, the level range and the sort order.
+- Completed quests are grouped by turn-in zone at the top of the list.
+- Item tooltips name the quests an item belongs to that are not in your log yet.
+- Chat lines with clickable zone links on level up and when you enter a dungeon that still has quests to pick up.
 
 ## Installation
 
-1. Copy the `QuestieGuide/` folder into `World of Warcraft/_classic_beta_/Interface/AddOns/`.
-2. Restart the game or `/reload`.
-3. Enable **Questie Guide** in the AddOns list.
+1. Install it with the CurseForge app under WoW Forever, or copy the `QuestieGuide` folder into `World of Warcraft/_classic_beta_/Interface/AddOns/`.
+2. Restart the game or type `/reload`.
+3. Enable Questie Guide in the AddOns list.
 
 ## Usage
 
-1. Open or close the window with a left-click on the minimap button or on Questie Guide in the addon menu next to the minimap, with `/qg`, or with a key binding (Key Bindings > Questie Guide).
-2. Type in the search box to narrow by quest, zone or NPC name.
-3. Use the dropdowns on the left to include or exclude categories and quest types and to change the sort order.
-4. Click a quest to open the map at its start NPC; right-click for **Show on map** and **Link in chat**.
-5. Drag the window to move it. `/qg reset` moves it back to the middle of the screen.
+1. Open the window with the minimap button, the addon menu next to the minimap, `/qg` or a key binding (Key Bindings, Questie Guide).
+2. Read the Next banner, or open the zone you are in with Current Zone.
+3. Type in the search box to narrow the list by quest, zone or NPC name.
+4. Click a quest to open the map at its giver. Right-click it for Show on Map and Link in Chat. Shift-click links it into an open chat box. Right-click a zone header to expand it and collapse every other zone.
+5. Click a Questie "!" on the map to open the guide at that quest.
 
-Shift-click a quest to link it into an open chat box.
+## Commands
+
+| Command | Does |
+| --- | --- |
+| `/qg` | Opens or closes the window |
+| `/qg minimap` | Hides or shows the minimap button. The addon menu entry stays |
+| `/qg reset` | Moves the window back to the middle of the screen |
+
+`/questieguide` works as well.
+
+## Settings
+
+The Filter button next to the search box holds every option. Its reset button appears while any filter differs from the defaults.
+
+- Availability: In Questlog, Starts Here, Starts Elsewhere and Missing Pre-Quest.
+- Quest Types: Dungeons, Elite and Repeatable.
+- Show Completed: the completed quests section.
+- Level Range: Questie Level Ranges follows the range set in Questie's options (General, Quest Level Options). Custom Range lists quests from 0 to 10 levels below and above you, 5 and 5 by default.
+- Sort By: Total XP, Total Quest Count, Average Quest Level or Alphabetical by Zone, ascending or descending.
+
+The window position, collapsed zones and every filter persist between sessions.
 
 ## Requirements
 
-- WoW Forever 1.60.x
-- [Questie](https://github.com/Questie/Questie) 12 with the separate QuestieDB addon, installed and enabled. Every quest, giver, prerequisite, completion state and XP figure comes from Questie; QuestieGuide has no quest data of its own, so it only loads with Questie
-- If a Questie update removes something QuestieGuide relies on, it names the missing piece in chat and keeps the window closed
+- WoW Forever 1.60.x (Interface `16001`).
+- [Questie](https://www.curseforge.com/wow/addons/questie) 12 with its QuestieDB addon. Every quest, giver, prerequisite and XP figure comes from Questie.
 
 ## Restrictions
 
-- Clicking a quest replaces any map pin you placed yourself.
-- Only green, yellow and orange quests count toward the XP figures, the trip XP, the zone rating and the Next banner. Grey and red quests, and **[Requires Level N]** rows, still list where the level range allows them but never add XP.
-- The level sliders never list red (too high) quests; **Use Questie Level Ranges** lists them when Questie does.
-- Quests filed under a sort category rather than a zone (class and profession quests) are grouped under **Other**.
+Blizzard blocks addons from opening the map and the quest log in combat. A click in combat sets the waypoint only; click again after combat.
+
+Clicking a quest replaces any map pin you placed yourself.
+
+Only green, yellow and orange quests count toward the XP figures and the Next banner. Grey and red quests and Requires Level N rows still list where the level range allows them.
+
+Class, profession and other quests without a zone are grouped under Other.
+
+The dungeon line and the minimap tooltip status read the list the window built last, so they stay silent until you open the window once after logging in.
+
+If a Questie update removes something Questie Guide relies on, it names the missing piece in chat and keeps the window closed.
+
+## Development
+
+Run the offline smoke test from the addon folder with Lua 5.1 or newer:
+
+```sh
+lua Tests/Smoke.lua
+```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

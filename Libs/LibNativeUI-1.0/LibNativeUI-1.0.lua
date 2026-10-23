@@ -1,21 +1,26 @@
--- LibNativeUI-1.0: a native UI design system for WoW Forever addons. Style tokens on an 8px grid, font
--- roles on a 4px scale of Blizzard's own font objects, and window, control, launcher and options builders
+-- LibNativeUI-1.0: a native UI design system for WoW Forever addons. Style tokens on a 4px grid, font
+-- roles at 12 and 16 px on Blizzard's own font objects, and window, dialog, control and launcher builders
 -- made only from Blizzard templates. Every addon embeds an identical copy; LibStub keeps the highest MINOR.
-local MAJOR, MINOR = "LibNativeUI-1.0", 2
+local MAJOR, MINOR = "LibNativeUI-1.0", 3
 local UI = LibStub:NewLibrary(MAJOR, MINOR)
 if not UI then return end
 
--- Every spacing value an addon chooses is a multiple of this grid.
-UI.GRID = 8
+-- Every size, gap, padding, offset and width an addon chooses is a multiple of this grid.
+UI.GRID = 4
 
--- Spacing roles: gap between related controls, padding inside a well, and the break between sections.
+-- Spacing roles. tight: label to control, hint under a field. gap: between related controls, heading to
+-- body. padding: inside an inset. section: between sections. dialog and dialogTop: a dialog's side and
+-- bottom padding, and its content top below the 28px of header art.
 UI.Space = {
+    tight = 4,
     gap = 8,
     padding = 16,
     section = 24,
+    dialog = 20,
+    dialogTop = 40,
 }
 
--- Component slots on the grid. Blizzard templates keep their native heights centred inside a row.
+-- Component slots on the grid. Blizzard templates keep their native heights centred inside a slot.
 UI.Size = {
     row = 24,
     heading = 16,
@@ -25,21 +30,47 @@ UI.Size = {
     input = 160,
 }
 
--- Geometry Blizzard's templates fix themselves. These are compensations for template art, not spacing.
+-- Geometry Blizzard's templates fix themselves. These are the only values allowed off the grid.
 UI.Native = {
+    -- MagicButtonTemplate in a ButtonFrameTemplate bar (Mainline/SharedUIPanelTemplates.xml:750).
     buttonHeight = 22,
+
+    -- InputBoxTemplate art height and its left cap outside the box (Shared/InputBox/InputBoxTemplates.xml:47-49).
     inputHeight = 20,
     inputArt = 5,
+
+    -- WowStyle1DropdownTemplate art reaches 8px past each side (Blizzard_Menu/Mainline/MenuTemplates.xml:9-10).
+    dropdownArt = 8,
+
+    -- WowStyle1DropdownTemplate height (Blizzard_Menu/Mainline/MenuTemplates.xml:4).
+    dropdownHeight = 25,
+
+    -- MinimalSliderWithSteppersTemplate height (Shared/Slider/MinimalSlider.xml:35).
+    sliderHeight = 40,
+
+    -- ButtonFrameTemplate's TitleContainer starts here, so attic text lines up with the title
+    -- (Mainline/SharedUIPanelTemplates.xml:603).
+    titleLeft = 58,
+
+    -- MinimalScrollBar width (Shared/Scroll/MinimalScrollBar.xml:16).
     scrollBarWidth = 8,
 }
 
--- Font roles on Blizzard's font objects, all on the 4px scale: title 16, display 20, the rest 12.
+-- UIPanelCloseButton sits 2px in from a DialogBorderTemplate corner (Blizzard_Channels/Mainline/CreateChannelPopup.xml:72).
+local DIALOG_CLOSE_INSET = 2
+
+-- UIPanelButtonTemplate pads its text by 40px when it fits to it (SecureUIPanelTemplates.xml:42).
+local BUTTON_TEXT_PADDING = 40
+
+-- Fit-to-text buttons never get narrower than this, so short labels like "Add" keep a usable target.
+local BUTTON_MIN_WIDTH = 64
+
+-- Font roles on Blizzard's font objects: title 16, the rest 12. Title is only for a dialog's subject line.
 UI.Font = {
     title = GameFontNormalLarge,
     heading = GameFontNormal,
     body = GameFontHighlight,
     muted = GameFontDisable,
-    display = GameFontNormalHuge,
 }
 
 -- Colour roles on Blizzard's colour objects, so text matches the game's own UI.
@@ -82,19 +113,35 @@ function UI.CreateText(parent, role, layer)
     return text
 end
 
+-- A content button one row tall. Without a width it fits its label the way the template's own
+-- FitToText does, then snaps to 8 so neighbouring buttons share widths.
 function UI.CreateButton(parent, label, width)
     local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-    button:SetSize(width or UI.Size.button, UI.Native.buttonHeight)
     button:SetText(label)
+    if not width then
+        local fitted = math.ceil((button:GetTextWidth() + BUTTON_TEXT_PADDING) / 8) * 8
+        width = math.max(BUTTON_MIN_WIDTH, fitted)
+    end
+    button:SetSize(width, UI.Size.row)
     return button
 end
 
--- UICheckButtonTemplate shrunk from its 32px art to one row; the label keeps the template's own anchor.
+-- The label's width joins the hit rect, so a click on the text toggles the box like a native option.
+local function setCheckboxLabel(checkbox, label)
+    checkbox.Text:SetText(label)
+    checkbox:SetHitRectInsets(0, -(UI.Space.tight + checkbox.Text:GetStringWidth()), 0, 0)
+end
+
+-- CheckboxWithLabelTemplate: the minimal checkbox art Blizzard's Settings use, at the 24px AddonList
+-- uses it (Blizzard_AddOnList/AddonList.xml:73-74). Change the label later through checkbox:SetLabel.
 function UI.CreateCheckbox(parent, label)
-    local checkbox = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    local checkbox = CreateFrame("CheckButton", nil, parent, "CheckboxWithLabelTemplate")
     checkbox:SetSize(UI.Size.row, UI.Size.row)
     checkbox.Text:SetFontObject(UI.Font.body)
-    if label then checkbox.Text:SetText(label) end
+    checkbox.Text:ClearAllPoints()
+    checkbox.Text:SetPoint("LEFT", checkbox, "RIGHT", UI.Space.tight, 0)
+    checkbox.SetLabel = setCheckboxLabel
+    setCheckboxLabel(checkbox, label or "")
     return checkbox
 end
 
@@ -122,10 +169,22 @@ function UI.CreateSearchBox(parent, width, name)
     return box
 end
 
--- A DropdownButton on Blizzard's menu dropdown; callers fill it with SetupMenu.
+-- A DropdownButton on Blizzard's menu dropdown; callers fill it with SetupMenu. Its art hangs
+-- UI.Native.dropdownArt px past each side, so callers indent it by that much.
 function UI.CreateDropdown(parent, width, name)
     local dropdown = CreateFrame("DropdownButton", name, parent, "WowStyle1DropdownTemplate")
     dropdown:SetWidth(width or UI.Size.dropdown)
+    return dropdown
+end
+
+-- Blizzard's "Filter" button (Blizzard_Menu/Mainline/MenuTemplates.xml:66), as on the Who list. The
+-- template sizes itself to its text; the width is fixed here, on the grid, so later text never moves it.
+-- Callers set SetDefaultCallback and SetIsDefaultCallback before SetupMenu; the template then shows its
+-- own reset button whenever the filters differ from the defaults.
+function UI.CreateFilterDropdown(parent, width)
+    local dropdown = CreateFrame("DropdownButton", nil, parent, "WowStyle1FilterDropdownTemplate")
+    dropdown.resizeToText = false
+    dropdown:SetWidth(width or UI.Snap(dropdown:GetWidth()))
     return dropdown
 end
 
@@ -212,17 +271,10 @@ local function savePosition(frame, position)
     position.point, position.relPoint, position.x, position.y = point, relPoint, x, y
 end
 
--- A tool window on ButtonFrameTemplate: portrait, title bar, close button, inset, attic and button bar
--- come from the template. Escape closes it through UISpecialFrames and it stays out of UIPanelWindows,
--- so it never drives Blizzard's panel layout. spec: name, title, icon, width, height, and optionally
--- position (a saved table it reads and writes), attic (a height, or false to drop it) and buttonBar
--- (false to drop it).
-function UI.CreateWindow(spec)
-    local frame = CreateFrame("Frame", spec.name, UIParent, "ButtonFrameTemplate")
-    frame:SetSize(spec.width, spec.height)
-    frame:SetTitle(spec.title)
-    frame:SetPortraitToAsset(spec.icon)
-    frame:SetFrameStrata(UI.Strata.window)
+-- Shared by windows and dialogs: toplevel, clamped, dragged with the left button, and closed by Escape
+-- through UISpecialFrames, never UIPanelWindows, so it never drives Blizzard's panel layout.
+local function makeMovable(frame, name, strata, position)
+    frame:SetFrameStrata(strata)
     frame:SetToplevel(true)
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
@@ -231,9 +283,21 @@ function UI.CreateWindow(spec)
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
-        if spec.position then savePosition(self, spec.position) end
+        if position then savePosition(self, position) end
     end)
-    restorePosition(frame, spec.position)
+    restorePosition(frame, position)
+    frame:Hide()
+    tinsert(UISpecialFrames, name)
+end
+
+-- A tool window on ButtonFrameTemplate: portrait, title bar, close button, inset, attic and button bar
+-- come from the template. spec: name, title, icon, width, height, and optionally position (a saved table
+-- it reads and writes), attic (a height, or false to drop it) and buttonBar (false to drop it).
+function UI.CreateWindow(spec)
+    local frame = CreateFrame("Frame", spec.name, UIParent, "ButtonFrameTemplate")
+    frame:SetSize(spec.width, spec.height)
+    frame:SetTitle(spec.title)
+    frame:SetPortraitToAsset(spec.icon)
 
     if spec.attic == false then
         ButtonFrameTemplate_HideAttic(frame)
@@ -249,9 +313,97 @@ function UI.CreateWindow(spec)
         return false
     end
 
-    frame:Hide()
-    tinsert(UISpecialFrames, spec.name)
+    makeMovable(frame, spec.name, UI.Strata.window, spec.position)
     return frame
+end
+
+-- Places a region in the dialog's content column below everything added so far.
+local function placeContent(dialog, region, height, gap, indent)
+    if dialog.hasContent then
+        dialog.contentHeight = dialog.contentHeight + gap
+    end
+    dialog.hasContent = true
+    region:SetPoint("TOPLEFT", dialog, "TOPLEFT", UI.Space.dialog + (indent or 0), -(UI.Space.dialogTop + dialog.contentHeight))
+    dialog.contentHeight = dialog.contentHeight + height
+end
+
+-- Wrapped text across the content column. Its height is measured now, and never less than one line,
+-- so text the caller fills in later still has its line reserved.
+local function addDialogText(dialog, role, text, gap)
+    local fontString = UI.CreateText(dialog, role)
+    fontString:SetWidth(dialog.contentWidth)
+    fontString:SetWordWrap(true)
+    fontString:SetText(text or "")
+    local _, lineHeight = UI.Font[role or "body"]:GetFont()
+    local height = math.ceil(math.max(fontString:GetStringHeight(), lineHeight))
+    fontString:SetHeight(height)
+    placeContent(dialog, fontString, height, gap or UI.Space.section)
+    return fontString
+end
+
+-- A gold heading over white body text, one gap apart, one section break below the previous content.
+local function addDialogSection(dialog, heading, body)
+    local headingText = addDialogText(dialog, "heading", heading)
+    return headingText, addDialogText(dialog, "body", body, UI.Space.gap)
+end
+
+-- Any widget in the content column; the caller sizes it. indent shifts it right for native art, such as
+-- UI.Native.inputArt for an edit box or UI.Native.dropdownArt for a dropdown.
+local function addDialogField(dialog, widget, height, gap, indent)
+    placeContent(dialog, widget, height, gap or UI.Space.gap, indent)
+    return widget
+end
+
+-- A fit-to-text button in the bottom-right corner; later ones chain leftwards one gap apart.
+local function addDialogButton(dialog, label, onClick)
+    local button = UI.CreateButton(dialog, label)
+    local previous = dialog.buttons[#dialog.buttons]
+    if previous then
+        button:SetPoint("RIGHT", previous, "LEFT", -UI.Space.gap, 0)
+    else
+        button:SetPoint("BOTTOMRIGHT", dialog, "BOTTOMRIGHT", -UI.Space.dialog, UI.Space.dialog)
+    end
+    button:SetScript("OnClick", onClick)
+    dialog.buttons[#dialog.buttons + 1] = button
+    return button
+end
+
+-- Height from the header clearance through the content and the button row to the bottom padding.
+local function fitDialog(dialog)
+    local height = UI.Space.dialogTop + dialog.contentHeight + UI.Space.dialog
+    if #dialog.buttons > 0 then
+        height = height + UI.Space.section + UI.Size.row
+    end
+    dialog:SetHeight(UI.Snap(height))
+end
+
+-- A dialog in Blizzard's dialog chrome: DialogBorderTemplate, DialogHeaderTemplate with the title and
+-- UIPanelCloseButton. spec: name, title, width (a multiple of 8 from 400 to 480), and optionally parent
+-- and position (a saved table it reads and writes). Add content top to bottom, then call dialog:Fit().
+function UI.CreateDialog(spec)
+    local dialog = CreateFrame("Frame", spec.name, spec.parent or UIParent)
+    dialog:SetSize(spec.width, UI.Space.dialogTop + UI.Space.dialog)
+    dialog.contentWidth = spec.width - 2 * UI.Space.dialog
+    dialog.contentHeight = 0
+    dialog.buttons = {}
+
+    dialog.Border = CreateFrame("Frame", nil, dialog, "DialogBorderTemplate")
+    dialog.Header = CreateFrame("Frame", nil, dialog, "DialogHeaderTemplate")
+    dialog.Header:Setup(spec.title)
+
+    -- UIPanelCloseButton_OnClick goes through HideUIPanel, which refuses insecure callers in combat.
+    dialog.CloseButton = CreateFrame("Button", nil, dialog, "UIPanelCloseButton")
+    dialog.CloseButton:SetPoint("TOPRIGHT", dialog, "TOPRIGHT", -DIALOG_CLOSE_INSET, -DIALOG_CLOSE_INSET)
+    dialog.CloseButton:SetScript("OnClick", function() dialog:Hide() end)
+
+    dialog.AddText = addDialogText
+    dialog.AddSection = addDialogSection
+    dialog.AddField = addDialogField
+    dialog.AddButton = addDialogButton
+    dialog.Fit = fitDialog
+
+    makeMovable(dialog, spec.name, UI.Strata.dialog, spec.position)
+    return dialog
 end
 
 -- A MagicButtonTemplate bar button: the first takes the bottom-right corner, later ones chain leftwards.
@@ -286,23 +438,35 @@ end
 -- One launcher for the minimap button and the Addon Compartment. LibDBIcon draws the minimap button and
 -- adds the compartment entry through Blizzard's AddonCompartmentFrame, so both share this click handler
 -- and this tooltip. spec: title, icon, db (the saved table LibDBIcon keeps its state in), onClick(button)
--- and tooltip(tooltip), which adds the lines under the title.
+-- and tooltip(tooltip), which adds the lines under the title. Returns { setShown = function(shown) },
+-- which shows or hides only the minimap button and remembers the choice in db.hide.
 function UI.CreateLauncher(spec)
     local LDBIcon = LibStub("LibDBIcon-1.0")
-    if LDBIcon:IsRegistered(spec.title) then return end
+    if not LDBIcon:IsRegistered(spec.title) then
+        local object = LibStub("LibDataBroker-1.1"):NewDataObject(spec.title, {
+            type = "launcher",
+            text = spec.title,
+            icon = spec.icon,
+            OnClick = function(_, button) spec.onClick(button) end,
+            OnTooltipShow = function(tooltip)
+                GameTooltip_SetTitle(tooltip, spec.title)
+                spec.tooltip(tooltip)
+            end,
+        })
+        LDBIcon:Register(spec.title, object, spec.db)
+        LDBIcon:AddButtonToCompartment(spec.title)
+    end
 
-    local object = LibStub("LibDataBroker-1.1"):NewDataObject(spec.title, {
-        type = "launcher",
-        text = spec.title,
-        icon = spec.icon,
-        OnClick = function(_, button) spec.onClick(button) end,
-        OnTooltipShow = function(tooltip)
-            GameTooltip_SetTitle(tooltip, spec.title)
-            spec.tooltip(tooltip)
+    return {
+        setShown = function(shown)
+            spec.db.hide = not shown
+            if shown then
+                LDBIcon:Show(spec.title)
+            else
+                LDBIcon:Hide(spec.title)
+            end
         end,
-    })
-    LDBIcon:Register(spec.title, object, spec.db)
-    LDBIcon:AddButtonToCompartment(spec.title)
+    }
 end
 
 -- Blizzard reads SLASH_<KEY>1..n and SlashCmdList[KEY].
@@ -311,63 +475,4 @@ function UI.RegisterSlash(key, commands, handler)
         _G["SLASH_" .. key .. index] = command
     end
     SlashCmdList[key] = handler
-end
-
-local Options = {}
-Options.__index = Options
-
-local function addSetting(options, key, label, varType, default)
-    local variable = options.prefix .. "_" .. key:upper()
-    return Settings.RegisterAddOnSetting(options.category, variable, key, options.db, varType, label, default)
-end
-
-function Options:Section(title)
-    self.layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(title))
-end
-
-function Options:Checkbox(key, label, tooltip, default)
-    local setting = addSetting(self, key, label, Settings.VarType.Boolean, default)
-    Settings.CreateCheckbox(self.category, setting, tooltip)
-    return setting
-end
-
--- formatter turns the value into the label Blizzard prints right of the slider.
-function Options:Slider(key, label, tooltip, default, range, formatter)
-    local setting = addSetting(self, key, label, Settings.VarType.Number, default)
-    local sliderOptions = Settings.CreateSliderOptions(range.min, range.max, range.step)
-    sliderOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right, formatter)
-    Settings.CreateSlider(self.category, setting, sliderOptions, tooltip)
-    return setting
-end
-
--- choices is a list of { value, label } pairs; the value type follows the default.
-function Options:Dropdown(key, label, tooltip, default, choices)
-    local varType = type(default) == "number" and Settings.VarType.Number or Settings.VarType.String
-    local setting = addSetting(self, key, label, varType, default)
-    local function buildChoices()
-        local container = Settings.CreateControlTextContainer()
-        for _, choice in ipairs(choices) do container:Add(choice[1], choice[2]) end
-        return container:GetData()
-    end
-    Settings.CreateDropdown(self.category, setting, buildChoices, tooltip)
-    return setting
-end
-
-function Options:Button(label, buttonText, onClick, tooltip)
-    self.layout:AddInitializer(CreateSettingsButtonInitializer(label, buttonText, onClick, tooltip, true))
-end
-
-function Options:Register()
-    Settings.RegisterAddOnCategory(self.category)
-end
-
-function Options:Open()
-    Settings.OpenToCategory(self.category:GetID())
-end
-
--- An options page in Blizzard's Settings, vertical layout, bound to a saved-variables table. prefix
--- namespaces the setting variables (e.g. "CHATSCAN"). Add rows in display order, then call Register.
-function UI.CreateOptions(title, db, prefix)
-    local category, layout = Settings.RegisterVerticalLayoutCategory(title)
-    return setmetatable({ category = category, layout = layout, db = db, prefix = prefix }, Options)
 end
