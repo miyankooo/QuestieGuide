@@ -11,6 +11,7 @@ local QuestXP = QuestieLoader:ImportModule("QuestXP")
 local QuestieCorrections = QuestieLoader:ImportModule("QuestieCorrections")
 local QuestieCompat = QuestieLoader:ImportModule("QuestieCompat")
 local QuestieEvent = QuestieLoader:ImportModule("QuestieEvent")
+local QuestieQuestBlacklist = QuestieLoader:ImportModule("QuestieQuestBlacklist")
 
 -- Questie's own completed-quest set, the one its IsDoable and prerequisite checks read. Questie replaces the table on a quest log reset, so it's read fresh every call.
 local function isQuestCompleted(questId)
@@ -48,12 +49,25 @@ local function getZoneName(zoneOrSort)
     return name
 end
 
--- Mirrors the hidden-quest exclusions IsDoable applies before its prereq logic: Questie's curated blacklist, quests the player hid manually, and IsDoable's own autoBlacklist verdicts. Needed wherever quests are classified after IsDoable already said no (missing-prereq rows, chain projection), because those paths never receive IsDoable's verdict on hidden state and would otherwise resurrect blacklisted or inactive-event quests.
+-- Mirrors the quest types Questie's own options hide from its available-quest pins (AvailableQuests._CalculateAndDrawAvailableQuests): repeatable, PvP, dungeon, raid and AQ War Effort quests. The profile is read through its owner, since Questie swaps it on a profile change.
+local function isFilteredByQuestie(questId)
+    local profile = Questie.db.profile
+    if (not profile.showRepeatableQuests and QuestieDB.IsRepeatable(questId))
+        or (not profile.showPvPQuests and QuestieDB.IsPvPQuest(questId))
+        or (not profile.showDungeonQuests and QuestieDB.IsDungeonQuest(questId))
+        or (not profile.showRaidQuests and QuestieDB.IsRaidQuest(questId))
+        or (not profile.showAQWarEffortQuests and QuestieQuestBlacklist.AQWarEffortQuests[questId]) then
+        return true
+    end
+    return false
+end
+
+-- Mirrors the hidden-quest exclusions IsDoable applies before its prereq logic: Questie's curated blacklist, quests the player hid manually, and IsDoable's own autoBlacklist verdicts, plus the quest types Questie's options hide. Needed wherever quests are classified after IsDoable already said no (missing-prereq rows, chain projection), because those paths never receive IsDoable's verdict on hidden state and would otherwise resurrect blacklisted or inactive-event quests.
 local function isQuestHidden(questId)
     if QuestieCorrections.hiddenQuests[questId] or QuestieDB.autoBlacklist[questId] then
         return true
     end
-    return Questie.db.char.hidden[questId] and true or false
+    return Questie.db.char.hidden[questId] and true or isFilteredByQuestie(questId)
 end
 
 -- Questie's effective levels, which resolve scaling quests (questLevel -1) to the player's level; a quest without its own level falls back to its required level.
@@ -519,6 +533,7 @@ ns.getQuestTag = getQuestTag
 ns.getQuestXp = getQuestXp
 ns.getZoneName = getZoneName
 ns.isQuestHidden = isQuestHidden
+ns.isFilteredByQuestie = isFilteredByQuestie
 ns.getEffectiveLevel = getEffectiveLevel
 ns.passesLevelCap = passesLevelCap
 ns.getQuestName = getQuestName

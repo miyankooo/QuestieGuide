@@ -11,6 +11,7 @@
 - The one native quest data call is `C_QuestLog.IsEliteQuest`. Questie has no elite flag.
 - Tags follow Forever's quest log (Camelot `QuestUtilsOverrides`): a `+` after the level for `IsEliteQuest`, and one tag after the name from the tag id with Blizzard globals (`ELITE`, `CALENDAR_TYPE_DUNGEON`, `CALENDAR_TYPE_PVP`, `RAID`). Tags are read at render, never stored in the scan, because Questie's tag cache fills a second after its first miss.
 - Never touch LibQuestieDB, so `## Dependencies` stays `Questie` alone.
+- Quest types Questie's options hide (`showRepeatableQuests`, `showPvPQuests`, `showDungeonQuests`, `showRaidQuests`, `showAQWarEffortQuests`) never list, mirroring `AvailableQuests._CalculateAndDrawAvailableQuests`. `isFilteredByQuestie` in `Data.lua` is the one check, used by the discovery scan and `isQuestHidden`. Quests already in the log stay.
 - Readiness and refresh use only Questie's stable public API, `Questie.API.RegisterOnReady` and `Questie.API.RegisterForQuestUpdates`. No polling, no native quest events.
 - Read Questie data only after ready. Hooks into Questie and the item tooltip post-call install from the ready callback. Post-calls run in registration order, so the guide's lines land under Questie's.
 - `QUESTIE_FIELDS` lists every Questie internal the code reads. Of the query keys it lists only the newer `parentQuest` and `availableUntilCompleted`. It checks per field, because `QuestieLoader:ImportModule` never returns nil.

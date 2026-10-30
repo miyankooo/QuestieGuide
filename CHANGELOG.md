@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Quest types hidden in Questie's options stay hidden in the guide too: repeatable, PvP, dungeon, raid and AQ War Effort quests.
 - One Filter button next to the search box replaces the settings column, so the quest list uses the full window width. It holds availability, quest types, Show Completed, the level range and the sort order, and its reset button shows when any filter is changed.
 - Rows follow Forever's quest log: `[12+]` for elite quests and one tag such as `(Dungeon)` or `(Elite)` after the name. The Elite (Group) filter is now Elite.
 - Rows show a status only for In Questlog, Requires Level N and Missing Pre-Quest.

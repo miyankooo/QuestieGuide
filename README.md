@@ -15,7 +15,7 @@ An unofficial Questie companion that lists every quest you can pick up now, grou
 
 ## Installation
 
-1. Install it with the CurseForge app under WoW Forever, or copy the `QuestieGuide` folder into `World of Warcraft/_classic_beta_/Interface/AddOns/`.
+1. Install it with the CurseForge app under WoW Forever, or copy the `QuestieGuide` folder into `World of Warcraft/_forever_/Interface/AddOns/`.
 2. Restart the game or type `/reload`.
 3. Enable Questie Guide in the AddOns list.
 
@@ -43,6 +43,7 @@ The Filter button next to the search box holds every option. Its reset button ap
 
 - Availability: In Questlog, Starts Here, Starts Elsewhere and Missing Pre-Quest.
 - Quest Types: Dungeons, Elite and Repeatable.
+- Quest types you hide in Questie's options, such as PvP or AQ War Effort quests, stay hidden here too.
 - Show Completed: the completed quests section.
 - Level Range: Questie Level Ranges follows the range set in Questie's options (General, Quest Level Options). Custom Range lists quests from 0 to 10 levels below and above you, 5 and 5 by default.
 - Sort By: Total XP, Total Quest Count, Average Quest Level or Alphabetical by Zone, ascending or descending.

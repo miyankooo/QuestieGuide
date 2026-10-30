@@ -89,13 +89,14 @@ local MAX_CHAIN_DEPTH = 12
 
 -- Every Questie internal the guide reads, checked once when Questie.API reports ready. The check is per field because QuestieLoader:ImportModule hands back an empty table for an unknown module; one gap keeps the window closed and names the field instead of erroring mid-scan.
 local QUESTIE_FIELDS = {
-    { module = "QuestieDB", fields = { "QuestPointers", "QueryQuestSingle", "QueryQuest", "QueryNPCSingle", "QueryObjectSingle", "QueryItemSingle", "GetNPC", "GetQuest", "IsDoable", "IsPreQuestSingleFulfilled", "IsPreQuestGroupFulfilled", "IsRepeatable", "IsComplete", "IsTrivial", "GetQuestTagInfo", "autoBlacklist", "RefreshAfterCorrectionApply" } },
+    { module = "QuestieDB", fields = { "QuestPointers", "QueryQuestSingle", "QueryQuest", "QueryNPCSingle", "QueryObjectSingle", "QueryItemSingle", "GetNPC", "GetQuest", "IsDoable", "IsPreQuestSingleFulfilled", "IsPreQuestGroupFulfilled", "IsRepeatable", "IsPvPQuest", "IsDungeonQuest", "IsRaidQuest", "IsComplete", "IsTrivial", "GetQuestTagInfo", "autoBlacklist", "RefreshAfterCorrectionApply" } },
     { module = "QuestieLib", fields = { "GetEffectiveQuestLevel", "GetColoredQuestName", "GetDifficultyColorPercent" } },
     { module = "QuestiePlayer", fields = { "currentQuestlog", "HasRequiredRace", "HasRequiredClass", "GetCurrentZoneId" } },
     { module = "ZoneDB", fields = { "GetUiMapIdByAreaId", "GetLocalizedDungeonName" } },
     { module = "QuestXP", fields = { "GetQuestLogRewardXP" } },
     { module = "QuestieMap", fields = { "GetFramesForQuest" } },
     { module = "QuestieCorrections", fields = { "hiddenQuests" } },
+    { module = "QuestieQuestBlacklist", fields = { "AQWarEffortQuests" } },
     { module = "QuestieTooltips", fields = { "lookupByKey" } },
     { module = "QuestieFrame", fields = { "CreateIconFrame" } },
     { module = "QuestieCompat", fields = { "GetQuestGreenRange" } },
@@ -104,7 +105,7 @@ local QUESTIE_FIELDS = {
     { module = "QuestieDB.questKeys", fields = { "parentQuest", "availableUntilCompleted" } },
     { module = "Questie", fields = { "Colorize", "db", "LOWLEVEL_ALL", "LOWLEVEL_OFFSET", "LOWLEVEL_RANGE" } },
     { module = "Questie.db.char", fields = { "complete", "hidden" } },
-    { module = "Questie.db.profile", fields = { "lowLevelStyle", "manualLevelOffset", "minLevelFilter", "maxLevelFilter", "enableTooltips", "enableTooltipsQuestLevel", "showQuestsInNpcTooltip" } },
+    { module = "Questie.db.profile", fields = { "lowLevelStyle", "manualLevelOffset", "minLevelFilter", "maxLevelFilter", "showRepeatableQuests", "showPvPQuests", "showDungeonQuests", "showRaidQuests", "showAQWarEffortQuests", "enableTooltips", "enableTooltipsQuestLevel", "showQuestsInNpcTooltip" } },
 }
 
 -- True once Questie.API reported ready and every field checked out; every launcher waits for it. Events.lua sets it, and ns.missingQuestieField to the first Questie field or API the running Questie lacks, which keeps the window closed for the session.

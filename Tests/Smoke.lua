@@ -370,6 +370,9 @@ function QuestieDB.IsDoable(questId)
     return not preIds or QuestieDB:IsPreQuestSingleFulfilled(preIds)
 end
 function QuestieDB.IsRepeatable() return false end
+function QuestieDB.IsPvPQuest() return false end
+function QuestieDB.IsDungeonQuest() return false end
+function QuestieDB.IsRaidQuest() return false end
 function QuestieDB.IsComplete(questId) return questId == 107 and 1 or 0 end
 function QuestieDB.IsTrivial(level) return level < player.level - 5 end
 function QuestieDB.GetQuestTagInfo(questId) return QUESTS[questId].tag end
@@ -396,6 +399,7 @@ function ZoneDB:GetLocalizedDungeonName() return nil end
 module("QuestXP").GetQuestLogRewardXP = function(_, questId) return QUESTS[questId].xp end
 module("QuestieMap").GetFramesForQuest = function() return {} end
 module("QuestieCorrections").hiddenQuests = {}
+module("QuestieQuestBlacklist").AQWarEffortQuests = {}
 module("QuestieTooltips").lookupByKey = {}
 module("QuestieFrame").CreateIconFrame = function() end
 module("QuestieCompat").GetQuestGreenRange = function() return 5 end
@@ -409,7 +413,8 @@ Questie = {
     db = {
         char = { complete = completed, hidden = {} },
         profile = { lowLevelStyle = 0, manualLevelOffset = 5, minLevelFilter = 1, maxLevelFilter = 60,
-            enableTooltips = true, enableTooltipsQuestLevel = true, showQuestsInNpcTooltip = true },
+            enableTooltips = true, enableTooltipsQuestLevel = true, showQuestsInNpcTooltip = true,
+            showRepeatableQuests = true, showPvPQuests = true, showDungeonQuests = true, showRaidQuests = true, showAQWarEffortQuests = false },
     },
     API = {
         RegisterOnReady = function(fn) readyCallbacks[#readyCallbacks + 1] = fn end,
@@ -648,6 +653,21 @@ runScript(QuestieFrame1, "OnClick", "LeftButton")
 flushTimers()
 check("available pin opens the guide at the quest", QuestieGuideFrame:IsShown() and findRow("Kobold Candles") ~= nil
     and findRow("Kobold Candles").selection.shown)
+
+-- Quest types Questie's options hide never list, the way they never get a Questie pin.
+local isDungeonQuest = QuestieDB.IsDungeonQuest
+QuestieDB.IsDungeonQuest = function(questId) return questId == 102 end
+Questie.db.profile.showDungeonQuests = false
+ns.invalidateScan()
+ns.renderList()
+flushTimers()
+check("a quest type Questie hides drops out", findRow("Kobold Candles") == nil)
+Questie.db.profile.showDungeonQuests = true
+ns.invalidateScan()
+ns.renderList()
+flushTimers()
+check("showing the type again lists it", findRow("Kobold Candles") ~= nil)
+QuestieDB.IsDungeonQuest = isDungeonQuest
 
 print = realPrint
 print(string.format("QuestieGuide smoke test: %d passed, %d failed", passes, failures))

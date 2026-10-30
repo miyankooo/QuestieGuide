@@ -9,6 +9,7 @@ local isQuestCompleted = ns.isQuestCompleted
 local getQuestXp = ns.getQuestXp
 local getZoneName = ns.getZoneName
 local isQuestHidden = ns.isQuestHidden
+local isFilteredByQuestie = ns.isFilteredByQuestie
 local getEffectiveLevel = ns.getEffectiveLevel
 local passesLevelCap = ns.passesLevelCap
 local getQuestName = ns.getQuestName
@@ -245,8 +246,9 @@ local function scanQuestsByZone()
         end
     end
 
+    -- Quest types Questie's options hide never list, as they never get a Questie pin; quests already in the log stay above.
     for questId in pairs(QuestieDB.QuestPointers) do
-        if not currentLog[questId] and not isQuestCompleted(questId) then
+        if not currentLog[questId] and not isQuestCompleted(questId) and not isFilteredByQuestie(questId) then
             local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(questId, playerLevel)
 
             -- Out-of-range quests stay in the list, tagged so renderList can hide or fade their rows; only the level cap, the required-level gates, isLevelExcluded (grey quests, or quests outside Questie's own range), and quests without a reachable starter exclude quests entirely from the discovery sections.
