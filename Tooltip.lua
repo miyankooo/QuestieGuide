@@ -402,6 +402,18 @@ local function addQuestLinesToItemTooltip(tooltip, itemId)
     lastTooltipItem[tooltip] = { itemId = itemId, count = tooltip:NumLines() }
 end
 
+-- Forever hides tooltip data as secret values inside instances and in some combat cases, as Questie's own tooltip handler notes; a secret can't be read or used as a key. Both predicates are declared SecretArguments = "AllowedWhenUntainted", so callers pcall this and count a raise as secret.
+local function readableItemId(data)
+    if type(data) ~= "table" or issecrettable(data) then
+        return nil
+    end
+    local itemId = data.id
+    if issecretvalue(itemId) or type(itemId) ~= "number" then
+        return nil
+    end
+    return itemId
+end
+
 -- Hooks the same two tooltips Questie's item handler hooks. Installed from the ready callback, after Questie's Stage 3 registered its own post-call, and post-calls run in registration order, so these lines land under Questie's.
 local function installItemTooltipHooks()
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
@@ -409,15 +421,10 @@ local function installItemTooltipHooks()
             return
         end
 
-        -- Forever hides tooltip data as secret values inside instances and in some combat cases, as Questie's own tooltip handler notes; a secret can't be read or used as a key.
-        if type(data) ~= "table" or issecrettable(data) then
-            return
+        local ok, itemId = pcall(readableItemId, data)
+        if ok and itemId then
+            addQuestLinesToItemTooltip(tooltip, itemId)
         end
-        local itemId = data.id
-        if issecretvalue(itemId) or type(itemId) ~= "number" then
-            return
-        end
-        addQuestLinesToItemTooltip(tooltip, itemId)
     end)
     for _, tooltip in ipairs({ GameTooltip, ItemRefTooltip }) do
         tooltip:HookScript("OnHide", function(self)
