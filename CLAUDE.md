@@ -4,9 +4,9 @@ Lists the quests the player can pick up now, grouped by zone and rated by XP, fr
 
 ## Target
 
-- WoW Forever 1.60.x only, `## Interface: 16001`. No client branches, no `WOW_PROJECT_*`, no compat layer for other clients or Questie versions.
-- `main` holds the Forever version. `1.15.x-backup` keeps the Classic version and stays untouched.
-- Verify every API against Gethe `wow-ui-source` and Ketho `BlizzardInterfaceResources`, branch `forever`, in files the Forever client loads. Verify Questie internals against the Questie 12 source.
+- No compat layer for other Questie versions.
+- `main` holds the Forever version. `1.15.x-backup` keeps the Classic version.
+- Verify Questie internals against the Questie 12 source.
 
 ## Questie
 
@@ -35,15 +35,14 @@ Lists the quests the player can pick up now, grouped by zone and rated by XP, fr
 - The launcher tooltip and the dungeon line read the last scan (`scanCache.byZone`), even a stale one. They never start one. Only the window scans.
 - Left out on purpose: TomTom. The native user waypoint is the only map pin.
 - The UI is built from LibNativeUI-1.0: `UI.Font` roles, `UI.Space`, the 4 px grid and `UI.Print`. Off-grid values are named native geometry.
-- Colours come from `UI.Color` roles or Blizzard colour objects. No literal `|cff` codes. Quest names and levels use Questie's difficulty colour. Item tooltip suffixes use `Questie:Colorize`.
+- Colours come from `UI.Color` roles or Blizzard colour objects. Quest names and levels use Questie's difficulty colour. Item tooltip suffixes use `Questie:Colorize`.
 - The window has a fixed 680x624 size and no resize grip. Current Zone is the primary button, bottom right. Keep the minimap icon, hideable with `/qg minimap`. No options page.
-- Title Case for buttons, headings and menu entries. Sentence case ending with a period for tooltips and chat. No em or en dashes. No chat line at login.
-- No `## AddonCompartmentFunc*` toc lines. LibDBIcon adds the addon menu entry. Both would list the addon twice.
+- No chat line at login.
 
 ## Libraries
 
-- `Libs/` holds tracked, unedited upstream copies. LibDBIcon-1.0, LibDataBroker-1.1 and CallbackHandler-1.0 stay for `UI.CreateLauncher` and load before LibNativeUI-1.0.
-- LibNativeUI-1.0 is a byte-identical copy whose reference copy lives in ChatScan. Its `README.md` is the spec. Never edit it here. `shasum */Libs/LibNativeUI-1.0/LibNativeUI-1.0.lua` must print one hash.
+- LibDBIcon-1.0, LibDataBroker-1.1 and CallbackHandler-1.0 stay for `UI.CreateLauncher` and load before LibNativeUI-1.0.
+- LibNativeUI-1.0's `README.md` is its spec.
 
 ## Files
 
@@ -53,12 +52,9 @@ Lists the quests the player can pick up now, grouped by zone and rated by XP, fr
 
 ## Checks
 
-- Run `luac -p` on every Lua file and `lua Tests/Smoke.lua` after a change. The smoke test loads every toc file against stubs of the client and Questie, then opens the window and covers the launcher status, the dungeon line, a combat click, the Filter menu, a level change, a search and the map pins.
+- Run `lua Tests/Smoke.lua` after a change. The smoke test loads every toc file against stubs of the client and Questie, then opens the window and covers the launcher status, the dungeon line, a combat click, the Filter menu, a level change, a search and the map pins.
 - Lua 5.1 allows 60 upvalues per function. Lua 5.2 and newer allow more, so the smoke test misses an overrun there. `renderList` holds about 35 because its row builders live at file level. Keep new render code there too.
-- Test in game from a clone symlinked into `World of Warcraft/_forever_/Interface/AddOns/`. Turn on `/console scriptErrors 1` first.
 
 ## Release
 
-- The toc version stays 1.0.0 until the first CurseForge release.
-- A `v*` tag runs `.github/workflows/release.yml` with the BigWigs packager. The CurseForge upload also needs the `CF_API_TOKEN` secret and a toc `## X-Curse-Project-ID`. `.pkgmeta` leaves out `CLAUDE.md`, `Tests` and `Tools` and lists `questie` as a required dependency. `CHANGELOG.md` is the release changelog.
-- Licence: MIT (`LICENSE`).
+- `.pkgmeta` also leaves out `CLAUDE.md` and lists `questie` as a required dependency.
