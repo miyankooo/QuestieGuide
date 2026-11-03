@@ -68,7 +68,7 @@ local SUBCAT_LABEL = {
 
 -- Window metrics on the 4px grid beyond Blizzard's PANEL_INSET_* offsets: the quest list fills the template's own inset.
 local LAYOUT = {
-    -- Fixed size (owner decision).
+    -- Fixed size, the window does not resize.
     FRAME_W = 680,
     FRAME_H = 624,
 
