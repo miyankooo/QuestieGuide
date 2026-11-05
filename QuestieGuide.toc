@@ -2,7 +2,7 @@
 ## Title: Questie Guide
 ## Notes: Unofficial Questie companion: lists the quests you can pick up now, grouped by zone and rated by XP.
 ## Author: miyanko
-## Version: 1.0.0
+## Version: @project-version@
 ## Category: Quests
 ## IconTexture: Interface\Icons\INV_Misc_Map02
 ## Dependencies: Questie
