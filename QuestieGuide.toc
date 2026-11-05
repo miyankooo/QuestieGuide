@@ -5,6 +5,7 @@
 ## Version: @project-version@
 ## Category: Quests
 ## IconTexture: Interface\Icons\INV_Misc_Map02
+## X-Curse-Project-ID: 1785995
 ## Dependencies: Questie
 ## SavedVariables: QuestieGuideDB
 
