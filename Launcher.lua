@@ -84,13 +84,6 @@ local function setupLauncher()
     end, fillLauncherTooltip)
 end
 
--- Only the minimap button hides; the addon menu entry stays as the way back.
-local function toggleMinimapButton()
-    local show = QuestieGuideDB.minimap.hide == true
-    setMinimapShown(show)
-    ns.Print(show and "Minimap button shown." or "Minimap button hidden. Type /qg minimap to show it again.")
-end
-
 -- Blizzard reserves the addon link type for addons and hands every click on one to all of them through one EventRegistry event (ItemRefHandlersShared.lua:279-282), so no Blizzard function is hooked. The welcome line links the window; chat zone links add the zone's area id.
 local LINK = LinkTypes.AddOn .. ":" .. addonName
 local ZONE_LINK_PREFIX = LINK .. ":zone:"
@@ -173,7 +166,7 @@ SlashCmdList.QUESTIEGUIDE = function(message)
     elseif command == "intro" then
         replayIntro()
     elseif command == "minimap" then
-        toggleMinimapButton()
+        setMinimapShown(QuestieGuideDB.minimap.hide)
     elseif command == "reset" then
         wipe(QuestieGuideDB.position)
         if ns.mainFrame then
