@@ -88,9 +88,9 @@ local function formatZoneLink(zoneName, areaId)
     return COLOR.LINK:WrapTextInColorCode("|Haddon:questieguide:zone:" .. areaId .. "|h[" .. zoneName .. "]|h")
 end
 
--- Clicking a zone link in the guide's chat lines opens the window at that zone. hooksecurefunc on SetItemRef is the same interception Questie's debug-offer links use. Chat history survives a reload, so an old link can be clicked before Questie is ready.
+-- Clicking a zone link in the guide's chat lines opens the window at that zone. Blizzard's addon link handler passes every addon link to the SetItemRef callback (ItemRefHandlersShared.lua), so no Blizzard function is hooked. Chat history survives a reload, so an old link can be clicked before Questie is ready.
 local ZONE_LINK_PREFIX = "addon:questieguide:zone:"
-hooksecurefunc("SetItemRef", function(link)
+EventRegistry:RegisterCallback("SetItemRef", function(_, link)
     if type(link) ~= "string" or link:sub(1, #ZONE_LINK_PREFIX) ~= ZONE_LINK_PREFIX then
         return
     end

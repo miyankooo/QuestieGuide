@@ -323,7 +323,11 @@ UiMapPoint = { CreateFromCoordinates = function(mapId, x, y) return { mapId = ma
 C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
 C_QuestLog = { IsEliteQuest = function(questId) return questId == 103 end }
 function OpenWorldMap(mapId) mapCalls.opened = mapId end
-function SetItemRef() end
+local itemRefCallbacks = {}
+EventRegistry = {
+    RegisterCallback = function(_, event, func) itemRefCallbacks[#itemRefCallbacks + 1] = event == "SetItemRef" and func or nil end,
+    TriggerEvent = function(_, event, ...) for _, func in ipairs(itemRefCallbacks) do func("owner", ...) end end,
+}
 ChatFrameUtil = { GetActiveWindow = function() return nil end }
 
 -- Questie with a small world: quests, givers and the player's log and completed set.
@@ -657,6 +661,13 @@ check("clearing the search restores the banner", rowTexts()[1]:find("Next: Westf
 -- Close and reopen through the binding.
 QuestieGuide_Toggle()
 check("binding closes the window", not QuestieGuideFrame:IsShown())
+
+-- A zone link in a chat line opens the guide at that zone.
+EventRegistry:TriggerEvent("SetItemRef", "addon:questieguide:zone:40", "[Westfall]", "LeftButton")
+flushTimers()
+check("a chat zone link opens the guide at the zone", QuestieGuideFrame:IsShown()
+    and QuestieGuideDB.zoneCollapsed["Westfall"] == false)
+QuestieGuide_Toggle()
 
 -- Questie map pins: only an available "!" opens the guide.
 QuestieFrame1 = CreateFrame("Button", "QuestieFrame1")

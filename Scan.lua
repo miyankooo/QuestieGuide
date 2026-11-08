@@ -216,14 +216,31 @@ local function scanQuestsByZone()
         return entry
     end
 
+    -- Lists a row in its quest's zone, under Starts Elsewhere when the giver stands in another zone, and under Starts Here in that giver zone too, so the giver zone's totals and follow-up seeds count it. Rows share one table across both zones unless ownRowPerZone asks for a copy, which blocked rows need because the follow-up projection marks unlocksHere per zone.
+    local function addRow(row, zoneOrSort, ownRowPerZone)
+        local questZoneName = getZoneName(zoneOrSort)
+        local _, giverZoneName = getQuestStartInfo(row.id)
+        local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
+        local entry = ensureZone(questZoneName)
+        local bucket = giverElsewhere and entry.pickedUpElsewhere or entry.available
+        bucket[#bucket + 1] = row
+        if giverElsewhere then
+            local giverRow = row
+            if ownRowPerZone then
+                giverRow = {}
+                for key, value in pairs(row) do giverRow[key] = value end
+            end
+            local giverEntry = ensureZone(giverZoneName)
+            giverEntry.available[#giverEntry.available + 1] = giverRow
+        end
+    end
+
     -- Quests already in the player's log obey the level band like everything else: out-of-band log quests hide from the list, XP and routing, surfacing only under an active search. They render inside the pickup buckets with an [In Questlog] label, split by giver zone like every other quest.
     for questId in pairs(currentLog) do
         local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
         local level, requiredLevel, requiredMaxLevel = getEffectiveLevel(questId, playerLevel)
         if zoneOrSort and passesLevelCap(level, requiredLevel) then
-            local questZoneName = getZoneName(zoneOrSort)
-            local _, giverZoneName = getQuestStartInfo(questId)
-            local quest = {
+            addRow({
                 id = questId,
                 level = level,
                 name = getQuestName(questId),
@@ -234,15 +251,7 @@ local function scanQuestsByZone()
                 repeatable = QuestieDB.IsRepeatable(questId),
                 inLog = true,
                 outOfRange = not passesLevelGate(questId, level, requiredLevel, requiredMaxLevel),
-            }
-            local entry = ensureZone(questZoneName)
-            local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
-            local bucket = giverElsewhere and entry.pickedUpElsewhere or entry.available
-            bucket[#bucket + 1] = quest
-            if giverElsewhere then
-                local giverEntry = ensureZone(giverZoneName)
-                giverEntry.available[#giverEntry.available + 1] = quest
-            end
+            }, zoneOrSort)
         end
     end
 
@@ -263,10 +272,7 @@ local function scanQuestsByZone()
                 if QuestieDB.IsDoable(questId) then
                     local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
                     if zoneOrSort then
-                        local questZoneName = getZoneName(zoneOrSort)
-                        local _, giverZoneName = getQuestStartInfo(questId)
-                        local entry = ensureZone(questZoneName)
-                        local quest = {
+                        addRow({
                             id = questId,
                             level = level,
                             name = getQuestName(questId),
@@ -275,19 +281,7 @@ local function scanQuestsByZone()
                             lockedLevel = not canAccept and requiredLevel or nil,
                             repeatable = QuestieDB.IsRepeatable(questId),
                             outOfRange = outOfRange,
-                        }
-
-                        -- Non-log quests where the giver NPC lives in another zone go to "Starts Elsewhere" as a navigation hint: the quest is set here but you'd need to go somewhere else to start it. Quests with a giver in this zone (or with no resolvable giver location) stay under "Starts Here".
-                        local bucket = (giverZoneName and giverZoneName ~= questZoneName)
-                            and entry.pickedUpElsewhere
-                            or entry.available
-                        bucket[#bucket + 1] = quest
-
-                        -- A quest picked up in this zone but set elsewhere also counts for the giver zone: it lists under "Starts Here" there and joins that zone's XP totals and follow-up seeds. The quest table is shared; its fields are zone-independent.
-                        if giverZoneName and giverZoneName ~= questZoneName then
-                            local giverEntry = ensureZone(giverZoneName)
-                            giverEntry.available[#giverEntry.available + 1] = quest
-                        end
+                        }, zoneOrSort)
                     end
                 elseif canAccept and not isQuestHidden(questId) and isBlockedByPrereqs(questId) and matchesPlayerFaction(questId)
                     and not isPermanentlyLocked(questId, NONE_COUNTED, currentLog) then
@@ -300,32 +294,20 @@ local function scanQuestsByZone()
                                 bestChain = chain
                             end
                         end
-                        if bestChain then
-                            -- Blocked quests land greyed in the same pickup buckets as doable ones. Each zone gets its own row table because unlocksHere is marked per zone by the follow-up projection.
-                            local function addBlockedRow(zoneName, bucketKey)
-                                local entry = ensureZone(zoneName)
-                                local bucket = entry[bucketKey]
-                                bucket[#bucket + 1] = {
-                                    id = questId,
-                                    level = level,
-                                    name = getQuestName(questId),
-                                    xp = getQuestXp(questId),
-                                    countsXp = countsTowardXp(level, playerLevel),
-                                    repeatable = QuestieDB.IsRepeatable(questId),
-                                    chain = bestChain,
-                                    blocked = true,
-                                    outOfRange = outOfRange,
-                                }
-                            end
-                            local questZoneName = getZoneName(zoneOrSort)
-                            local _, giverZoneName = getQuestStartInfo(questId)
-                            local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
-                            addBlockedRow(questZoneName, giverElsewhere and "pickedUpElsewhere" or "available")
 
-                            -- A blocked quest starting at a giver in another zone also lists there, mirroring the doable path above.
-                            if giverElsewhere then
-                                addBlockedRow(giverZoneName, "available")
-                            end
+                        -- Blocked quests land greyed in the same pickup buckets as doable ones.
+                        if bestChain then
+                            addRow({
+                                id = questId,
+                                level = level,
+                                name = getQuestName(questId),
+                                xp = getQuestXp(questId),
+                                countsXp = countsTowardXp(level, playerLevel),
+                                repeatable = QuestieDB.IsRepeatable(questId),
+                                chain = bestChain,
+                                blocked = true,
+                                outOfRange = outOfRange,
+                            }, zoneOrSort, true)
                         end
                     end
                 end
