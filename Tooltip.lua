@@ -16,10 +16,10 @@ local meetsRequiredLevel = ns.meetsRequiredLevel
 local exceedsRequiredMaxLevel = ns.exceedsRequiredMaxLevel
 local matchesPlayerFaction = ns.matchesPlayerFaction
 local isBlockedByPrereqs = ns.isBlockedByPrereqs
+local getQuestLog = ns.getQuestLog
 
 local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
 local QuestieLib = QuestieLoader:ImportModule("QuestieLib")
-local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 local QuestieTooltips = QuestieLoader:ImportModule("QuestieTooltips")
 
 -- The tag text Forever's quest log prints after a quest name, per tag id (Camelot QuestUtilsOverrides.GetQuestTagText).
@@ -135,7 +135,7 @@ end
 
 -- Status badge for prior quests in the chain tooltip. `[In Questlog]` if the player has the quest in their log, `[Available]` if it can be picked up right now, `[Requires Level N]` if only its level requirement stands in the way (IsDoable ignores it), otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
 local function getStatusBadge(questId)
-    if QuestiePlayer.currentQuestlog[questId] then
+    if getQuestLog()[questId] then
         return COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
     end
     if QuestieDB.IsDoable(questId) then
@@ -380,7 +380,7 @@ local function addQuestLinesToItemTooltip(tooltip, itemId)
     if last and last.itemId == itemId and tooltip:NumLines() >= last.count then
         return
     end
-    local currentLog = QuestiePlayer.currentQuestlog
+    local currentLog = getQuestLog()
     local playerLevel = UnitLevel("player")
     local questIds = {}
     local seen = {}

@@ -120,7 +120,8 @@ local MAX_CHAIN_DEPTH = 12
 local QUESTIE_FIELDS = {
     { module = "QuestieDB", fields = { "QuestPointers", "QueryQuestSingle", "QueryQuest", "QueryNPCSingle", "QueryObjectSingle", "QueryItemSingle", "GetNPC", "GetQuest", "IsDoable", "IsPreQuestSingleFulfilled", "IsPreQuestGroupFulfilled", "IsRepeatable", "IsPvPQuest", "IsDungeonQuest", "IsRaidQuest", "IsComplete", "IsTrivial", "GetQuestTagInfo", "autoBlacklist", "RefreshAfterCorrectionApply" } },
     { module = "QuestieLib", fields = { "GetEffectiveQuestLevel", "GetColoredQuestName", "GetDifficultyColorPercent" } },
-    { module = "QuestiePlayer", fields = { "currentQuestlog", "HasRequiredRace", "HasRequiredClass", "GetCurrentZoneId" } },
+    { module = "QuestiePlayer", fields = { "HasRequiredRace", "HasRequiredClass", "GetCurrentZoneId" } },
+    { module = "ActiveQuests", fields = { "GetAll" } },
     { module = "ZoneDB", fields = { "GetUiMapIdByAreaId", "GetLocalizedDungeonName" } },
     { module = "QuestXP", fields = { "GetQuestLogRewardXP" } },
     { module = "QuestieMap", fields = { "GetFramesForQuest" } },
@@ -168,7 +169,7 @@ end
 -- Why the window can't open yet, printed by every launcher.
 local function describeQuestieState()
     if ns.missingQuestieField then
-        return "This Questie version has no " .. ns.missingQuestieField .. ", which the quest list needs. Update Questie and QuestieDB."
+        return "This Questie version has no " .. ns.missingQuestieField .. ", which the quest list needs. Update Questie, QuestieDB and Questie Guide."
     end
     return "Questie is still loading. Try again in a moment, or check Questie for errors if this stays."
 end

@@ -23,9 +23,9 @@ local scheduleItemQuestIndexBuild = ns.scheduleItemQuestIndexBuild
 local installMapIconHooks = ns.installMapIconHooks
 local formatZoneLink = ns.formatZoneLink
 local setupLauncher = ns.setupLauncher
+local getQuestLog = ns.getQuestLog
 
 local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
-local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 local AvailableQuests = QuestieLoader:ImportModule("AvailableQuests")
 
 local refreshTimer
@@ -47,7 +47,7 @@ local function announceNewQuests(newLevel)
     if not ns.questieReady then
         return
     end
-    local currentLog = QuestiePlayer.currentQuestlog
+    local currentLog = getQuestLog()
     local counts, zones, zoneAreaIds = {}, {}, {}
     local total = 0
     for questId in pairs(QuestieDB.QuestPointers) do

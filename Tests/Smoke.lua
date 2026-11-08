@@ -425,7 +425,9 @@ local NPCS = {
     [1002] = { name = "William Pestle", friendlyToFaction = "A", spawns = { [12] = { { 43.3, 65.7 } } } },
     [1003] = { name = "Gryan Stoutmantle", friendlyToFaction = "A", spawns = { [40] = { { 56.3, 47.5 } } } },
 }
-local questLog = { [106] = true, [107] = true }
+-- The player's log as Questie 12.6's ActiveQuests holds it: questId -> acceptance. Reset replaces the table, so a
+-- check that swaps questLog for a new table models a rebuilt log.
+local questLog = { [106] = { questId = 106 }, [107] = { questId = 107 } }
 local completed = {}
 
 local modules = {}
@@ -485,10 +487,12 @@ function QuestieLib:GetColoredQuestName(questId) return QUESTS[questId].name end
 function QuestieLib:GetDifficultyColorPercent() return 1, 1, 0 end
 
 local QuestiePlayer = module("QuestiePlayer")
-QuestiePlayer.currentQuestlog = questLog
 function QuestiePlayer.HasRequiredRace() return true end
 function QuestiePlayer.HasRequiredClass() return true end
 function QuestiePlayer:GetCurrentZoneId() return 12 end
+
+local ActiveQuests = module("ActiveQuests")
+function ActiveQuests.GetAll() return questLog end
 
 local ZoneDB = module("ZoneDB")
 function ZoneDB:GetUiMapIdByAreaId(areaId) return areaId + 1400 end
@@ -636,6 +640,20 @@ check("slash command registers", SLASH_QUESTIEGUIDE1 == "/questieguide" and SLAS
 flushTimers()
 chat = {}
 
+-- The required-API check passes on Questie 12.6's shape and names what an older or newer Questie lacks.
+check("Questie 12.6 has every internal the guide reads", ns.questieReady and ns.findMissingField() == nil, ns.findMissingField())
+QuestiePlayer.currentQuestlog = questLog
+local getAll = ActiveQuests.GetAll
+ActiveQuests.GetAll = nil
+check("a Questie without ActiveQuests is named, even with the old currentQuestlog",
+    ns.findMissingField() == "ActiveQuests.GetAll", ns.findMissingField())
+ActiveQuests.GetAll = getAll
+QuestiePlayer.currentQuestlog = nil
+ns.missingQuestieField = "ActiveQuests.GetAll"
+check("the missing internal's line names it and what to update", ns.describeQuestieState()
+    == "This Questie version has no ActiveQuests.GetAll, which the quest list needs. Update Questie, QuestieDB and Questie Guide.")
+ns.missingQuestieField = nil
+
 -- Open: the loading line first, then the list on the next tick.
 SlashCmdList.QUESTIEGUIDE("")
 check("window opens", QuestieGuideFrame and QuestieGuideFrame:IsShown())
@@ -720,12 +738,15 @@ LibStub("LibDataBroker-1.1")["Questie Guide"].OnTooltipShow(GameTooltip)
 check("launcher tooltip names the Next zone", hasLine(GameTooltip.lines, "Next: Elwynn Forest: 2600 XP"))
 check("launcher counts only quests to pick up", hasLine(GameTooltip.lines, "Elwynn Forest: 3 |4quest:quests; to pick up"))
 
--- A stale scan still feeds the launcher, minus quests accepted since.
-questLog[102] = true
+-- A stale scan still feeds the launcher, minus quests accepted since, read from the log Questie rebuilt into a
+-- new table.
+local logBefore = questLog
+questLog = { [102] = { questId = 102 } }
+for questId, acceptance in pairs(logBefore) do questLog[questId] = acceptance end
 ns.invalidateScan()
 LibStub("LibDataBroker-1.1")["Questie Guide"].OnTooltipShow(GameTooltip)
 check("stale scan skips a quest accepted since", hasLine(GameTooltip.lines, "Elwynn Forest: 2 |4quest:quests; to pick up"))
-questLog[102] = nil
+questLog = logBefore
 
 -- Entering an instance: one line per visit, counting neither the blocked nor the in-log row.
 chat = {}

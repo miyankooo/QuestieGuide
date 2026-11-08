@@ -27,8 +27,7 @@ local openMapForQuest = ns.openMapForQuest
 local openQuestInLog = ns.openQuestInLog
 local Snap = ns.Snap
 local HookTooltip = ns.HookTooltip
-
-local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
+local getQuestLog = ns.getQuestLog
 
 -- Blizzard's quest log header grey; headers whiten to the body colour while hovered.
 local HEADER_COLOR = QuestDifficultyColors.header
@@ -247,7 +246,7 @@ end
 
 -- Puts the link into the open chat box, or opens chat with it. A quest in the log gets the native link every reader can click, as Questie itself prefers.
 local function linkQuestInChat(quest)
-    local link = QuestiePlayer.currentQuestlog[quest.id] and GetQuestLink(quest.id) or buildQuestLink(quest)
+    local link = getQuestLog()[quest.id] and GetQuestLink(quest.id) or buildQuestLink(quest)
     local editBox = ChatFrameUtil.GetActiveWindow()
     if editBox and editBox:IsVisible() then
         ChatFrameUtil.InsertLink(link)

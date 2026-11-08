@@ -3,9 +3,9 @@ local _, ns = ...
 
 local getQuestName = ns.getQuestName
 local resolveStartInfo = ns.resolveStartInfo
+local getQuestLog = ns.getQuestLog
 
 local ZoneDB = QuestieLoader:ImportModule("ZoneDB")
-local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 local QuestieMap = QuestieLoader:ImportModule("QuestieMap")
 local QuestieFrame = QuestieLoader:ImportModule("QuestieFrame")
 
@@ -113,7 +113,7 @@ end
 
 -- Opens the quest map log at the quest, which selects and scrolls on its own. The details view needs a quest that is in the log, so Questie's quest log gates the call.
 local function openQuestInLog(questId)
-    if QuestiePlayer.currentQuestlog[questId] and not isBlockedInCombat() then
+    if getQuestLog()[questId] and not isBlockedInCombat() then
         QuestMapFrame_OpenToQuestDetails(questId)
     end
 end

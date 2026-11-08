@@ -27,9 +27,9 @@ local matchesPlayerFaction = ns.matchesPlayerFaction
 local isBlockedByPrereqs = ns.isBlockedByPrereqs
 local findMissingChains = ns.findMissingChains
 local isPermanentlyLocked = ns.isPermanentlyLocked
+local getQuestLog = ns.getQuestLog
 
 local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
-local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 
 -- Reverse prereq index: preQuestId -> { followerQuestId, ... }. Built once per session because the quest DB is static; only completion state changes at runtime. Negative preQuestGroup ids are indexed by absolute value so those followers stay discoverable through that edge.
 local function ensureFollowerIndex()
@@ -178,7 +178,7 @@ end
 -- Buckets every quest into its zone. Expensive; caller should cache the result.
 local function scanQuestsByZone()
     local playerLevel = UnitLevel("player")
-    local currentLog = QuestiePlayer.currentQuestlog
+    local currentLog = getQuestLog()
     local requiredCap = getRequiredLevelCap(playerLevel)
 
     -- The active level range for one quest: the custom band, or Questie's range plus its two exceptions. Failing quests are flagged outOfRange; only in-log rows still render then, and none add XP.
@@ -463,7 +463,7 @@ local function collectCompletedByZone()
     local playerLevel = UnitLevel("player")
     local byZone = {}
     local zoneOrder = {}
-    for questId in pairs(QuestiePlayer.currentQuestlog) do
+    for questId in pairs(getQuestLog()) do
         if QuestieDB.IsComplete(questId) == 1 then
             local npcName, zoneName, spawn, areaId = getQuestFinishInfo(questId)
             local bucketName = zoneName or OTHER_ZONE_NAME
@@ -522,7 +522,7 @@ end
 
 -- Quests in a zone the player could accept now. It reads a scan that may predate the last accept or turn-in, so it also skips quests that have since entered the log or been completed; a quest abandoned since stays uncounted until the next scan.
 local function countPickable(entry)
-    local currentLog = QuestiePlayer.currentQuestlog
+    local currentLog = getQuestLog()
     local counted, count = {}, 0
     for _, subKey in ipairs(SUBCAT_ORDER) do
         for _, q in ipairs(entry[subKey]) do

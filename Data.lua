@@ -7,11 +7,17 @@ local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
 local QuestieLib = QuestieLoader:ImportModule("QuestieLib")
 local ZoneDB = QuestieLoader:ImportModule("ZoneDB")
 local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
+local ActiveQuests = QuestieLoader:ImportModule("ActiveQuests")
 local QuestXP = QuestieLoader:ImportModule("QuestXP")
 local QuestieCorrections = QuestieLoader:ImportModule("QuestieCorrections")
 local QuestieCompat = QuestieLoader:ImportModule("QuestieCompat")
 local QuestieEvent = QuestieLoader:ImportModule("QuestieEvent")
 local QuestieQuestBlacklist = QuestieLoader:ImportModule("QuestieQuestBlacklist")
+
+-- The quests in the player's log, questId -> Questie's acceptance, the set Questie's own available-quest pass reads (ActiveQuests.GetAll in AvailableQuests._CalculateAndDrawAvailableQuests). Questie 12.6 replaced QuestiePlayer.currentQuestlog with it. Read-only: callers only test keys and iterate. ActiveQuests.Reset replaces the table, so every pass fetches it again.
+local function getQuestLog()
+    return ActiveQuests.GetAll()
+end
 
 -- Questie's own completed-quest set, the one its IsDoable and prerequisite checks read. Questie replaces the table on a quest log reset, so it's read fresh every call.
 local function isQuestCompleted(questId)
@@ -337,7 +343,7 @@ local function isQuestieRangeException(questId, requiredLevel, requiredMaxLevel,
         end
     end
     local parentId = QuestieDB.QueryQuestSingle(questId, "parentQuest")
-    return parentId ~= nil and QuestiePlayer.currentQuestlog[parentId] ~= nil
+    return parentId ~= nil and getQuestLog()[parentId] ~= nil
 end
 
 -- QuestieDB.IsDoable does not enforce requiredLevel, so we gate it explicitly.
@@ -528,6 +534,7 @@ end
 
 ns.OTHER_ZONE_NAME = OTHER_ZONE_NAME
 ns.sessionCache = sessionCache
+ns.getQuestLog = getQuestLog
 ns.isQuestCompleted = isQuestCompleted
 ns.getQuestTag = getQuestTag
 ns.getQuestXp = getQuestXp
