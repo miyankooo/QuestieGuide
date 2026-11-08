@@ -197,14 +197,24 @@ function Region:CreateTexture() return newRegion("Texture", nil, self) end
 
 -- Blizzard template setup, reduced to the keys and calls the library and the addon use.
 local templates = {}
--- The rock tile and its title streaks, which UI.CreateWindow keeps, and the inset's marble tile, which it hides.
+-- The rock tile and its title streaks, which UI.CreateWindow keeps, and the inset's marble tile and border,
+-- which it hides for the brown panel.
 templates.ButtonFrameTemplate = function(f)
     f.Bg = newRegion("Texture", nil, f)
     f.TopTileStreaks = newRegion("Texture", nil, f)
     f.Inset = newRegion("Frame", nil, f)
     f.Inset.Bg = newRegion("Texture", nil, f.Inset)
+    f.Inset.NineSlice = newRegion("Frame", nil, f.Inset)
     f.SetTitle = function(self, title) self.title = title end
     f.SetPortraitToAsset = function(self, icon) self.portrait = icon end
+end
+-- The wardrobe's brown panel: an inset with the collections tile and four corner ornaments (SharedCollectionTemplates.xml).
+templates.CollectionsBackgroundTemplate = function(f)
+    f.Bg = newRegion("Texture", nil, f)
+    f.NineSlice = newRegion("Frame", nil, f)
+    for _, corner in ipairs({ "BGCornerTopLeft", "BGCornerTopRight", "BGCornerBottomLeft", "BGCornerBottomRight" }) do
+        f[corner] = newRegion("Texture", nil, f)
+    end
 end
 templates.UIPanelButtonTemplate = function(f) f:SetSize(40, 22) end
 templates.MagicButtonTemplate = function(f) f:SetSize(80, 22) end
@@ -531,6 +541,8 @@ flushTimers()
 SlashCmdList.QUESTIEGUIDE("")
 check("window opens", QuestieGuideFrame and QuestieGuideFrame:IsShown())
 check("window is the fixed 680 x 624", QuestieGuideFrame.width == 680 and QuestieGuideFrame.height == 624)
+check("the list sits on the brown panel, its corners hidden", QuestieGuideFrame.Background.BGCornerTopLeft ~= nil
+    and not QuestieGuideFrame.Background.BGCornerTopLeft.shown and not QuestieGuideFrame.Inset.NineSlice.shown)
 check("loading line paints first", rowTexts()[1] == "Scanning quest database\226\128\166", rowTexts()[1])
 flushTimers()
 local opened = rowTexts()
