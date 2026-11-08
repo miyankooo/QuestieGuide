@@ -868,9 +868,11 @@ check("an unknown word prints the hint and opens nothing", #chat == 1 and not Qu
     and plain(chat[1]) == "[Questie Guide]: Unknown command. Type /qg help for the list.", chat[1])
 chat = {}
 SlashCmdList.QUESTIEGUIDE("minimap")
-check("minimap hides the button without a chat line", QuestieGuideDB.minimap.hide == true and #chat == 0, chat[1])
+check("minimap hides the button and prints the way back", QuestieGuideDB.minimap.hide == true and #chat == 1
+    and plain(chat[1]) == "[Questie Guide]: Minimap button hidden. Type /qg minimap to show it again.", chat[1])
+chat = {}
 SlashCmdList.QUESTIEGUIDE("minimap")
-check("minimap again shows it, also silently", QuestieGuideDB.minimap.hide == false and #chat == 0, chat[1])
+check("minimap again shows it without a chat line", QuestieGuideDB.minimap.hide == false and #chat == 0, chat[1])
 chat = {}
 QuestieGuideDB.position.point = "TOPLEFT"
 SlashCmdList.QUESTIEGUIDE("reset")

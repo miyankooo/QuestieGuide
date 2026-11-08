@@ -166,7 +166,9 @@ SlashCmdList.QUESTIEGUIDE = function(message)
     elseif command == "intro" then
         replayIntro()
     elseif command == "minimap" then
-        setMinimapShown(QuestieGuideDB.minimap.hide)
+        local show = QuestieGuideDB.minimap.hide
+        setMinimapShown(show)
+        if not show then ns.Print("Minimap button hidden. Type /qg minimap to show it again.") end
     elseif command == "reset" then
         wipe(QuestieGuideDB.position)
         if ns.mainFrame then
