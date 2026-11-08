@@ -114,6 +114,14 @@ local function printWelcome()
         .. " window or type /qg to see the best zone for your next trip.")
 end
 
+-- /qg intro: the welcome line now, and the help tip again, at once while the window is open, else when it next opens.
+local function replayIntro()
+    QuestieGuideDB.tipSeen = nil
+    printWelcome()
+    local frame = ns.mainFrame
+    if frame and frame.filterDropdown:IsVisible() then frame.showTip() end
+end
+
 EventUtil.ContinueOnPlayerLogin(function()
     if ns.firstRun then printWelcome() end
 end)
@@ -156,11 +164,18 @@ function QuestieGuide_Toggle()
     toggleIfReady()
 end
 
--- /qg toggles the window even when the minimap button is hidden; /qg minimap shows or hides that button; /qg reset rescues a window dragged off-screen. The window holds QuestieGuideDB.position itself, so reset empties it in place.
+-- One long command and one short alias. The bare command opens the window even when the minimap button is hidden; help, intro and minimap are the shared words, reset rescues a window dragged off-screen, and any other word prints the hint. The window holds QuestieGuideDB.position itself, so reset empties it in place.
 SLASH_QUESTIEGUIDE1, SLASH_QUESTIEGUIDE2 = "/questieguide", "/qg"
 SlashCmdList.QUESTIEGUIDE = function(message)
     local command = strtrim(message or ""):lower()
-    if command == "minimap" then
+    if command == "" then
+        toggleIfReady()
+    elseif command == "help" or command == "?" then
+        ns.Print("Type /qg to open the window, /qg intro to see the welcome line and the tip again, "
+            .. "/qg minimap to show or hide the minimap button, /qg reset to move the window back to the center, or /qg help for this list.")
+    elseif command == "intro" then
+        replayIntro()
+    elseif command == "minimap" then
         toggleMinimapButton()
     elseif command == "reset" then
         wipe(QuestieGuideDB.position)
@@ -170,7 +185,7 @@ SlashCmdList.QUESTIEGUIDE = function(message)
         end
         ns.Print("Window position reset.")
     else
-        toggleIfReady()
+        ns.Print("Unknown command. Type /qg help for the list.")
     end
 end
 

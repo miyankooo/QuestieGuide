@@ -283,8 +283,9 @@ local function buildFilterDropdown(frame)
     filter:SetDefaultCallback(resetFilters)
     filter:SetIsDefaultCallback(filtersAreDefault)
     filter:SetupMenu(setupFilterMenu)
-    local _, retireTip = AttachTip(filter, TIP_TEXT, HelpTip.Point.BottomEdgeCenter)
+    local showTip, retireTip = AttachTip(filter, TIP_TEXT, HelpTip.Point.BottomEdgeCenter)
     filter:RegisterCallback(DropdownButtonMixin.Event.OnMenuOpen, retireTip)
+    frame.showTip = showTip
     frame.filterDropdown = filter
 end
 

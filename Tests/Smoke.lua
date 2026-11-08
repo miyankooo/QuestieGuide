@@ -807,6 +807,44 @@ flushTimers()
 check("the welcome link opens the window", QuestieGuideFrame:IsShown() and #chat == 0)
 QuestieGuide_Toggle()
 
+-- Slash commands: help, intro, an unknown word, the minimap button and reset.
+chat = {}
+SlashCmdList.QUESTIEGUIDE("help")
+SlashCmdList.QUESTIEGUIDE("?")
+check("help and ? print one line naming every command", #chat == 2 and chat[1] == chat[2]
+    and plain(chat[1]) == "[Questie Guide]: Type /qg to open the window, /qg intro to see the welcome line and the tip again, "
+        .. "/qg minimap to show or hide the minimap button, /qg reset to move the window back to the center, or /qg help for this list.", chat[1])
+chat = {}
+SlashCmdList.QUESTIEGUIDE("intro")
+check("intro prints the welcome line and clears the tip flag", #chat == 1 and QuestieGuideDB.tipSeen == nil
+    and plain(chat[1]):find("Open the |Haddon:QuestieGuide|h[Questie Guide]|h window or type /qg", 1, true) ~= nil, chat[1])
+check("intro with the window closed leaves the tip for its next open", not tip.shown)
+QuestieGuide_Toggle()
+flushTimers()
+check("after intro the tip shows with the window", tip.shown and tip.info ~= nil)
+QuestieGuide_Toggle()
+check("after intro, hiding the window does not mark the tip seen", not tip.shown and QuestieGuideDB.tipSeen == nil)
+QuestieGuide_Toggle()
+flushTimers()
+tip:Acknowledge()
+SlashCmdList.QUESTIEGUIDE("intro")
+check("intro with the window open shows the tip at once", tip.shown and QuestieGuideDB.tipSeen == nil)
+QuestieGuide_Toggle()
+check("and hiding it then does not mark it seen", not tip.shown and QuestieGuideDB.tipSeen == nil)
+chat = {}
+SlashCmdList.QUESTIEGUIDE("bogus")
+check("an unknown word prints the hint and opens nothing", #chat == 1 and not QuestieGuideFrame:IsShown()
+    and plain(chat[1]) == "[Questie Guide]: Unknown command. Type /qg help for the list.", chat[1])
+chat = {}
+SlashCmdList.QUESTIEGUIDE("minimap")
+SlashCmdList.QUESTIEGUIDE("minimap")
+check("minimap hides the button, then shows it", #chat == 2 and QuestieGuideDB.minimap.hide == false
+    and plain(chat[1]):find("Minimap button hidden.", 1, true) ~= nil and plain(chat[2]):find("Minimap button shown.", 1, true) ~= nil)
+chat = {}
+QuestieGuideDB.position.point = "TOPLEFT"
+SlashCmdList.QUESTIEGUIDE("reset")
+check("reset empties the saved position", QuestieGuideDB.position.point == nil and plain(chat[1]):find("Window position reset.", 1, true) ~= nil)
+
 -- Questie map pins: only an available "!" opens the guide.
 QuestieFrame1 = CreateFrame("Button", "QuestieFrame1")
 QuestieFrame1.miniMapIcon = true
