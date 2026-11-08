@@ -21,6 +21,19 @@ function ns.Snap(length)
     return math.ceil(length / 4) * 4
 end
 
+-- A GameTooltip owned by the hovered frame, filled with Blizzard's GameTooltip_* line helpers, for a frame whose
+-- template already sets OnEnter and OnLeave, such as UIPanelButtonTemplate
+-- (Mainline/SharedUIPanelTemplates.xml:316-318), InputBoxInstructionsTemplate or a filter dropdown: hooked, so the
+-- template keeps its own handlers.
+function ns.HookTooltip(frame, fill, anchor)
+    frame:HookScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, anchor or "ANCHOR_RIGHT")
+        fill(GameTooltip, self)
+        GameTooltip:Show()
+    end)
+    frame:HookScript("OnLeave", GameTooltip_Hide)
+end
+
 local DEFAULTS = {
     sortMode = "xp",
     sortDir = "desc",

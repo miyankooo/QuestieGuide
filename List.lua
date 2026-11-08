@@ -26,6 +26,7 @@ local showTurnInTooltip = ns.showTurnInTooltip
 local openMapForQuest = ns.openMapForQuest
 local openQuestInLog = ns.openQuestInLog
 local Snap = ns.Snap
+local HookTooltip = ns.HookTooltip
 
 local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 
@@ -49,6 +50,12 @@ local LIST = {
 -- The list sits one padding inside the inset and leaves the scroll gutter free on its right: SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT 6, the 8 px MinimalScrollBar and a gap, rounded up to the grid.
 local PADDING = 16
 local SCROLL_GUTTER = 24
+
+-- What each bucket header holds, for its tooltip.
+local SUBCAT_HELP = {
+    available = "Quests whose giver stands in this zone.",
+    pickedUpElsewhere = "Quests set in this zone whose giver stands in another zone.",
+}
 
 -- Text in a font role: GameFontNormal (heading, gold), GameFontHighlight (body, white), GameFontDisable (muted,
 -- grey), GameFontNormalLarge (title, 16 px, a dialog's subject line only).
@@ -179,8 +186,8 @@ local function acquireRow(index)
     return row
 end
 
--- Dresses a pooled row as a quest log header: plus/minus toggle, indented text, and header grey that whitens while hovered.
-local function styleHeaderRow(row, collapsed)
+-- Dresses a pooled row as a quest log header: plus/minus toggle, indented text, and header grey that whitens while hovered. A header with a title and help line shows them as its tooltip.
+local function styleHeaderRow(row, collapsed, title, help)
     row.toggle:SetTexture(collapsed and TOGGLE_ART.PLUS or TOGGLE_ART.MINUS)
     row.toggle:Show()
     row.toggleHighlight:SetTexture(TOGGLE_ART.HIGHLIGHT)
@@ -188,9 +195,16 @@ local function styleHeaderRow(row, collapsed)
     row.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
     row:SetScript("OnEnter", function(self)
         self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
+        if title then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip_SetTitle(GameTooltip, title)
+            GameTooltip_AddNormalLine(GameTooltip, help)
+            GameTooltip:Show()
+        end
     end)
     row:SetScript("OnLeave", function(self)
         self.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
+        GameTooltip_Hide()
     end)
 end
 
@@ -338,9 +352,17 @@ end
 -- Action buttons under the empty-state message, one per label because a button fits its label once, when it is created. Every render hides them.
 local emptyButtons = {}
 
-local function getEmptyButton(label)
-    emptyButtons[label] = emptyButtons[label] or CreateButton(scrollChild, label)
-    return emptyButtons[label]
+local function getEmptyButton(label, help)
+    local button = emptyButtons[label]
+    if not button then
+        button = CreateButton(scrollChild, label)
+        HookTooltip(button, function(tooltip)
+            GameTooltip_SetTitle(tooltip, label)
+            GameTooltip_AddNormalLine(tooltip, help)
+        end)
+        emptyButtons[label] = button
+    end
+    return button
 end
 
 local function hideEmptyButtons()
@@ -562,7 +584,7 @@ local function renderCompletedSection()
     local collapsed = zoneCollapsedDB[COMPLETED_KEY] == true
     local header = acquireRow(index)
     placeRow(header, 0)
-    styleHeaderRow(header, collapsed)
+    styleHeaderRow(header, collapsed, COMPLETED_LABEL, "Quests ready to turn in, grouped by the zone of their turn-in NPC.")
     header.text:SetText(COMPLETED_LABEL .. " (" .. total .. ")")
 
     -- Section toggle only flips the section itself; turn-in zone state is independent, matching the zone headers.
@@ -584,7 +606,7 @@ local function renderCompletedSection()
 
                 local sub = acquireRow(index)
                 placeRow(sub, LIST.INDENT_STEP)
-                styleHeaderRow(sub, groupHidden)
+                styleHeaderRow(sub, groupHidden, zoneName, "Completed quests to turn in here.")
                 sub.text:SetText(string.format("%s (%d)", zoneName, #list))
                 sub:SetScript("OnClick", function()
                     groupCollapsedDB[groupKey] = not groupHidden
@@ -633,9 +655,10 @@ local function renderEmptyState(filters)
     index = index + 1
 
     local below, above = QuestieGuideDB.levelBelow, QuestieGuideDB.levelAbove
-    local actionText, action
+    local actionText, help, action
     if not anyBucket then
         actionText = "Show Both"
+        help = "Turns Starts Here and Starts Elsewhere back on."
         action = function()
             filters.available = true
             filters.pickedUpElsewhere = true
@@ -644,12 +667,14 @@ local function renderEmptyState(filters)
         end
     elseif searchText ~= "" then
         actionText = "Clear Search"
+        help = "Empties the search box, so every quest lists again."
         action = function()
             ns.mainFrame.searchBox:SetText("")
         end
     elseif not QuestieGuideDB.useQuestieLevelRange
         and (below < RANGE_LIMIT.MAX or above < RANGE_LIMIT.MAX) then
         actionText = "Widen Level Range"
+        help = "Adds two levels below and two above your level to the range."
         action = function()
             QuestieGuideDB.levelBelow = clampRange(below + 2)
             QuestieGuideDB.levelAbove = clampRange(above + 2)
@@ -659,7 +684,7 @@ local function renderEmptyState(filters)
         end
     end
     if actionText then
-        local button = getEmptyButton(actionText)
+        local button = getEmptyButton(actionText, help)
         button:ClearAllPoints()
         button:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -(y + LIST.GROUP_GAP))
         button:SetScript("OnClick", action)
@@ -809,7 +834,7 @@ function renderList()
 
                             local sub = acquireRow(index)
                             placeRow(sub, LIST.INDENT_STEP)
-                            styleHeaderRow(sub, groupHidden)
+                            styleHeaderRow(sub, groupHidden, SUBCAT_LABEL[subKey], SUBCAT_HELP[subKey])
                             sub.text:SetText(string.format("%s (%d)",
                                 SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0))
                             sub:SetScript("OnClick", function()
@@ -895,6 +920,10 @@ local function buildSearchBox(frame)
     local searchBox = CreateSearchBox(frame, LAYOUT.SEARCH_W, "QuestieGuideSearchBox")
     searchBox:SetPoint("RIGHT", frame, "TOPRIGHT", -LAYOUT.SEARCH_RIGHT, (PANEL_INSET_TOP_OFFSET + PANEL_INSET_ATTIC_OFFSET) / 2)
     searchBox.Instructions:SetText("Quest, zone or NPC name")
+    HookTooltip(searchBox, function(tooltip)
+        GameTooltip_SetTitle(tooltip, SEARCH)
+        GameTooltip_AddNormalLine(tooltip, "Lists only the quests whose name, zone or giver matches, with their zones expanded.")
+    end)
     searchBox:HookScript("OnTextChanged", function(self)
         local newText = string.lower(self:GetText() or "")
         if newText == searchText then return end

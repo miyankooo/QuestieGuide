@@ -22,31 +22,28 @@ local function toggleIfReady()
     toggleWindow()
 end
 
--- One status line under the launcher title: the quests to pick up where the player stands and the Next zone with its trip XP. It reads the last scan, even a stale one; a hover must never start the expensive database walk.
-local function getLauncherStatus()
+-- The quests to pick up where the player stands and the Next zone with its trip XP, as the launcher tooltip's state rows. It reads the last scan, even a stale one; a hover must never start the expensive database walk.
+local function addLauncherStatus(tooltip)
     if not scanCache.byZone then
-        return nil
+        return
     end
-    local parts = {}
     local zoneName = getCurrentZoneName()
     if zoneName then
         local entry = scanCache.byZone[zoneName]
         local count = entry and countPickable(entry) or 0
-        parts[#parts + 1] = string.format("%d quest%s to pick up in %s.", count, count == 1 and "" or "s", zoneName)
+        GameTooltip_AddColoredDoubleLine(tooltip, zoneName, string.format("%d |4quest:quests; to pick up", count),
+            HIGHLIGHT_FONT_COLOR, HIGHLIGHT_FONT_COLOR)
     end
     local nextZone = findBestZone(scanCache.byZone, scanCache.zoneOrder)
     if nextZone then
-        parts[#parts + 1] = string.format("Next: %s, %s XP.", nextZone, BreakUpLargeNumbers(scanCache.byZone[nextZone].stats.xp))
+        GameTooltip_AddColoredDoubleLine(tooltip, "Next: " .. nextZone, BreakUpLargeNumbers(scanCache.byZone[nextZone].stats.xp) .. " XP",
+            HIGHLIGHT_FONT_COLOR, HIGHLIGHT_FONT_COLOR)
     end
-    return #parts > 0 and table.concat(parts, " ") or nil
 end
 
 -- Lines under the title the launcher adds, shared by the minimap button and the addon menu.
 local function fillLauncherTooltip(tooltip)
-    local status = getLauncherStatus()
-    if status then
-        GameTooltip_AddHighlightLine(tooltip, status)
-    end
+    addLauncherStatus(tooltip)
     GameTooltip_AddInstructionLine(tooltip, "Left-click to toggle the window.")
 end
 

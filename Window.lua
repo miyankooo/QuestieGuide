@@ -17,6 +17,7 @@ local buildQuestList = ns.buildQuestList
 local buildSearchBox = ns.buildSearchBox
 local toggleAllZones = ns.toggleAllZones
 local Snap = ns.Snap
+local HookTooltip = ns.HookTooltip
 
 -- The spacing role between related controls, and InputBoxTemplate's left cap, drawn 5 px outside the box (InputBoxTemplates.xml:49).
 local GAP = 8
@@ -283,6 +284,10 @@ local function buildFilterDropdown(frame)
     filter:SetDefaultCallback(resetFilters)
     filter:SetIsDefaultCallback(filtersAreDefault)
     filter:SetupMenu(setupFilterMenu)
+    HookTooltip(filter, function(tooltip)
+        GameTooltip_SetTitle(tooltip, FILTER)
+        GameTooltip_AddNormalLine(tooltip, "Choose the quest types, the level range and the sort order. The reset button brings back the defaults.")
+    end)
     local showTip, retireTip = AttachTip(filter, TIP_TEXT, HelpTip.Point.BottomEdgeCenter)
     filter:RegisterCallback(DropdownButtonMixin.Event.OnMenuOpen, retireTip)
     frame.showTip = showTip
@@ -333,8 +338,16 @@ local function buildMainFrame()
     buildQuestList(frame)
     buildSearchBox(frame)
     buildFilterDropdown(frame)
-    AddBarButton(frame, "Current Zone", jumpToCurrentZone)
+    local currentZone = AddBarButton(frame, "Current Zone", jumpToCurrentZone)
+    HookTooltip(currentZone, function(tooltip)
+        GameTooltip_SetTitle(tooltip, "Current Zone")
+        GameTooltip_AddNormalLine(tooltip, "Expands the zone you stand in and scrolls the list to it.")
+    end)
     frame.toggleAllButton = AddBarButton(frame, "Collapse All", toggleAllZones)
+    HookTooltip(frame.toggleAllButton, function(tooltip, button)
+        GameTooltip_SetTitle(tooltip, button:GetText())
+        GameTooltip_AddNormalLine(tooltip, "Collapses every zone while any is open, otherwise expands them all.")
+    end)
     frame:HookScript("OnShow", onWindowShow)
     ns.mainFrame = frame
     return frame

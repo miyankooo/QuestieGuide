@@ -97,6 +97,7 @@ CALENDAR_TYPE_DUNGEON = "Dungeon"
 CALENDAR_TYPE_PVP = "PvP"
 RAID = "Raid"
 FILTER = "Filter"
+SEARCH = "Search"
 ERR_NOT_IN_COMBAT = "You can't do that while in combat"
 Constants = { QuestConsts = { QUEST_INFO_ELITE_ID = 1, QUEST_INFO_DUNGEON_ID = 81, QUEST_INFO_PVP_ID = 41, QUEST_INFO_RAID_ID = 62 } }
 Enum = { TooltipDataType = { Item = 0 } }
@@ -689,6 +690,21 @@ flushTimers()
 filterButton:TriggerEvent("OnMenuOpen", filterButton)
 check("opening the Filter menu counts the tip as seen", QuestieGuideDB.tipSeen == true and not tip.shown)
 
+-- Tooltips on the window's controls and headers.
+filterButton.hooks.OnEnter[1](filterButton)
+check("the Filter button has a tooltip", GameTooltip.lines[1] == "Filter")
+local currentZoneButton = QuestieGuideFrame.barButtons[1]
+currentZoneButton.hooks.OnEnter[1](currentZoneButton)
+check("Current Zone has a tooltip", GameTooltip.lines[1] == "Current Zone")
+QuestieGuideFrame.toggleAllButton.hooks.OnEnter[1](QuestieGuideFrame.toggleAllButton)
+check("Collapse All names itself in its tooltip", GameTooltip.lines[1] == "Collapse All")
+QuestieGuideFrame.searchBox.hooks.OnEnter[1](QuestieGuideFrame.searchBox)
+check("the search box has a tooltip", GameTooltip.lines[1] == "Search")
+local startsHere = findRow("Starts Here")
+startsHere.scripts.OnEnter(startsHere)
+check("a bucket header says what it holds", GameTooltip.lines[1] == "Starts Here"
+    and GameTooltip.lines[2] == "Quests whose giver stands in this zone.")
+
 -- Tooltips: a quest row, the chain on a blocked row and the launcher.
 local wolves = findRow("Wolves Across the Border")
 wolves.scripts.OnEnter(wolves)
@@ -697,14 +713,14 @@ local linen = findRow("Red Linen Goods")
 linen.scripts.OnEnter(linen)
 check("chain tooltip lists the first step", hasLine(GameTooltip.lines, "1. [10] Wolves Across the Border"))
 LibStub("LibDataBroker-1.1")["Questie Guide"].OnTooltipShow(GameTooltip)
-check("launcher tooltip names the Next zone", hasLine(GameTooltip.lines, "Next: Elwynn Forest, 2600 XP."))
-check("launcher counts only quests to pick up", hasLine(GameTooltip.lines, "3 quests to pick up in Elwynn Forest."))
+check("launcher tooltip names the Next zone", hasLine(GameTooltip.lines, "Next: Elwynn Forest: 2600 XP"))
+check("launcher counts only quests to pick up", hasLine(GameTooltip.lines, "Elwynn Forest: 3 |4quest:quests; to pick up"))
 
 -- A stale scan still feeds the launcher, minus quests accepted since.
 questLog[102] = true
 ns.invalidateScan()
 LibStub("LibDataBroker-1.1")["Questie Guide"].OnTooltipShow(GameTooltip)
-check("stale scan skips a quest accepted since", hasLine(GameTooltip.lines, "2 quests to pick up in Elwynn Forest."))
+check("stale scan skips a quest accepted since", hasLine(GameTooltip.lines, "Elwynn Forest: 2 |4quest:quests; to pick up"))
 questLog[102] = nil
 
 -- Entering an instance: one line per visit, counting neither the blocked nor the in-log row.
