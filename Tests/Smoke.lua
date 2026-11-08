@@ -189,6 +189,7 @@ function Region:GetStringHeight()
     return (breaks + 1) * 12
 end
 function Region:SetTexture(texture) self.texture = texture end
+function Region:SetColorTexture(r, g, b, a) self.colorTexture = { r, g, b, a } end
 function Region:SetAtlas(atlas) self.atlas = atlas end
 function Region:SetBlendMode() end
 function Region:CreateFontString() return newRegion("FontString", nil, self) end
@@ -196,8 +197,12 @@ function Region:CreateTexture() return newRegion("Texture", nil, self) end
 
 -- Blizzard template setup, reduced to the keys and calls the library and the addon use.
 local templates = {}
+-- The rock tile and its title streaks, which UI.CreateWindow keeps, and the inset's marble tile, which it hides.
 templates.ButtonFrameTemplate = function(f)
+    f.Bg = newRegion("Texture", nil, f)
+    f.TopTileStreaks = newRegion("Texture", nil, f)
     f.Inset = newRegion("Frame", nil, f)
+    f.Inset.Bg = newRegion("Texture", nil, f.Inset)
     f.SetTitle = function(self, title) self.title = title end
     f.SetPortraitToAsset = function(self, icon) self.portrait = icon end
 end
