@@ -308,6 +308,322 @@ end
 -- True after a render that left any zone or the completed section expanded; drives the Collapse All / Expand All button.
 local anyZoneExpanded = false
 
+-- The render pass's cursor: the next row's pool index and top offset below the list top. renderList resets both, and the row builders below advance them. They live at file level so the builders sit outside renderList, which keeps it under Lua 5.1's 60 upvalues.
+local index, y = 1, 0
+
+-- Two-anchor (TOPLEFT + TOPRIGHT) placement: x-range comes from the horizontal span, top y from the shared y offset, height from sizeRow. Using three anchors (LEFT/RIGHT/TOP) over-constrains the vertical center and resolves inconsistently between the first paint and subsequent layout passes, which is what produced the post-reload offset.
+local function placeRow(row, indent)
+    row:ClearAllPoints()
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", indent, -y)
+    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -y)
+end
+
+-- Sizes the row to its wrapped text plus padding, snapped to the grid; minHeight keeps short rows one line tall. The text already spans the row's width, so GetStringHeight reflects the wrapped result, rounded first so a fractional pixel can't add a grid step.
+local function sizeRow(row, minHeight, padding)
+    local textHeight = math.floor(row.text:GetStringHeight() + 0.5)
+    local h = UI.Snap(textHeight + (padding or 0))
+    if h < minHeight then h = minHeight end
+    row:SetHeight(h)
+    return h
+end
+
+local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha, quest)
+    local rowTop = y
+    local row = acquireRow(index)
+    placeRow(row, LIST.INDENT_STEP * 2)
+
+    -- Rows are pooled and reused across renders, so always reset alpha explicitly. Out-of-range quests pass 0.5 to dim the row.
+    row:SetAlpha(alpha or 1)
+    row.text:SetText(label)
+
+    -- The selected row keeps the selection glow until another row is selected. Blocked rows never carry it because their click jumps elsewhere.
+    if quest and quest.id == selectedQuestId and not quest.blocked then
+        row.selection:Show()
+    end
+    row:SetScript("OnEnter", function(self)
+        row.highlight:Show()
+        if onEnter then onEnter(self) end
+    end)
+    row:SetScript("OnLeave", function()
+        row.highlight:Hide()
+        GameTooltip_Hide()
+    end)
+    if onLeftClick or onRightClick or onShiftClick then
+        row:SetScript("OnClick", function(self, btn)
+            if btn == "LeftButton" and IsModifiedClick("CHATLINK") then
+                if onShiftClick then onShiftClick(self) end
+            elseif btn == "RightButton" then
+                if onRightClick then onRightClick(self) end
+            else
+                -- Plain left click selects the row like the native quest log before running its action; the re-render moves the selection texture.
+                if quest and not quest.blocked and quest.id ~= selectedQuestId then
+                    selectedQuestId = quest.id
+                    renderList()
+                end
+                if onLeftClick then onLeftClick(self) end
+            end
+        end)
+    else
+        row:SetScript("OnClick", nil)
+    end
+    y = y + sizeRow(row, LIST.ROW_HEIGHT, LIST.ROW_PADDING)
+    index = index + 1
+    return row, rowTop
+end
+
+-- One row in a zone bucket. A blocked row is the blocked quest itself, greyed until its chain is cleared: left-click jumps the list to the chain step the player can pick up now, and the chat link points at the blocked quest. In-log rows open the native quest log. Pickable and level-locked rows open the map at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. Pickable is the default state, so it carries no badge. Every row but a blocked one registers as a jump target for blocked rows' chains.
+local function renderBucketRow(quest)
+    if quest.blocked then
+        local badge = COLOR.BLOCKED:WrapTextInColorCode("[Missing Pre-Quest]")
+        local line1, line2 = formatRowLines(quest, badge)
+        local label = line2 and (line1 .. "\n" .. line2) or line1
+        renderQuestRow(label,
+            function(self) showChainTooltip(self, quest) end,
+            function() jumpToUnlockingQuest(quest) end,
+            function(self) showChainContextMenu(self, quest) end,
+            function() linkQuestInChat(quest) end,
+            0.5, quest)
+        return
+    end
+    local badge
+    if quest.inLog then
+        badge = COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
+    elseif quest.lockedLevel then
+        badge = formatLevelLock(quest.lockedLevel)
+    end
+    local line1, line2 = formatRowLines(quest, badge)
+    local label = line2 and (line1 .. "\n" .. line2) or line1
+    local onLeftClick = quest.inLog
+        and function() openQuestInLog(quest.id) end
+        or function() openMapForQuest(quest) end
+    local row, rowTop = renderQuestRow(label,
+        function(self) showQuestTooltip(self, quest.id) end,
+        onLeftClick,
+        function(self) showQuestContextMenu(self, quest) end,
+        function() linkQuestInChat(quest) end,
+        quest.lockedLevel and 0.5 or 1, quest)
+    if not rowTargets[quest.id] then
+        rowTargets[quest.id] = { row = row, top = rowTop }
+    end
+end
+
+-- A row passes only when every filter covering it is on: repeatable rides a specialFlags bit orthogonal to the tag, and the elite flag sits beside the tag, so an elite dungeon quest needs both Dungeons and Elite.
+local function passesTagFilter(quest, filters)
+    if quest.repeatable and not filters.repeatable then
+        return false
+    end
+
+    -- With Elite and Dungeons both on no tag can hide the row, so the default view skips a tag lookup per quest in every zone, collapsed ones included.
+    if filters.elite and filters.dungeons then
+        return true
+    end
+    local tagId, isElite = getQuestTag(quest.id)
+    if isElite and not filters.elite then
+        return false
+    end
+    local filterKey = TAG_FILTERS[tagId]
+    return not filterKey or filters[filterKey]
+end
+
+-- In-log and blocked rows ride inside the pickup buckets, toggled by their filters. Every row respects the tag filters. Out-of-range rows never render, EXCEPT quests already in the log: accepted quests always list here regardless of the bracket, while XP figures keep respecting it. A search matches the zone, the quest name or its giver, and a blocked row also matches through any step of its chain, so typing the name of a prereq surfaces the quest that unlocks behind it.
+local function passesRow(quest, filters, zoneMatch)
+    if not passesTagFilter(quest, filters) then
+        return false
+    end
+    if quest.blocked then
+        if not filters.missingPre then
+            return false
+        end
+        if zoneMatch or searchMatches(quest.name) then
+            return true
+        end
+        for _, qid in ipairs(quest.chain) do
+            if searchMatches(getQuestName(qid)) then
+                return true
+            end
+        end
+        return false
+    end
+    if (quest.inLog and not filters.inLog) or (quest.outOfRange and not quest.inLog) then
+        return false
+    end
+    if zoneMatch or searchMatches(quest.name) then
+        return true
+    end
+    local startInfo = resolveStartInfo(quest)
+    return startInfo ~= nil and searchMatches(startInfo.npcName)
+end
+
+-- Next-best-action banner: one line answering "where should I go now" without scanning headers. Click expands the zone and scrolls its header into view; hover shows the zone breakdown. Hidden while searching, which narrows the rows the banner would point at.
+local function renderBanner(byZone, bestZoneName)
+    local bannerStats = searchText == "" and bestZoneName and byZone[bestZoneName].stats
+    if not bannerStats then
+        return
+    end
+    local row = acquireRow(index)
+    placeRow(row, 0)
+    local detail = BreakUpLargeNumbers(bannerStats.xp) .. " XP in one trip"
+    local share = getLevelShare(bannerStats.xp)
+    if share then
+        detail = string.format("%s, covers %d%% of level %d", detail, share, UnitLevel("player"))
+    end
+    row.text:SetText(COLOR.ACCENT:WrapTextInColorCode("Next: " .. bestZoneName) .. "  " .. COLOR.MUTED:WrapTextInColorCode(detail))
+    row:SetScript("OnEnter", function(self)
+        self.highlight:Show()
+        showZoneTooltip(self, bestZoneName, bannerStats, true)
+    end)
+    row:SetScript("OnLeave", function(self)
+        self.highlight:Hide()
+        GameTooltip_Hide()
+    end)
+    row:SetScript("OnClick", function()
+        expandAndScrollToZone(bestZoneName)
+    end)
+
+    -- The banner highlights on hover like a quest row, so it gets the same air around its text.
+    y = y + sizeRow(row, LIST.ROW_HEIGHT, LIST.ROW_PADDING) + LIST.GROUP_GAP
+    index = index + 1
+end
+
+-- Completed Quests section at the top of the list: turn-in zones sorted by count, quests styled like the zone buckets below. Returns true when it drew anything so the zone loop and empty-state message can account for it.
+local function renderCompletedSection()
+    if not QuestieGuideDB.showCompleted then
+        lastCompletedZones = {}
+        return false
+    end
+    local zoneCollapsedDB = QuestieGuideDB.zoneCollapsed
+    local groupCollapsedDB = QuestieGuideDB.groupCollapsed
+    local completedByZone, completedZoneOrder = collectCompletedByZone()
+    lastCompletedZones = completedZoneOrder
+
+    local visibleByZone = {}
+    local total = 0
+    for _, zoneName in ipairs(completedZoneOrder) do
+        local zoneMatch = searchMatches(zoneName)
+        local list = {}
+        for _, q in ipairs(completedByZone[zoneName]) do
+            if zoneMatch or searchMatches(q.name) or (q.startInfo and searchMatches(q.startInfo.npcName)) then
+                list[#list + 1] = q
+            end
+        end
+        if #list > 0 then
+            visibleByZone[zoneName] = list
+            total = total + #list
+        end
+    end
+    if total == 0 then
+        return false
+    end
+
+    local collapsed = zoneCollapsedDB[COMPLETED_KEY] == true
+    local header = acquireRow(index)
+    placeRow(header, 0)
+    styleHeaderRow(header, collapsed)
+    header.text:SetText(COMPLETED_LABEL .. " (" .. total .. ")")
+
+    -- Section toggle only flips the section itself; turn-in zone state is independent, matching the zone headers.
+    header:SetScript("OnClick", function()
+        zoneCollapsedDB[COMPLETED_KEY] = not collapsed
+        renderList()
+    end)
+    y = y + sizeRow(header, LIST.ROW_HEIGHT)
+    index = index + 1
+
+    if not collapsed then
+        for _, zoneName in ipairs(completedZoneOrder) do
+            local list = visibleByZone[zoneName]
+            if list then
+                local groupKey = COMPLETED_KEY .. "||" .. zoneName
+                local groupHidden = groupCollapsedDB[groupKey] == true
+
+                y = y + LIST.GROUP_GAP
+
+                local sub = acquireRow(index)
+                placeRow(sub, LIST.INDENT_STEP)
+                styleHeaderRow(sub, groupHidden)
+                sub.text:SetText(string.format("%s (%d)", zoneName, #list))
+                sub:SetScript("OnClick", function()
+                    groupCollapsedDB[groupKey] = not groupHidden
+                    renderList()
+                end)
+                y = y + sizeRow(sub, LIST.ROW_HEIGHT)
+                index = index + 1
+
+                if not groupHidden then
+                    for _, quest in ipairs(list) do
+                        -- Left-click opens the quest in the native log, matching every other in-log row; the turn-in map view stays reachable through the right-click menu. The section header already says these are completed, so the rows carry no badge.
+                        local line1, line2 = formatRowLines(quest)
+                        local label = line2 and (line1 .. "\n" .. line2) or line1
+                        renderQuestRow(label,
+                            function(self) showTurnInTooltip(self, quest) end,
+                            function() openQuestInLog(quest.id) end,
+                            function(self) showQuestContextMenu(self, quest) end,
+                            function() linkQuestInChat(quest) end,
+                            nil, quest)
+                    end
+                end
+            end
+        end
+    end
+    return true
+end
+
+-- The message when nothing renders, with a one-click fix for the likely cause. No button when Questie's ranges govern or the band is maxed; the message's advice (level up) has no shortcut. Changes made here bypass the Filter menu, so its reset button is rechecked.
+local function renderEmptyState(filters)
+    local anyBucket = filters.available or filters.pickedUpElsewhere
+    local msg
+    if not anyBucket then
+        msg = "Starts Here and Starts Elsewhere are both off. Turn one on in the Filter menu."
+    elseif searchText ~= "" then
+        msg = string.format("No quests match \"%s\". Clear the search or change filters.", searchText)
+    else
+        msg = "No quests in your level range. Level up or widen the range."
+    end
+    local row = acquireRow(index)
+    placeRow(row, 0)
+    row.text:SetText(COLOR.MUTED:WrapTextInColorCode(msg))
+    row:SetScript("OnEnter", nil)
+    row:SetScript("OnLeave", nil)
+    row:SetScript("OnClick", nil)
+    y = y + sizeRow(row, LIST.ROW_HEIGHT * 2)
+    index = index + 1
+
+    local below, above = QuestieGuideDB.levelBelow, QuestieGuideDB.levelAbove
+    local actionText, action
+    if not anyBucket then
+        actionText = "Show Both"
+        action = function()
+            filters.available = true
+            filters.pickedUpElsewhere = true
+            ns.mainFrame.filterDropdown:ValidateResetState()
+            renderList()
+        end
+    elseif searchText ~= "" then
+        actionText = "Clear Search"
+        action = function()
+            ns.mainFrame.searchBox:SetText("")
+        end
+    elseif not QuestieGuideDB.useQuestieLevelRange
+        and (below < RANGE_LIMIT.MAX or above < RANGE_LIMIT.MAX) then
+        actionText = "Widen Level Range"
+        action = function()
+            QuestieGuideDB.levelBelow = clampRange(below + 2)
+            QuestieGuideDB.levelAbove = clampRange(above + 2)
+            ns.mainFrame.filterDropdown:ValidateResetState()
+            invalidateScan()
+            renderList()
+        end
+    end
+    if actionText then
+        local button = getEmptyButton(actionText)
+        button:ClearAllPoints()
+        button:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -(y + LIST.GROUP_GAP))
+        button:SetScript("OnClick", action)
+        button:Show()
+        y = y + LIST.GROUP_GAP + UI.Size.row
+    end
+end
+
 function renderList()
     if not scrollChild then
         return
@@ -321,69 +637,8 @@ function renderList()
     local bestZoneName = findBestZone(byZone, zoneOrder)
     local filters = QuestieGuideDB.filters
     local currentZoneName = getCurrentZoneName()
-    local index = 1
-    local y = 0
+    index, y = 1, 0
     local renderedZones = 0
-
-    -- Two-anchor (TOPLEFT + TOPRIGHT) placement: x-range comes from the horizontal span, top y from the shared y offset, height from sizeRow. Using three anchors (LEFT/RIGHT/TOP) over-constrains the vertical center and resolves inconsistently between the first paint and subsequent layout passes, which is what produced the post-reload offset.
-    local function placeRow(row, indent)
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", indent, -y)
-        row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -y)
-    end
-
-    -- Sizes the row to its wrapped text plus padding, snapped to the grid; minHeight keeps short rows one line tall. The text already spans the row's width, so GetStringHeight reflects the wrapped result, rounded first so a fractional pixel can't add a grid step.
-    local function sizeRow(row, minHeight, padding)
-        local textHeight = math.floor(row.text:GetStringHeight() + 0.5)
-        local h = UI.Snap(textHeight + (padding or 0))
-        if h < minHeight then h = minHeight end
-        row:SetHeight(h)
-        return h
-    end
-
-    local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha, quest)
-        local rowTop = y
-        local row = acquireRow(index)
-        placeRow(row, LIST.INDENT_STEP * 2)
-
-        -- Rows are pooled and reused across renders, so always reset alpha explicitly. Out-of-range quests pass 0.5 to dim the row.
-        row:SetAlpha(alpha or 1)
-        row.text:SetText(label)
-
-        -- The selected row keeps the selection glow until another row is selected. Blocked rows never carry it because their click jumps elsewhere.
-        if quest and quest.id == selectedQuestId and not quest.blocked then
-            row.selection:Show()
-        end
-        row:SetScript("OnEnter", function(self)
-            row.highlight:Show()
-            if onEnter then onEnter(self) end
-        end)
-        row:SetScript("OnLeave", function()
-            row.highlight:Hide()
-            GameTooltip_Hide()
-        end)
-        if onLeftClick or onRightClick or onShiftClick then
-            row:SetScript("OnClick", function(self, btn)
-                if btn == "LeftButton" and IsModifiedClick("CHATLINK") then
-                    if onShiftClick then onShiftClick(self) end
-                elseif btn == "RightButton" then
-                    if onRightClick then onRightClick(self) end
-                else
-                    -- Plain left click selects the row like the native quest log before running its action; the re-render moves the selection texture.
-                    if quest and not quest.blocked and quest.id ~= selectedQuestId then
-                        selectedQuestId = quest.id
-                        renderList()
-                    end
-                    if onLeftClick then onLeftClick(self) end
-                end
-            end)
-        else
-            row:SetScript("OnClick", nil)
-        end
-        y = y + sizeRow(row, LIST.ROW_HEIGHT, LIST.ROW_PADDING)
-        index = index + 1
-        return row, rowTop
-    end
 
     local zoneCollapsedDB = QuestieGuideDB.zoneCollapsed
     local groupCollapsedDB = QuestieGuideDB.groupCollapsed
@@ -397,170 +652,7 @@ function renderList()
         return searchText == "" and zoneName ~= currentZoneName and zoneName ~= bestZoneName
     end
 
-    -- A row passes only when every filter covering it is on: repeatable rides a specialFlags bit orthogonal to the tag, and the elite flag sits beside the tag, so an elite dungeon quest needs both Dungeons and Elite.
-    local function passesTagFilter(quest)
-        if quest.repeatable and not filters.repeatable then
-            return false
-        end
-        local tagId, isElite = getQuestTag(quest.id)
-        if isElite and not filters.elite then
-            return false
-        end
-        local filterKey = TAG_FILTERS[tagId]
-        return not filterKey or filters[filterKey]
-    end
-
-    local function passesQuest(quest, zoneMatch)
-        if not passesTagFilter(quest) then
-            return false
-        end
-
-        -- Out-of-range rows never render, EXCEPT quests already in the log: accepted quests always list here regardless of the bracket, while XP figures keep respecting it. Dimming is reserved for in-range quests that cannot be accepted yet.
-        if quest.outOfRange and not quest.inLog then
-            return false
-        end
-        if zoneMatch then
-            return true
-        end
-        if searchMatches(quest.name) then
-            return true
-        end
-        local startInfo = resolveStartInfo(quest)
-        if startInfo and searchMatches(startInfo.npcName) then
-            return true
-        end
-        return false
-    end
-
-    local function passesChain(mpe, zoneMatch)
-        if zoneMatch then
-            return true
-        end
-        if searchMatches(mpe.name) then
-            return true
-        end
-
-        -- Match any step in the chain so typing the name of a prereq surfaces the quest that unlocks behind it.
-        if type(mpe.chain) == "table" then
-            for _, qid in ipairs(mpe.chain) do
-                if searchMatches(getQuestName(qid)) then
-                    return true
-                end
-            end
-        end
-        return false
-    end
-
-    -- Completed Quests section at the top of the list: turn-in zones sorted by count, quests styled like the zone buckets below. Returns true when it drew anything so the zone loop and empty-state message can account for it.
-    local function renderCompletedSection()
-        if not QuestieGuideDB.showCompleted then
-            lastCompletedZones = {}
-            return false
-        end
-        local completedByZone, completedZoneOrder = collectCompletedByZone()
-        lastCompletedZones = completedZoneOrder
-
-        local visibleByZone = {}
-        local total = 0
-        for _, zoneName in ipairs(completedZoneOrder) do
-            local zoneMatch = searchMatches(zoneName)
-            local list = {}
-            for _, q in ipairs(completedByZone[zoneName]) do
-                if zoneMatch or searchMatches(q.name) or (q.startInfo and searchMatches(q.startInfo.npcName)) then
-                    list[#list + 1] = q
-                end
-            end
-            if #list > 0 then
-                visibleByZone[zoneName] = list
-                total = total + #list
-            end
-        end
-        if total == 0 then
-            return false
-        end
-
-        local collapsed = zoneCollapsedDB[COMPLETED_KEY] == true
-        local header = acquireRow(index)
-        placeRow(header, 0)
-        styleHeaderRow(header, collapsed)
-        header.text:SetText(COMPLETED_LABEL .. " (" .. total .. ")")
-
-        -- Section toggle only flips the section itself; turn-in zone state is independent, matching the zone headers.
-        header:SetScript("OnClick", function()
-            zoneCollapsedDB[COMPLETED_KEY] = not collapsed
-            renderList()
-        end)
-        y = y + sizeRow(header, LIST.ROW_HEIGHT)
-        index = index + 1
-
-        if not collapsed then
-            for _, zoneName in ipairs(completedZoneOrder) do
-                local list = visibleByZone[zoneName]
-                if list then
-                    local groupKey = COMPLETED_KEY .. "||" .. zoneName
-                    local groupHidden = groupCollapsedDB[groupKey] == true
-
-                    y = y + LIST.GROUP_GAP
-
-                    local sub = acquireRow(index)
-                    placeRow(sub, LIST.INDENT_STEP)
-                    styleHeaderRow(sub, groupHidden)
-                    sub.text:SetText(string.format("%s (%d)", zoneName, #list))
-                    sub:SetScript("OnClick", function()
-                        groupCollapsedDB[groupKey] = not groupHidden
-                        renderList()
-                    end)
-                    y = y + sizeRow(sub, LIST.ROW_HEIGHT)
-                    index = index + 1
-
-                    if not groupHidden then
-                        for _, quest in ipairs(list) do
-                            -- Left-click opens the quest in the native log, matching every other in-log row; the turn-in map view stays reachable through the right-click menu. The section header already says these are completed, so the rows carry no badge.
-                            local line1, line2 = formatRowLines(quest)
-                            local label = line2 and (line1 .. "\n" .. line2) or line1
-                            renderQuestRow(label,
-                                function(self) showTurnInTooltip(self, quest) end,
-                                function() openQuestInLog(quest.id) end,
-                                function(self) showQuestContextMenu(self, quest) end,
-                                function() linkQuestInChat(quest) end,
-                                nil, quest)
-                        end
-                    end
-                end
-            end
-        end
-        return true
-    end
-
-    -- Next-best-action banner: one line answering "where should I go now" without scanning headers. Click expands the zone and scrolls its header into view; hover shows the zone breakdown. Hidden while searching, which narrows the rows the banner would point at.
-    local bannerStats = searchText == "" and bestZoneName and byZone[bestZoneName].stats
-    if bannerStats then
-        local bannerZone = bestZoneName
-        local row = acquireRow(index)
-        placeRow(row, 0)
-        local detail = BreakUpLargeNumbers(bannerStats.xp) .. " XP in one trip"
-        local share = getLevelShare(bannerStats.xp)
-        if share then
-            detail = string.format("%s, covers %d%% of level %d", detail, share, UnitLevel("player"))
-        end
-        row.text:SetText(COLOR.ACCENT:WrapTextInColorCode("Next: " .. bannerZone) .. "  " .. COLOR.MUTED:WrapTextInColorCode(detail))
-        row:SetScript("OnEnter", function(self)
-            self.highlight:Show()
-            showZoneTooltip(self, bannerZone, bannerStats, true)
-        end)
-        row:SetScript("OnLeave", function(self)
-            self.highlight:Hide()
-            GameTooltip_Hide()
-        end)
-        row:SetScript("OnClick", function()
-            expandAndScrollToZone(bannerZone)
-        end)
-
-        -- The banner highlights on hover like a quest row, so it gets the same air around its text.
-        y = y + sizeRow(row, LIST.ROW_HEIGHT, LIST.ROW_PADDING) + LIST.GROUP_GAP
-        index = index + 1
-    end
-
+    renderBanner(byZone, bestZoneName)
     local completedShown = renderCompletedSection()
 
     for _, zoneName in ipairs(zoneOrder) do
@@ -574,21 +666,10 @@ function renderList()
             for _, subKey in ipairs(SUBCAT_ORDER) do
                 visible[subKey] = {}
             end
-
-            -- In-log and blocked rows ride inside the pickup buckets, toggled by their filters. Blocked rows match the search through any step of their chain and respect the tag filters like every other row.
-            local function passesRow(quest)
-                if quest.blocked then
-                    return filters.missingPre and passesTagFilter(quest) and passesChain(quest, zoneMatch)
-                end
-                if quest.inLog and not filters.inLog then
-                    return false
-                end
-                return passesQuest(quest, zoneMatch)
-            end
             for _, subKey in ipairs(SUBCAT_ORDER) do
                 if filters[subKey] then
                     for _, q in ipairs(entry[subKey] or {}) do
-                        if passesRow(q) then
+                        if passesRow(q, filters, zoneMatch) then
                             visible[subKey][#visible[subKey] + 1] = q
                         end
                     end
@@ -696,40 +777,7 @@ function renderList()
 
                             if not groupHidden then
                                 for _, quest in ipairs(list) do
-                                    if quest.blocked then
-                                        -- Row is the blocked quest itself, greyed until its chain is cleared. Left-click jumps the list to the chain step the player can pick up now; chat link points at the blocked quest (the row being hovered).
-                                        local badge = COLOR.BLOCKED:WrapTextInColorCode("[Missing Pre-Quest]")
-                                        local line1, line2 = formatRowLines(quest, badge)
-                                        local label = line2 and (line1 .. "\n" .. line2) or line1
-                                        renderQuestRow(label,
-                                            function(self) showChainTooltip(self, quest) end,
-                                            function() jumpToUnlockingQuest(quest) end,
-                                            function(self) showChainContextMenu(self, quest) end,
-                                            function() linkQuestInChat(quest) end,
-                                            0.5, quest)
-                                    else
-                                        -- In-log rows open the native quest log; pickable and level-locked rows open the map at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. All register as jump targets for blocked rows' chains. Pickable is the default state, so it carries no badge.
-                                        local badge
-                                        if quest.inLog then
-                                            badge = COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
-                                        elseif quest.lockedLevel then
-                                            badge = formatLevelLock(quest.lockedLevel)
-                                        end
-                                        local line1, line2 = formatRowLines(quest, badge)
-                                        local label = line2 and (line1 .. "\n" .. line2) or line1
-                                        local onLeftClick = quest.inLog
-                                            and function() openQuestInLog(quest.id) end
-                                            or function() openMapForQuest(quest) end
-                                        local row, rowTop = renderQuestRow(label,
-                                            function(self) showQuestTooltip(self, quest.id) end,
-                                            onLeftClick,
-                                            function(self) showQuestContextMenu(self, quest) end,
-                                            function() linkQuestInChat(quest) end,
-                                            quest.lockedLevel and 0.5 or 1, quest)
-                                        if not rowTargets[quest.id] then
-                                            rowTargets[quest.id] = { row = row, top = rowTop }
-                                        end
-                                    end
+                                    renderBucketRow(quest)
                                 end
                             end
                         end
@@ -740,59 +788,7 @@ function renderList()
     end
 
     if renderedZones == 0 and not completedShown then
-        local anyBucket = filters.available or filters.pickedUpElsewhere
-        local msg
-        if not anyBucket then
-            msg = "Starts Here and Starts Elsewhere are both off. Turn one on in the Filter menu."
-        elseif searchText ~= "" then
-            msg = string.format("No quests match \"%s\". Clear the search or change filters.", searchText)
-        else
-            msg = "No quests in your level range. Level up or widen the range."
-        end
-        local row = acquireRow(index)
-        placeRow(row, 0)
-        row.text:SetText(COLOR.MUTED:WrapTextInColorCode(msg))
-        row:SetScript("OnEnter", nil)
-        row:SetScript("OnLeave", nil)
-        row:SetScript("OnClick", nil)
-        y = y + sizeRow(row, LIST.ROW_HEIGHT * 2)
-        index = index + 1
-
-        -- One-click fix for the likely cause, mirroring the message above. No button when Questie's ranges govern or the band is maxed; the message's advice (level up) has no shortcut. Changes made here bypass the Filter menu, so its reset button is rechecked.
-        local below, above = QuestieGuideDB.levelBelow, QuestieGuideDB.levelAbove
-        local actionText, action
-        if not anyBucket then
-            actionText = "Show Both"
-            action = function()
-                filters.available = true
-                filters.pickedUpElsewhere = true
-                ns.mainFrame.filterDropdown:ValidateResetState()
-                renderList()
-            end
-        elseif searchText ~= "" then
-            actionText = "Clear Search"
-            action = function()
-                ns.mainFrame.searchBox:SetText("")
-            end
-        elseif not QuestieGuideDB.useQuestieLevelRange
-            and (below < RANGE_LIMIT.MAX or above < RANGE_LIMIT.MAX) then
-            actionText = "Widen Level Range"
-            action = function()
-                QuestieGuideDB.levelBelow = clampRange(below + 2)
-                QuestieGuideDB.levelAbove = clampRange(above + 2)
-                ns.mainFrame.filterDropdown:ValidateResetState()
-                invalidateScan()
-                renderList()
-            end
-        end
-        if actionText then
-            local button = getEmptyButton(actionText)
-            button:ClearAllPoints()
-            button:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -(y + LIST.GROUP_GAP))
-            button:SetScript("OnClick", action)
-            button:Show()
-            y = y + LIST.GROUP_GAP + UI.Size.row
-        end
+        renderEmptyState(filters)
     end
 
     scrollChild:SetHeight(math.max(y, 1))
