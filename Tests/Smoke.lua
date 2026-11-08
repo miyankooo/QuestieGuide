@@ -1,8 +1,9 @@
 -- Offline smoke test for QuestieGuide. It loads every toc file in order against stubs of the client and
--- of Questie, checks the welcome line, opens the window, then checks a render, the launcher status, the
--- dungeon line, a combat click, the Filter menu, a level change, a search, the chat links, the map pins
--- and a later login. It proves the files wire together and the list logic runs; how the window looks
--- still needs an in-game pass.
+-- of Questie, checks the welcome line, opens the window, then checks a render, the help tip, the
+-- tooltips, the launcher status, the dungeon line, a combat click, the Filter menu, a level change, a
+-- search and the empty state, the chat links, the slash commands, the map pins and a later login. It
+-- proves the files wire together and the list logic runs; how the window looks still needs an in-game
+-- pass.
 --
 -- Run from the QuestieGuide folder:  lua Tests/Smoke.lua
 
@@ -162,6 +163,7 @@ end
 function Region:SetShown(shown) if shown then self:Show() else self:Hide() end end
 function Region:IsShown() return self.shown end
 function Region:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) end
+function Region:GetParent() return self.parent end
 function Region:SetAlpha(alpha) self.alpha = alpha end
 function Region:SetScript(event, fn) self.scripts[event] = fn end
 function Region:GetScript(event) return self.scripts[event] end
@@ -640,8 +642,10 @@ check("window opens", QuestieGuideFrame and QuestieGuideFrame:IsShown())
 check("window is the fixed 680 x 624", QuestieGuideFrame.width == 680 and QuestieGuideFrame.height == 624)
 check("the list sits on the brown panel, its corners hidden", QuestieGuideFrame.Background.BGCornerTopLeft ~= nil
     and not QuestieGuideFrame.Background.BGCornerTopLeft.shown and not QuestieGuideFrame.Inset.NineSlice.shown)
-check("loading line paints first", rowTexts()[1] == "Scanning quest database\226\128\166", rowTexts()[1])
+check("loading line paints first, centred in the empty list", QuestieGuideFrame.emptyState.shown and #rowTexts() == 0
+    and QuestieGuideFrame.emptyState.label == "Scanning quest database\226\128\166", QuestieGuideFrame.emptyState.label)
 flushTimers()
+check("the loading line goes with the first render", not QuestieGuideFrame.emptyState.shown)
 local opened = rowTexts()
 check("banner names the best zone", opened[1] == "Next: Elwynn Forest  2600 XP in one trip, covers 260% of level 10", opened[1])
 check("completed section lists the turn-in", findRow("Completed Quests (1)") ~= nil and findRow("A Fishy Peril") ~= nil)
@@ -795,9 +799,20 @@ local searched = rowTexts()
 check("search keeps only matches", findRow("Kobold Candles") ~= nil and findRow("Wolves Across the Border") == nil
     and findRow("Next:") == nil, table.concat(searched, " / "))
 QuestieGuideFrame.searchBox:SetText("zzz")
-check("an empty search explains itself", findRow("No quests match") ~= nil)
-QuestieGuideFrame.searchBox:SetText("")
-check("clearing the search restores the banner", rowTexts()[1]:find("Next: Westfall", 1, true) ~= nil)
+local emptyState = QuestieGuideFrame.emptyState
+check("an empty search shows the empty state line", #rowTexts() == 0 and emptyState.shown
+    and emptyState.label == "No quests match \"zzz\". Clear the search or change filters.", emptyState.label)
+local clearSearch
+for _, child in ipairs(emptyState.parent.children) do
+    if child.template == "UIPanelButtonTemplate" and child.shown then clearSearch = child end
+end
+check("its Clear Search button sits under the line", clearSearch ~= nil and clearSearch.label == "Clear Search"
+    and clearSearch.points[1].rel == emptyState)
+clearSearch.hooks.OnEnter[1](clearSearch)
+check("and has a tooltip", GameTooltip.lines[1] == "Clear Search")
+clearSearch.scripts.OnClick(clearSearch)
+check("clearing the search restores the banner", rowTexts()[1]:find("Next: Westfall", 1, true) ~= nil
+    and not emptyState.shown and not clearSearch.shown)
 
 -- Close and reopen through the binding.
 QuestieGuide_Toggle()

@@ -124,6 +124,16 @@ local function CreateGroupedRow(parent)
     return row
 end
 
+-- An empty list says what fills it and how, in one muted line centred in the list.
+local function CreateEmptyState(parent, text)
+    local empty = CreateText(parent, GameFontDisable)
+    empty:SetPoint("LEFT", 16, 0)
+    empty:SetPoint("RIGHT", -16, 0)
+    empty:SetJustifyH("CENTER")
+    empty:SetText(text)
+    return empty
+end
+
 -- The Quest Types filter that covers each tag id; PvP has none. The elite flag also falls under the Elite filter.
 local TAG_FILTERS = {
     [Constants.QuestConsts.QUEST_INFO_ELITE_ID] = "elite",
@@ -132,6 +142,7 @@ local TAG_FILTERS = {
 }
 
 local scrollChild
+local emptyState
 local rowPool = {}
 local lastZoneOrder = {}
 
@@ -349,13 +360,13 @@ local function jumpToUnlockingQuest(mpe)
     openMapForQuest({ id = type(chain) == "table" and chain[1] or mpe.id })
 end
 
--- Action buttons under the empty-state message, one per label because a button fits its label once, when it is created. Every render hides them.
+-- Action buttons under the empty-state line, one per label because a button fits its label once, when it is created. Every render hides them with the line.
 local emptyButtons = {}
 
 local function getEmptyButton(label, help)
     local button = emptyButtons[label]
     if not button then
-        button = CreateButton(scrollChild, label)
+        button = CreateButton(emptyState:GetParent(), label)
         HookTooltip(button, function(tooltip)
             GameTooltip_SetTitle(tooltip, label)
             GameTooltip_AddNormalLine(tooltip, help)
@@ -365,7 +376,8 @@ local function getEmptyButton(label, help)
     return button
 end
 
-local function hideEmptyButtons()
+local function hideEmptyState()
+    emptyState:Hide()
     for _, button in pairs(emptyButtons) do
         button:Hide()
     end
@@ -634,7 +646,7 @@ local function renderCompletedSection()
     return true
 end
 
--- The message when nothing renders, with a one-click fix for the likely cause. No button when Questie's ranges govern or the band is maxed; the message's advice (level up) has no shortcut. Changes made here bypass the Filter menu, so its reset button is rechecked.
+-- The empty state when nothing renders: one muted line centred in the list that says what fills it, with a one-click fix for the likely cause under it. No button when Questie's ranges govern or the band is maxed; the line's advice (level up) has no shortcut. Changes made here bypass the Filter menu, so its reset button is rechecked.
 local function renderEmptyState(filters)
     local anyBucket = filters.available or filters.pickedUpElsewhere
     local msg
@@ -645,14 +657,8 @@ local function renderEmptyState(filters)
     else
         msg = "No quests in your level range. Level up or widen the range."
     end
-    local row = acquireRow(index)
-    placeRow(row, 0)
-    row.text:SetText(COLOR.MUTED:WrapTextInColorCode(msg))
-    row:SetScript("OnEnter", nil)
-    row:SetScript("OnLeave", nil)
-    row:SetScript("OnClick", nil)
-    y = y + sizeRow(row, LIST.ROW_HEIGHT * 2)
-    index = index + 1
+    emptyState:SetText(msg)
+    emptyState:Show()
 
     local below, above = QuestieGuideDB.levelBelow, QuestieGuideDB.levelAbove
     local actionText, help, action
@@ -686,10 +692,9 @@ local function renderEmptyState(filters)
     if actionText then
         local button = getEmptyButton(actionText, help)
         button:ClearAllPoints()
-        button:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -(y + LIST.GROUP_GAP))
+        button:SetPoint("TOP", emptyState, "BOTTOM", 0, -LIST.GROUP_GAP)
         button:SetScript("OnClick", action)
         button:Show()
-        y = y + LIST.GROUP_GAP + button:GetHeight()
     end
 end
 
@@ -697,7 +702,7 @@ function renderList()
     if not scrollChild then
         return
     end
-    hideEmptyButtons()
+    hideEmptyState()
     local byZone, zoneOrder = ensureScan()
     sortZones(zoneOrder, byZone)
     lastZoneOrder = zoneOrder
@@ -884,17 +889,13 @@ function expandAndScrollToZone(zoneName)
     return scrollListTo(top)
 end
 
--- One muted line while the first render waits a tick, so an open never shows the last session's rows.
+-- The empty state's line while the first render waits a tick, so an open never shows the last session's rows.
 local function renderLoadingPlaceholder()
-    hideEmptyButtons()
+    hideEmptyState()
     hideUnusedRows(1)
-    local row = acquireRow(1)
-    row:ClearAllPoints()
-    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -LIST.ROW_HEIGHT)
-    row:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -LIST.ROW_HEIGHT)
-    row:SetHeight(LIST.ROW_HEIGHT)
-    row.text:SetText(COLOR.MUTED:WrapTextInColorCode("Scanning quest database\226\128\166"))
-    scrollChild:SetHeight(LIST.ROW_HEIGHT * 3)
+    emptyState:SetText("Scanning quest database\226\128\166")
+    emptyState:Show()
+    scrollChild:SetHeight(1)
 end
 
 -- The quest list fills the template's own Inset. ScrollFrameTemplate is what Forever's quest log (QuestScrollFrame) uses; it creates MinimalScrollBar and wires wheel, range and thumb itself.
@@ -904,6 +905,11 @@ local function buildQuestList(frame)
     scroll.ScrollBar:SetHideIfUnscrollable(true)
     scroll:SetPoint("TOPLEFT", frame.Inset, "TOPLEFT", PADDING, -PADDING)
     scroll:SetPoint("BOTTOMRIGHT", frame.Inset, "BOTTOMRIGHT", -SCROLL_GUTTER, PADDING)
+
+    -- The empty state centres in the list's visible area. The scroll frame sits a level above the brown panel, which shares the Inset's level.
+    emptyState = CreateEmptyState(scroll, "")
+    emptyState:Hide()
+    frame.emptyState = emptyState
 
     -- The scroll child's width follows the viewport so rows wrap inside it. The first render waits for onWindowShow's tick, so the loading line paints before the scan.
     local child = scroll.content
