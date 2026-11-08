@@ -9,6 +9,13 @@ function ns.Print(message)
     print(NORMAL_FONT_COLOR:WrapTextInColorCode("[" .. ns.title .. "]") .. ": " .. message)
 end
 
+-- A value another addon or restricted content hands over may be secret. canaccessvalue is SecretArguments = "AllowedWhenUntainted" (FrameScriptDocumentation.lua:68), so addon code handing it a secret may raise instead of answering; the pcall counts a raise as secret. nil is never secret and the argument is not nilable, so nil is answered without the call, tested through type() because == on a secret raises.
+function ns.CanAccess(value)
+    if type(value) == "nil" then return true end
+    local ok, accessible = pcall(canaccessvalue, value)
+    return ok and accessible == true
+end
+
 -- Rounds a length derived from text up to the 4 px grid.
 function ns.Snap(length)
     return math.ceil(length / 4) * 4

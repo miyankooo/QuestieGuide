@@ -1,7 +1,8 @@
 -- Offline smoke test for QuestieGuide. It loads every toc file in order against stubs of the client and
--- of Questie, opens the window, then checks a render, the launcher status, the dungeon line, a combat
--- click, the Filter menu, a level change, a search and the map pins. It proves the files wire together
--- and the list logic runs; how the window looks still needs an in-game pass.
+-- of Questie, checks the welcome line, opens the window, then checks a render, the launcher status, the
+-- dungeon line, a combat click, the Filter menu, a level change, a search, the chat links, the map pins
+-- and a later login. It proves the files wire together and the list logic runs; how the window looks
+-- still needs an in-game pass.
 --
 -- Run from the QuestieGuide folder:  lua Tests/Smoke.lua
 
@@ -318,6 +319,27 @@ for line in io.lines(ROOT .. ADDON_NAME .. ".toc") do
 end
 C_AddOns = { GetAddOnMetadata = function(name, key) return name == ADDON_NAME and key == "Title" and tocTitle or nil end }
 
+-- canaccessvalue raises for a value the test marks secret, as the client may for tainted addon code.
+local secretValues = {}
+canaccessvalue = function(value)
+    if secretValues[value] then error("attempt to access a secret value") end
+    return true
+end
+
+-- LinkUtil.FormatLink and LinkTypes as in Blizzard_SharedXML/LinkUtil.lua.
+LinkTypes = { AddOn = "addon" }
+LinkUtil = {
+    FormatLink = function(linkType, text, ...)
+        local parts = { "|H" .. linkType, ... }
+        for i, part in ipairs(parts) do parts[i] = tostring(part) end
+        return table.concat(parts, ":") .. "|h" .. text .. "|h"
+    end,
+}
+
+-- PLAYER_LOGIN runs what EventUtil.ContinueOnPlayerLogin queued, once.
+local loginCallbacks = {}
+EventUtil = { ContinueOnPlayerLogin = function(callback) loginCallbacks[#loginCallbacks + 1] = callback end }
+
 -- Red error text collects in a list the checks read.
 local uiErrors = {}
 UIErrorsFrame = { AddExternalErrorMessage = function(_, message) uiErrors[#uiErrors + 1] = message end }
@@ -337,8 +359,12 @@ C_QuestLog = { IsEliteQuest = function(questId) return questId == 103 end }
 function OpenWorldMap(mapId) mapCalls.opened = mapId end
 local itemRefCallbacks = {}
 EventRegistry = {
-    RegisterCallback = function(_, event, func) itemRefCallbacks[#itemRefCallbacks + 1] = event == "SetItemRef" and func or nil end,
-    TriggerEvent = function(_, event, ...) for _, func in ipairs(itemRefCallbacks) do func("owner", ...) end end,
+    RegisterCallback = function(_, event, func, owner)
+        if event == "SetItemRef" then itemRefCallbacks[#itemRefCallbacks + 1] = { func = func, owner = owner } end
+    end,
+    TriggerEvent = function(_, event, ...)
+        for _, callback in ipairs(itemRefCallbacks) do callback.func(callback.owner, ...) end
+    end,
 }
 ChatFrameUtil = { GetActiveWindow = function() return nil end }
 
@@ -478,24 +504,29 @@ local STUBBED = {
     ["Libs/LibDBIcon-1.0/LibDBIcon-1.0.lua"] = true,
 }
 
--- Every toc file in order; the three launcher libraries are replaced by the stubs above.
-local ns = {}
-local loaded = 0
-for line in io.lines(ROOT .. ADDON_NAME .. ".toc") do
-    local path = line:match("^%s*([^#%s][^\r]*%.lua)%s*$")
-    if path then
-        path = path:gsub("\\", "/")
-        if not STUBBED[path] then
-            local ok, err = pcall(load, path, ADDON_NAME, ns)
-            check("loads " .. path, ok, err)
-            loaded = loaded + 1
-        end
-        if path == "Libs/LibStub/LibStub.lua" then
-            stubLauncherLibs()
+-- Every toc file in order into a fresh namespace, as one session loads them; the three launcher libraries are
+-- replaced by the stubs above, which a later session keeps.
+local function loadAddon()
+    local ns = {}
+    local loaded = 0
+    for line in io.lines(ROOT .. ADDON_NAME .. ".toc") do
+        local path = line:match("^%s*([^#%s][^\r]*%.lua)%s*$")
+        if path then
+            path = path:gsub("\\", "/")
+            if not STUBBED[path] then
+                local ok, err = pcall(load, path, ADDON_NAME, ns)
+                check("loads " .. path, ok, err)
+                loaded = loaded + 1
+            end
+            if path == "Libs/LibStub/LibStub.lua" and not LibStub("LibDBIcon-1.0", true) then
+                stubLauncherLibs()
+            end
         end
     end
+    check("toc lists the addon files", loaded >= 3, loaded)
+    return ns
 end
-check("toc lists the addon files", loaded >= 3, loaded)
+local ns = loadAddon()
 
 
 local function fireEvent(event, ...)
@@ -503,6 +534,11 @@ local function fireEvent(event, ...)
         if frame.events[event] and frame.scripts.OnEvent then
             frame.scripts.OnEvent(frame, event, ...)
         end
+    end
+    if event == "PLAYER_LOGIN" then
+        local callbacks = loginCallbacks
+        loginCallbacks = {}
+        for _, callback in ipairs(callbacks) do callback() end
     end
 end
 
@@ -541,17 +577,23 @@ local function hasLine(lines, fragment)
     return false
 end
 
--- Login: saved variables, Questie's ready callback, then PLAYER_LOGIN.
+-- First login on the account: no saved variables, Questie's ready callback, then PLAYER_LOGIN.
+QuestieGuideDB = nil
 fireEvent("ADDON_LOADED", ADDON_NAME)
 check("saved variables get their defaults", type(QuestieGuideDB) == "table" and QuestieGuideDB.sortMode == "xp"
     and QuestieGuideDB.filters.inLog == true and QuestieGuideDB.levelBelow == 5)
+check("the first load marks the first run and prints nothing", ns.firstRun == true and #chat == 0, chat[1])
 check("waits for Questie's ready callback", #readyCallbacks == 1, #readyCallbacks)
 for _, ready in ipairs(readyCallbacks) do ready() end
 fireEvent("PLAYER_LOGIN")
 check("launcher registers with LibDBIcon", LibStub("LibDBIcon-1.0"):IsRegistered("Questie Guide"))
-check("no chat at login", #chat == 0, chat[1])
+check("login prints exactly one welcome line", #chat == 1, #chat)
+check("the welcome line has the gold title prefix, the window link and the alias",
+    chat[1] == "|cff[Questie Guide]|r: Lists the quests you can pick up now, grouped by zone and rated by XP. "
+        .. "Open the |cff|Haddon:QuestieGuide|h[Questie Guide]|h|r window or type /qg to see the best zone for your next trip.", chat[1])
 check("slash command registers", SLASH_QUESTIEGUIDE1 == "/questieguide" and SLASH_QUESTIEGUIDE2 == "/qg")
 flushTimers()
+chat = {}
 
 -- Open: the loading line first, then the list on the next tick.
 SlashCmdList.QUESTIEGUIDE("")
@@ -601,7 +643,7 @@ player.instanceType = "party"
 fireEvent("ZONE_CHANGED_NEW_AREA")
 fireEvent("ZONE_CHANGED_NEW_AREA")
 check("dungeon line counts pickable quests once", #chat == 1
-    and plain(chat[1]):find("[Elwynn Forest]|h: 3 |4quest:quests; you could still pick up.", 1, true) ~= nil, chat[1])
+    and plain(chat[1]):find("|Haddon:QuestieGuide:zone:12|h[Elwynn Forest]|h: 3 |4quest:quests; you could still pick up.", 1, true) ~= nil, chat[1])
 check("a chat line starts with the gold title and an uncoloured colon", chat[1]:sub(1, 23) == "|cff[Questie Guide]|r: ", chat[1])
 player.instanceType = "none"
 fireEvent("ZONE_CHANGED_NEW_AREA")
@@ -659,7 +701,7 @@ check("newly unlocked quest lists", findRow("The Defias Brotherhood") ~= nil)
 check("in-log quest shows its status", findRow("Westfall Stew") ~= nil
     and findRow("Westfall Stew").text.label:find("[In Questlog]", 1, true) ~= nil)
 check("one chat line names the new quests", #chat == 1
-    and plain(chat[1]):find("New quests at level 11: 1 in |Haddon:questieguide:zone:40|h[Westfall]|h.", 1, true) ~= nil, chat[1])
+    and plain(chat[1]):find("New quests at level 11: 1 in |Haddon:QuestieGuide:zone:40|h[Westfall]|h.", 1, true) ~= nil, chat[1])
 
 -- Search: matching rows expand, the banner hides, and clearing restores the list.
 QuestieGuideFrame.searchBox:SetText("kobold")
@@ -676,10 +718,23 @@ QuestieGuide_Toggle()
 check("binding closes the window", not QuestieGuideFrame:IsShown())
 
 -- A zone link in a chat line opens the guide at that zone.
-EventRegistry:TriggerEvent("SetItemRef", "addon:questieguide:zone:40", "[Westfall]", "LeftButton")
+EventRegistry:TriggerEvent("SetItemRef", "addon:QuestieGuide:zone:40", "[Westfall]", "LeftButton")
 flushTimers()
 check("a chat zone link opens the guide at the zone", QuestieGuideFrame:IsShown()
     and QuestieGuideDB.zoneCollapsed["Westfall"] == false)
+QuestieGuide_Toggle()
+
+-- The welcome line's link opens the window; another addon's link and a secret one do nothing.
+chat = {}
+EventRegistry:TriggerEvent("SetItemRef", "addon:OtherAddon", "[Other Addon]", "LeftButton")
+check("another addon's link leaves the window closed", not QuestieGuideFrame:IsShown() and #chat == 0)
+secretValues["addon:QuestieGuide"] = true
+EventRegistry:TriggerEvent("SetItemRef", "addon:QuestieGuide", "[Questie Guide]", "LeftButton")
+check("a secret link leaves the window closed", not QuestieGuideFrame:IsShown() and #chat == 0)
+secretValues["addon:QuestieGuide"] = nil
+EventRegistry:TriggerEvent("SetItemRef", "addon:QuestieGuide", "[Questie Guide]", "LeftButton")
+flushTimers()
+check("the welcome link opens the window", QuestieGuideFrame:IsShown() and #chat == 0)
 QuestieGuide_Toggle()
 
 -- Questie map pins: only an available "!" opens the guide.
@@ -709,6 +764,17 @@ ns.renderList()
 flushTimers()
 check("showing the type again lists it", findRow("Kobold Candles") ~= nil)
 QuestieDB.IsDungeonQuest = isDungeonQuest
+
+-- A later session on the same account: the saved variables exist, so login prints nothing.
+chat = {}
+wipe(eventFrames)
+wipe(loginCallbacks)
+wipe(itemRefCallbacks)
+ns = loadAddon()
+fireEvent("ADDON_LOADED", ADDON_NAME)
+fireEvent("PLAYER_LOGIN")
+flushTimers()
+check("a later login prints nothing", ns.firstRun == nil and #chat == 0, chat[1])
 
 print = realPrint
 print(string.format("QuestieGuide smoke test: %d passed, %d failed", passes, failures))

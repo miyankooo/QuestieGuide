@@ -1,5 +1,5 @@
--- Every way to open the window: minimap button, addon menu, slash command, key binding and the zone links in chat.
-local _, ns = ...
+-- Every way to open the window: minimap button, addon menu, slash command, key binding, the welcome line and the zone links in chat.
+local addonName, ns = ...
 
 local ADDON_ICON = ns.ADDON_ICON
 local COLOR = ns.COLOR
@@ -94,6 +94,68 @@ local function toggleMinimapButton()
     ns.Print(show and "Minimap button shown." or "Minimap button hidden. Type /qg minimap to show it again.")
 end
 
+-- Blizzard reserves the addon link type for addons and hands every click on one to all of them through one EventRegistry event (ItemRefHandlersShared.lua:279-282), so no Blizzard function is hooked. The welcome line links the window; chat zone links add the zone's area id.
+local LINK = LinkTypes.AddOn .. ":" .. addonName
+local ZONE_LINK_PREFIX = LINK .. ":zone:"
+
+-- A link in the gold of Blizzard's own chat links.
+local function formatLink(label, ...)
+    return COLOR.LINK:WrapTextInColorCode(LinkUtil.FormatLink(LinkTypes.AddOn, "[" .. label .. "]", addonName, ...))
+end
+
+-- A zone name as a clickable chat link that opens the window at that zone.
+local function formatZoneLink(zoneName, areaId)
+    return formatLink(zoneName, "zone", areaId)
+end
+
+-- The first load on an account says what the guide does and links the window.
+local function printWelcome()
+    ns.Print("Lists the quests you can pick up now, grouped by zone and rated by XP. Open the " .. formatLink(ns.title)
+        .. " window or type /qg to see the best zone for your next trip.")
+end
+
+EventUtil.ContinueOnPlayerLogin(function()
+    if ns.firstRun then printWelcome() end
+end)
+
+-- Opens the window from a link, and at a zone for a zone link. Another addon's link may come from a line kept from restricted content, so it is checked before any comparison. Chat history survives a reload, so an old link can be clicked before Questie is ready.
+EventRegistry:RegisterCallback("SetItemRef", function(_, link)
+    if not ns.CanAccess(link) or type(link) ~= "string" then
+        return
+    end
+    local areaId
+    if link ~= LINK then
+        if link:sub(1, #ZONE_LINK_PREFIX) ~= ZONE_LINK_PREFIX then
+            return
+        end
+        areaId = tonumber(link:sub(#ZONE_LINK_PREFIX + 1))
+        if not areaId then
+            return
+        end
+    end
+    if not ns.questieReady then
+        ns.Print(describeQuestieState())
+        return
+    end
+    buildMainFrame():Show()
+    if not areaId then
+        return
+    end
+
+    -- The window's first layout pass waits a tick after it shows, so the jump waits too.
+    local zoneName = getZoneName(areaId)
+    C_Timer.After(0.1, function()
+        expandAndScrollToZone(zoneName)
+    end)
+end, ns)
+
+-- Key binding entry point; Bindings.xml can only call named globals. The name global labels the entry under Key Bindings, mirroring how Questie registers its Journey toggle.
+BINDING_NAME_QUESTIEGUIDE_TOGGLE = "Toggle Window"
+
+function QuestieGuide_Toggle()
+    toggleIfReady()
+end
+
 -- /qg toggles the window even when the minimap button is hidden; /qg minimap shows or hides that button; /qg reset rescues a window dragged off-screen. The window holds QuestieGuideDB.position itself, so reset empties it in place.
 SLASH_QUESTIEGUIDE1, SLASH_QUESTIEGUIDE2 = "/questieguide", "/qg"
 SlashCmdList.QUESTIEGUIDE = function(message)
@@ -111,37 +173,6 @@ SlashCmdList.QUESTIEGUIDE = function(message)
         toggleIfReady()
     end
 end
-
--- Key binding entry point; Bindings.xml can only call named globals. The name global labels the entry under Key Bindings, mirroring how Questie registers its Journey toggle.
-BINDING_NAME_QUESTIEGUIDE_TOGGLE = "Toggle Window"
-
-function QuestieGuide_Toggle()
-    toggleIfReady()
-end
-
--- A zone name as a clickable chat link that opens the window at that zone, in the |Haddon:...|h pattern Questie uses for its debug offers and the gold of Blizzard's own chat links.
-local function formatZoneLink(zoneName, areaId)
-    return COLOR.LINK:WrapTextInColorCode("|Haddon:questieguide:zone:" .. areaId .. "|h[" .. zoneName .. "]|h")
-end
-
--- Clicking a zone link in the guide's chat lines opens the window at that zone. Blizzard's addon link handler passes every addon link to the SetItemRef callback (ItemRefHandlersShared.lua), so no Blizzard function is hooked. Chat history survives a reload, so an old link can be clicked before Questie is ready.
-local ZONE_LINK_PREFIX = "addon:questieguide:zone:"
-EventRegistry:RegisterCallback("SetItemRef", function(_, link)
-    if type(link) ~= "string" or link:sub(1, #ZONE_LINK_PREFIX) ~= ZONE_LINK_PREFIX then
-        return
-    end
-    local areaId = tonumber(link:sub(#ZONE_LINK_PREFIX + 1))
-    if not areaId or not ns.questieReady then
-        return
-    end
-    local zoneName = getZoneName(areaId)
-    buildMainFrame():Show()
-
-    -- The window's first layout pass waits a tick after it shows, so the jump waits too.
-    C_Timer.After(0.1, function()
-        expandAndScrollToZone(zoneName)
-    end)
-end)
 
 ns.formatZoneLink = formatZoneLink
 ns.setupLauncher = setupLauncher

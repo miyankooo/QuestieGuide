@@ -196,8 +196,10 @@ local function isKnownOption(options, value)
     return false
 end
 
+-- An absent table marks the account's first load with the addon; the welcome line prints for it at login.
 local function loadSavedVariables()
     if type(QuestieGuideDB) ~= "table" then
+        ns.firstRun = true
         QuestieGuideDB = {}
     end
     applyDefaults(QuestieGuideDB, DEFAULTS)
