@@ -4,9 +4,9 @@ local addonName, ns = ...
 -- The toc Title, the spaced name every player-facing surface shows: window title, launcher, addon menu and chat prefix.
 ns.title = C_AddOns.GetAddOnMetadata(addonName, "Title")
 
--- Every chat line goes through this one helper.
+-- Every chat line: the bracketed title in the gold of Blizzard's own chat links, the message in the chat frame's colour.
 function ns.Print(message)
-    print(YELLOW_FONT_COLOR:WrapTextInColorCode("[" .. ns.title .. "]:") .. " " .. message)
+    print(NORMAL_FONT_COLOR:WrapTextInColorCode("[" .. ns.title .. "]") .. ": " .. message)
 end
 
 -- Rounds a length derived from text up to the 4 px grid.
@@ -41,7 +41,7 @@ local DEFAULTS = {
 -- Bounds of the levels below / above band.
 local RANGE_LIMIT = { MIN = 0, MAX = 10 }
 
--- Colour roles on Blizzard's colour objects: muted, heading and good from the shared roles, other colour objects for the quest states they have no role for.
+-- Colour roles on Blizzard's colour objects: muted, heading, good and links from the shared roles, other colour objects for the quest states they have no role for.
 local COLOR = {
     MUTED = GRAY_FONT_COLOR,
     ACCENT = NORMAL_FONT_COLOR,
@@ -52,7 +52,9 @@ local COLOR = {
     -- Grey like the "!" Questie pins a quest with before its required level is reached.
     LOCKED = GRAY_FONT_COLOR,
     REPEATABLE = LIGHTBLUE_FONT_COLOR,
-    LINK = LINK_FONT_COLOR,
+
+    -- The gold of Blizzard's own chat links, for the addon's links in chat.
+    LINK = NORMAL_FONT_COLOR,
 }
 
 local SORT_BY_OPTIONS = {
@@ -148,7 +150,7 @@ local function describeQuestieState()
     if ns.missingQuestieField then
         return "This Questie version has no " .. ns.missingQuestieField .. ", which the quest list needs. Update Questie and QuestieDB."
     end
-    return "Questie has not finished loading yet. Try again in a moment; if this stays, check Questie for errors."
+    return "Questie is still loading. Try again in a moment, or check Questie for errors if this stays."
 end
 
 local function clampRange(value)

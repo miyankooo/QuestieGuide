@@ -119,7 +119,7 @@ function QuestieGuide_Toggle()
     toggleIfReady()
 end
 
--- A zone name as a clickable chat link that opens the window at that zone, in the same |Haddon:...|h pattern and link colour Questie uses for its debug offers.
+-- A zone name as a clickable chat link that opens the window at that zone, in the |Haddon:...|h pattern Questie uses for its debug offers and the gold of Blizzard's own chat links.
 local function formatZoneLink(zoneName, areaId)
     return COLOR.LINK:WrapTextInColorCode("|Haddon:questieguide:zone:" .. areaId .. "|h[" .. zoneName .. "]|h")
 end

@@ -88,7 +88,7 @@ local function announceNewQuests(newLevel)
         local label = (areaId and areaId > 0) and formatZoneLink(zoneName, areaId) or zoneName
         parts[i] = string.format("%d in %s", counts[zoneName], label)
     end
-    local more = #zones > 3 and string.format(" and %d more zones", #zones - 3) or ""
+    local more = #zones > 3 and string.format(" and %d more |4zone:zones;", #zones - 3) or ""
     ns.Print("New quests at level " .. newLevel .. ": " .. table.concat(parts, ", ") .. more .. ".")
 end
 
@@ -113,7 +113,7 @@ local function announceInstanceQuests()
     announcedInstance = zoneName
     local count = countPickable(entry)
     if count > 0 then
-        ns.Print(string.format("%s: %d quest%s you could still pick up.", formatZoneLink(zoneName, areaId), count, count == 1 and "" or "s"))
+        ns.Print(string.format("%s: %d |4quest:quests; you could still pick up.", formatZoneLink(zoneName, areaId), count))
     end
 end
 

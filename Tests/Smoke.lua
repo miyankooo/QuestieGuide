@@ -596,7 +596,8 @@ player.instanceType = "party"
 fireEvent("ZONE_CHANGED_NEW_AREA")
 fireEvent("ZONE_CHANGED_NEW_AREA")
 check("dungeon line counts pickable quests once", #chat == 1
-    and plain(chat[1]):find("[Elwynn Forest]|h: 3 quests you could still pick up.", 1, true) ~= nil, chat[1])
+    and plain(chat[1]):find("[Elwynn Forest]|h: 3 |4quest:quests; you could still pick up.", 1, true) ~= nil, chat[1])
+check("a chat line starts with the gold title and an uncoloured colon", chat[1]:sub(1, 23) == "|cff[Questie Guide]|r: ", chat[1])
 player.instanceType = "none"
 fireEvent("ZONE_CHANGED_NEW_AREA")
 flushTimers()
