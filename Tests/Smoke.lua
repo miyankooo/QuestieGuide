@@ -141,15 +141,26 @@ function Region:GetPoint(i)
     return p.point, p.rel, p.relPoint, p.x, p.y
 end
 function Region:SetAllPoints() end
+-- Showing or hiding a frame runs OnShow or OnHide on it and on every child that is shown itself, as the client does.
+local function runVisibility(region, event)
+    runScript(region, event)
+    for _, child in ipairs(region.children) do
+        if child.shown then runVisibility(child, event) end
+    end
+end
 function Region:Show()
     if self.shown then return end
     self.shown = true
-    runScript(self, "OnShow")
+    runVisibility(self, "OnShow")
 end
-function Region:Hide() self.shown = false end
+function Region:Hide()
+    if not self.shown then return end
+    self.shown = false
+    runVisibility(self, "OnHide")
+end
 function Region:SetShown(shown) if shown then self:Show() else self:Hide() end end
 function Region:IsShown() return self.shown end
-function Region:IsVisible() return self.shown end
+function Region:IsVisible() return self.shown and (not self.parent or self.parent:IsVisible()) end
 function Region:SetAlpha(alpha) self.alpha = alpha end
 function Region:SetScript(event, fn) self.scripts[event] = fn end
 function Region:GetScript(event) return self.scripts[event] end
@@ -237,9 +248,14 @@ templates.SearchBoxTemplate = function(f)
     end
 end
 
--- WowStyle1FilterDropdownTemplate: text FILTER, resizeToText, and WowDropdownFilterBehaviorMixin's reset.
+-- WowStyle1FilterDropdownTemplate: text FILTER, resizeToText, WowDropdownFilterBehaviorMixin's reset, and
+-- DropdownButtonMixin's callbacks, of which the addon uses OnMenuOpen.
+DropdownButtonMixin = { Event = { OnMenuOpen = "OnMenuOpen" } }
 templates.WowStyle1FilterDropdownTemplate = function(f)
     f:SetSize(135, 18)
+    f.callbacks = {}
+    f.RegisterCallback = function(self, event, fn) self.callbacks[event] = fn end
+    f.TriggerEvent = function(self, event, ...) if self.callbacks[event] then self.callbacks[event](...) end end
     f.ResetButton = newRegion("Button", nil, f)
     f.ResetButton.shown = false
     f.SetDefaultCallback = function(self, fn) self.defaultCallback = fn end
@@ -251,8 +267,30 @@ templates.WowStyle1FilterDropdownTemplate = function(f)
     end
 end
 
+-- HelpTipTemplate (HelpTip.lua): Init keeps the info and leaves acknowledged as it was, Reset clears both, the
+-- close button acknowledges, and Close, which OnHide also runs, reports an acknowledged tip through
+-- onAcknowledgeCallback before it hides.
+HelpTip = { width = 226, ButtonStyle = { Close = 2 }, Point = { BottomEdgeCenter = 5 } }
+templates.HelpTipTemplate = function(f)
+    f.acknowledged = false
+    f.Init = function(self, parent, info, relativeRegion) self.info, self.target = info, relativeRegion end
+    f.Reset = function(self) self.info, self.acknowledged = nil, false end
+    f.Close = function(self)
+        local info = self.info
+        self.info = nil
+        if info and self.acknowledged and info.onAcknowledgeCallback then info.onAcknowledgeCallback() end
+        self:Hide()
+    end
+    f.Acknowledge = function(self)
+        self.acknowledged = true
+        self:Close()
+    end
+    f:SetScript("OnHide", f.Close)
+end
+
 function CreateFrame(kind, name, parent, template)
     local f = newRegion(kind, name, parent)
+    f.template = template
     if template then
         local setup = templates[template]
         if not setup then error("no stub for template " .. template) end
@@ -618,6 +656,38 @@ check("a two-line quest row snaps to the grid", findRow("Wolves Across the Borde
     findRow("Wolves Across the Border"):GetHeight())
 check("Westfall starts collapsed", findRow("Westfall (2)") ~= nil and findRow("Red Silk Bandanas") == nil)
 check("Collapse All reads the expanded state", QuestieGuideFrame.toggleAllButton.label == "Collapse All")
+
+-- The help tip: an own HelpTipTemplate frame on the Filter button, shown with the window.
+local filterButton = QuestieGuideFrame.filterDropdown
+local tip
+for _, child in ipairs(filterButton.children) do
+    if child.template == "HelpTipTemplate" then tip = child end
+end
+check("the help tip shows at the Filter button", tip ~= nil and tip.shown and tip.info and tip.target == filterButton
+    and tip.info.text == "Open Filter to choose quest types, the level range and the sort order.")
+QuestieGuide_Toggle()
+check("the tip hides with the window without being marked seen", not tip.shown and QuestieGuideDB.tipSeen == nil)
+QuestieGuide_Toggle()
+flushTimers()
+check("and shows again with it", tip.shown and tip.info ~= nil)
+tip:Acknowledge()
+check("its close button marks it seen", QuestieGuideDB.tipSeen == true and not tip.shown)
+QuestieGuide_Toggle()
+QuestieGuide_Toggle()
+flushTimers()
+check("a seen tip stays away", not tip.shown)
+QuestieGuideDB.tipSeen = nil
+QuestieGuide_Toggle()
+QuestieGuide_Toggle()
+flushTimers()
+check("a cleared flag brings the tip back", tip.shown and tip.info ~= nil)
+QuestieGuide_Toggle()
+check("a tip closed once and brought back is not marked seen when it hides with the window",
+    not tip.shown and QuestieGuideDB.tipSeen == nil)
+QuestieGuide_Toggle()
+flushTimers()
+filterButton:TriggerEvent("OnMenuOpen", filterButton)
+check("opening the Filter menu counts the tip as seen", QuestieGuideDB.tipSeen == true and not tip.shown)
 
 -- Tooltips: a quest row, the chain on a blocked row and the launcher.
 local wolves = findRow("Wolves Across the Border")

@@ -1,4 +1,4 @@
--- The tool window: the Filter menu in the attic, the bar buttons and the show handler.
+-- The tool window: the Filter menu in the attic, the bar buttons, the help tip and the show handler.
 local _, ns = ...
 
 local ADDON_ICON = ns.ADDON_ICON
@@ -122,6 +122,38 @@ local function CreateFilterDropdown(parent, width)
     return dropdown
 end
 
+-- Blizzard's yellow help tip as an own HelpTipTemplate frame on the target, never HelpTip:Show, which takes a frame from Blizzard's shared pool and taints the help tips Blizzard shows later. It shows each time its target shows until the player closes it or uses the feature, then never again on the account; it hides with its target without being marked, and /qg intro clears the flag. Init leaves acknowledged set from an earlier close (HelpTip.lua:419-431, 495, 687), so Reset runs before every Init.
+local function AttachTip(target, text, targetPoint, relativeRegion)
+    local tip
+    local info = {
+        text = text,
+        buttonStyle = HelpTip.ButtonStyle.Close,
+        targetPoint = targetPoint,
+        onAcknowledgeCallback = function() QuestieGuideDB.tipSeen = true end,
+    }
+    local function ShowTip()
+        if QuestieGuideDB.tipSeen or (tip and tip:IsShown()) then return end
+        if not tip then
+            tip = CreateFrame("Frame", nil, target, "HelpTipTemplate")
+            tip.width = HelpTip.width
+            tip:SetWidth(tip.width)
+        end
+        tip:Reset()
+        tip:Init(target, info, relativeRegion or target)
+        tip:Show()
+    end
+    target:HookScript("OnShow", ShowTip)
+    if target:IsVisible() then ShowTip() end
+
+    -- The player used the feature: the tip goes for good, shown or not.
+    local function Retire()
+        if tip and tip.info then tip:Acknowledge() else QuestieGuideDB.tipSeen = true end
+    end
+    return ShowTip, Retire
+end
+
+local TIP_TEXT = "Open Filter to choose quest types, the level range and the sort order."
+
 -- Level Range radios: Questie's own Quest Level Options, or the guide's band of levels below and above the player.
 local RANGE_SOURCE_OPTIONS = {
     { value = true,  label = "Questie Level Ranges" },
@@ -244,13 +276,15 @@ local function setupFilterMenu(_, rootDescription)
     addRadios(sortMenu, "sortDir", SORT_DIR_OPTIONS, setSortSetting)
 end
 
--- Blizzard's Filter button left of the search box, one gap between their art. Its reset button appears whenever the filters differ from the defaults.
+-- Blizzard's Filter button left of the search box, one gap between their art. Its reset button appears whenever the filters differ from the defaults. It holds every option, so the help tip points here, below the button where the list has room, and opening the menu counts as using it.
 local function buildFilterDropdown(frame)
     local filter = CreateFilterDropdown(frame)
     filter:SetPoint("RIGHT", frame.searchBox, "LEFT", -(GAP + INPUT_ART + LAYOUT.FILTER_ART), 0)
     filter:SetDefaultCallback(resetFilters)
     filter:SetIsDefaultCallback(filtersAreDefault)
     filter:SetupMenu(setupFilterMenu)
+    local _, retireTip = AttachTip(filter, TIP_TEXT, HelpTip.Point.BottomEdgeCenter)
+    filter:RegisterCallback(DropdownButtonMixin.Event.OnMenuOpen, retireTip)
     frame.filterDropdown = filter
 end
 
