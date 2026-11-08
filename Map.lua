@@ -9,12 +9,12 @@ local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 local QuestieMap = QuestieLoader:ImportModule("QuestieMap")
 local QuestieFrame = QuestieLoader:ImportModule("QuestieFrame")
 
--- Blizzard's map and quest log open through ShowUIPanel, which refuses addon callers in combat, so a click then says why nothing opened.
+-- Blizzard's map and quest log open through ShowUIPanel, which refuses addon callers in combat, so a click then shows Blizzard's own red combat error instead of a chat line.
 local function isBlockedInCombat()
     if not InCombatLockdown() then
         return false
     end
-    ns.Print("The map and quest log can't open in combat. Click the quest again after combat.")
+    UIErrorsFrame:AddExternalErrorMessage(ERR_NOT_IN_COMBAT)
     return true
 end
 

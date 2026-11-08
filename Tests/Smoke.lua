@@ -96,6 +96,7 @@ CALENDAR_TYPE_DUNGEON = "Dungeon"
 CALENDAR_TYPE_PVP = "PvP"
 RAID = "Raid"
 FILTER = "Filter"
+ERR_NOT_IN_COMBAT = "You can't do that while in combat"
 Constants = { QuestConsts = { QUEST_INFO_ELITE_ID = 1, QUEST_INFO_DUNGEON_ID = 81, QUEST_INFO_PVP_ID = 41, QUEST_INFO_RAID_ID = 62 } }
 Enum = { TooltipDataType = { Item = 0 } }
 MenuResponse = { Open = 1, Refresh = 2, Close = 3, CloseAll = 4 }
@@ -316,6 +317,10 @@ for line in io.lines(ROOT .. ADDON_NAME .. ".toc") do
     tocTitle = tocTitle or line:match("^## Title:%s*(.-)%s*$")
 end
 C_AddOns = { GetAddOnMetadata = function(name, key) return name == ADDON_NAME and key == "Title" and tocTitle or nil end }
+
+-- Red error text collects in a list the checks read.
+local uiErrors = {}
+UIErrorsFrame = { AddExternalErrorMessage = function(_, message) uiErrors[#uiErrors + 1] = message end }
 
 local AREAS = { [12] = "Elwynn Forest", [40] = "Westfall" }
 local mapCalls = {}
@@ -602,13 +607,13 @@ player.instanceType = "none"
 fireEvent("ZONE_CHANGED_NEW_AREA")
 flushTimers()
 
--- In combat a row click lands the waypoint, keeps the map closed and says why.
+-- In combat a row click lands the waypoint, keeps the map closed and says why in Blizzard's red error text.
 chat, mapCalls.opened, mapCalls.waypoint = {}, nil, nil
 player.inCombat = true
 wolves.scripts.OnClick(wolves, "LeftButton")
 flushTimers()
 check("combat click sets only the waypoint", mapCalls.waypoint ~= nil and mapCalls.opened == nil
-    and #chat == 1 and hasLine(chat, "after combat."), chat[1])
+    and #chat == 0 and uiErrors[#uiErrors] == ERR_NOT_IN_COMBAT, chat[1])
 player.inCombat = false
 
 -- A row click sets the waypoint and opens the map at the giver.
