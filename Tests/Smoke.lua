@@ -195,9 +195,9 @@ function Region:SetBlendMode() end
 function Region:CreateFontString() return newRegion("FontString", nil, self) end
 function Region:CreateTexture() return newRegion("Texture", nil, self) end
 
--- Blizzard template setup, reduced to the keys and calls the library and the addon use.
+-- Blizzard template setup, reduced to the keys and calls the addon uses.
 local templates = {}
--- The rock tile and its title streaks, which UI.CreateWindow keeps, and the inset's marble tile and border,
+-- The rock tile and its title streaks, which the tool window keeps, and the inset's marble tile and border,
 -- which it hides for the brown panel.
 templates.ButtonFrameTemplate = function(f)
     f.Bg = newRegion("Texture", nil, f)
@@ -309,6 +309,13 @@ end
 unpack = unpack or table.unpack
 issecretvalue = function() return false end
 issecrettable = function() return false end
+
+-- The toc's own Title, as the client reads it.
+local tocTitle
+for line in io.lines(ROOT .. ADDON_NAME .. ".toc") do
+    tocTitle = tocTitle or line:match("^## Title:%s*(.-)%s*$")
+end
+C_AddOns = { GetAddOnMetadata = function(name, key) return name == ADDON_NAME and key == "Title" and tocTitle or nil end }
 
 local AREAS = { [12] = "Elwynn Forest", [40] = "Westfall" }
 local mapCalls = {}
@@ -448,7 +455,7 @@ local function load(path, ...)
     chunk(...)
 end
 
--- The launcher's two libraries, reduced to the calls UI.CreateLauncher makes.
+-- The launcher's two libraries, reduced to the calls CreateLauncher makes.
 local function stubLauncherLibs()
     local LDB = LibStub:NewLibrary("LibDataBroker-1.1", 1)
     function LDB:NewDataObject(name, object) self[name] = object; return object end

@@ -1,9 +1,6 @@
 -- The tool window: the Filter menu in the attic, the bar buttons and the show handler.
 local _, ns = ...
 
-local UI = LibStub("LibNativeUI-1.0")
-
-local ADDON_TITLE = ns.ADDON_TITLE
 local ADDON_ICON = ns.ADDON_ICON
 local DEFAULTS = ns.DEFAULTS
 local RANGE_LIMIT = ns.RANGE_LIMIT
@@ -19,6 +16,111 @@ local renderLoadingPlaceholder = ns.renderLoadingPlaceholder
 local buildQuestList = ns.buildQuestList
 local buildSearchBox = ns.buildSearchBox
 local toggleAllZones = ns.toggleAllZones
+local Snap = ns.Snap
+
+-- The spacing role between related controls, and InputBoxTemplate's left cap, drawn 5 px outside the box (InputBoxTemplates.xml:49).
+local GAP = 8
+local INPUT_ART = 5
+
+-- The collections panel's ornaments, which a tool window leaves out.
+local BACKGROUND_CORNERS = { "BGCornerTopLeft", "BGCornerTopRight", "BGCornerBottomLeft", "BGCornerBottomRight" }
+
+-- Restores a saved position, or centres the frame.
+local function RestorePosition(frame, position)
+    frame:ClearAllPoints()
+    if position and position.point then
+        frame:SetPoint(position.point, UIParent, position.relPoint or position.point, position.x or 0, position.y or 0)
+    else
+        frame:SetPoint("CENTER")
+    end
+end
+
+-- Windows and dialogs: toplevel, clamped, dragged with the left button, closed by Escape through UISpecialFrames,
+-- never UIPanelWindows, so they never drive Blizzard's panel layout.
+local function MakeMovable(frame, name, strata, position)
+    frame:SetFrameStrata(strata)
+    frame:SetToplevel(true)
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", frame.StartMoving)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        if position then
+            local point, _, relPoint, x, y = self:GetPoint(1)
+            position.point, position.relPoint, position.x, position.y = point, relPoint, x, y
+        end
+    end)
+    RestorePosition(frame, position)
+    frame:Hide()
+    tinsert(UISpecialFrames, name)
+end
+
+-- A tool window on ButtonFrameTemplate: portrait, title, close button, inset, attic and button bar come from the
+-- template. The wardrobe's brown panel (CollectionsBackgroundTemplate, Mainline/SharedCollectionTemplates.xml) takes
+-- the inset's place without its corner ornaments; Inset stays the content parent and draws nothing.
+local function CreateWindow(name, title, icon, width, height, position)
+    local frame = CreateFrame("Frame", name, UIParent, "ButtonFrameTemplate")
+    frame:SetSize(width, height)
+    frame.Inset.Bg:Hide()
+    frame.Inset.NineSlice:Hide()
+    local background = CreateFrame("Frame", nil, frame, "CollectionsBackgroundTemplate")
+    background:ClearAllPoints()
+    background:SetAllPoints(frame.Inset)
+    for _, corner in ipairs(BACKGROUND_CORNERS) do background[corner]:Hide() end
+    frame.Background = background
+    frame:SetTitle(title)
+    frame:SetPortraitToAsset(icon)
+
+    -- The close button goes through HideUIPanel, which refuses insecure callers in combat. UIPanelCloseButton_OnClick
+    -- asks onCloseCallback first, so the window hides itself instead.
+    frame.onCloseCallback = function()
+        frame:Hide()
+        return false
+    end
+
+    MakeMovable(frame, name, "HIGH", position)
+    return frame
+end
+
+-- A MagicButtonTemplate bar button, 128 wide: the first takes the bottom-right corner, later ones chain leftwards.
+-- MagicButton_OnLoad runs after the anchor so Blizzard applies its corner and neighbour spacing.
+local function AddBarButton(window, label, onClick, width)
+    local button = CreateFrame("Button", nil, window, "MagicButtonTemplate")
+    button:SetWidth(width or 128)
+    window.barButtons = window.barButtons or {}
+    local previous = window.barButtons[#window.barButtons]
+    if previous then
+        button:SetPoint("RIGHT", previous, "LEFT")
+    else
+        button:SetPoint("BOTTOMRIGHT", window, "BOTTOMRIGHT")
+    end
+    MagicButton_OnLoad(button)
+    button:SetText(label)
+    button:SetScript("OnClick", onClick)
+    window.barButtons[#window.barButtons + 1] = button
+    return button
+end
+
+-- Builds the window on first use and flips it after that, so no frame exists until the player asks.
+local function CreateToggle(build)
+    local window
+    return function()
+        window = window or build()
+        window:SetShown(not window:IsShown())
+    end
+end
+
+-- Blizzard's Filter button (Blizzard_Menu/Mainline/MenuTemplates.xml:66), as on the Who list. The template sizes
+-- itself to its text; the width is fixed on the grid so later text never moves it. Set SetDefaultCallback and
+-- SetIsDefaultCallback before SetupMenu; the template then shows its own reset button.
+local function CreateFilterDropdown(parent, width)
+    local dropdown = CreateFrame("DropdownButton", nil, parent, "WowStyle1FilterDropdownTemplate")
+    dropdown.resizeToText = false
+    dropdown:SetWidth(width or Snap(dropdown:GetWidth()))
+    return dropdown
+end
 
 -- Level Range radios: Questie's own Quest Level Options, or the guide's band of levels below and above the player.
 local RANGE_SOURCE_OPTIONS = {
@@ -144,8 +246,8 @@ end
 
 -- Blizzard's Filter button left of the search box, one gap between their art. Its reset button appears whenever the filters differ from the defaults.
 local function buildFilterDropdown(frame)
-    local filter = UI.CreateFilterDropdown(frame)
-    filter:SetPoint("RIGHT", frame.searchBox, "LEFT", -(UI.Space.gap + UI.Native.inputArt + LAYOUT.FILTER_ART), 0)
+    local filter = CreateFilterDropdown(frame)
+    filter:SetPoint("RIGHT", frame.searchBox, "LEFT", -(GAP + INPUT_ART + LAYOUT.FILTER_ART), 0)
     filter:SetDefaultCallback(resetFilters)
     filter:SetIsDefaultCallback(filtersAreDefault)
     filter:SetupMenu(setupFilterMenu)
@@ -156,11 +258,11 @@ end
 local function jumpToCurrentZone()
     local zoneName = getCurrentZoneName()
     if not zoneName then
-        UI.Print(ADDON_TITLE, "Your current zone has no Questie data.")
+        ns.Print("Your current zone has no Questie data.")
         return
     end
     if not expandAndScrollToZone(zoneName) then
-        UI.Print(ADDON_TITLE, "No quests listed for " .. zoneName .. ". Widen the level range or change the filters.")
+        ns.Print("No quests listed for " .. zoneName .. ". Widen the level range or change the filters.")
     end
 end
 
@@ -192,26 +294,19 @@ local function buildMainFrame()
     if ns.mainFrame then
         return ns.mainFrame
     end
-    local frame = UI.CreateWindow({
-        name = "QuestieGuideFrame",
-        title = ADDON_TITLE,
-        icon = ADDON_ICON,
-        width = LAYOUT.FRAME_W,
-        height = LAYOUT.FRAME_H,
-        position = QuestieGuideDB.position,
-    })
+    local frame = CreateWindow("QuestieGuideFrame", ns.title, ADDON_ICON, LAYOUT.FRAME_W, LAYOUT.FRAME_H, QuestieGuideDB.position)
     buildQuestList(frame)
     buildSearchBox(frame)
     buildFilterDropdown(frame)
-    UI.AddBarButton(frame, "Current Zone", jumpToCurrentZone)
-    frame.toggleAllButton = UI.AddBarButton(frame, "Collapse All", toggleAllZones)
+    AddBarButton(frame, "Current Zone", jumpToCurrentZone)
+    frame.toggleAllButton = AddBarButton(frame, "Collapse All", toggleAllZones)
     frame:HookScript("OnShow", onWindowShow)
     ns.mainFrame = frame
     return frame
 end
 
 -- One toggle for every launcher; the window is built on first use.
-local toggleWindow = UI.CreateToggle(buildMainFrame)
+local toggleWindow = CreateToggle(buildMainFrame)
 
 ns.buildMainFrame = buildMainFrame
 ns.toggleWindow = toggleWindow

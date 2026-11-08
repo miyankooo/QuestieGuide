@@ -1,8 +1,6 @@
 -- Row text in Forever's quest log format, the quest, chain, zone and turn-in tooltips, and the quest lines on item tooltips.
 local _, ns = ...
 
-local UI = LibStub("LibNativeUI-1.0")
-
 local COLOR = ns.COLOR
 local sessionCache = ns.sessionCache
 local isQuestCompleted = ns.isQuestCompleted
@@ -52,7 +50,14 @@ local function addTooltipField(tooltip, label, value)
     if value == nil or value == "" then
         return
     end
-    GameTooltip_AddColoredDoubleLine(tooltip, label, tostring(value), UI.Color.heading, UI.Color.body)
+    GameTooltip_AddColoredDoubleLine(tooltip, label, tostring(value), NORMAL_FONT_COLOR, HIGHLIGHT_FONT_COLOR)
+end
+
+-- Every row tooltip: a GameTooltip owned by the hovered row, filled with Blizzard's GameTooltip_* line helpers. Rows set their own OnEnter for the hover highlight, so they call this from it.
+local function showTooltip(anchor, fill)
+    GameTooltip:SetOwner(anchor, "ANCHOR_RIGHT")
+    fill(GameTooltip)
+    GameTooltip:Show()
 end
 
 -- Questie's difficulty colour (red/orange/yellow/green/grey), so the level brackets and name share the hue of Questie's own titles, which prefer the client's per-quest difficulty.
@@ -66,7 +71,7 @@ local function showQuestTooltip(anchor, questId)
         return
     end
 
-    UI.ShowTooltip(anchor, function(tooltip)
+    showTooltip(anchor, function(tooltip)
         GameTooltip_SetTitle(tooltip, QuestieLib:GetColoredQuestName(questId, true, false))
         GameTooltip_AddBlankLineToTooltip(tooltip)
 
@@ -189,7 +194,7 @@ local function showChainTooltip(anchor, mpe)
     if type(mpe.chain) ~= "table" or #mpe.chain < 2 then
         return
     end
-    UI.ShowTooltip(anchor, function(tooltip)
+    showTooltip(anchor, function(tooltip)
         fillChainTooltip(tooltip, mpe)
     end)
 end
@@ -208,7 +213,7 @@ local function showZoneTooltip(anchor, zoneName, stats, isBest, focusHint)
     if not stats then
         return
     end
-    UI.ShowTooltip(anchor, function(tooltip)
+    showTooltip(anchor, function(tooltip)
         GameTooltip_SetTitle(tooltip, zoneName)
         if isBest then
             GameTooltip_AddNormalLine(tooltip, "Best zone for your next trip.")
@@ -239,7 +244,7 @@ end
 
 -- Tooltip for a ready-to-turn-in quest: Questie-colored name plus the turn-in target, mirroring showQuestTooltip's field styling. The quest's startInfo carries the finisher (see collectCompletedByZone).
 local function showTurnInTooltip(anchor, quest)
-    UI.ShowTooltip(anchor, function(tooltip)
+    showTooltip(anchor, function(tooltip)
         GameTooltip_SetTitle(tooltip, QuestieLib:GetColoredQuestName(quest.id, true, false))
         GameTooltip_AddColoredLine(tooltip, "Completed", COLOR.READY)
         GameTooltip_AddBlankLineToTooltip(tooltip)

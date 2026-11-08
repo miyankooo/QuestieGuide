@@ -1,11 +1,18 @@
 -- QuestieGuide: zone-bucketed quest browser sourced from Questie. This file holds the shared constants, saved-variable defaults and the Questie compatibility check.
-local _, ns = ...
+local addonName, ns = ...
 
--- The shared native design system: tokens on the 4px grid, Blizzard font and colour roles, and the window, launcher and chat builders.
-local UI = LibStub("LibNativeUI-1.0")
+-- The toc Title, the spaced name every player-facing surface shows: window title, launcher, addon menu and chat prefix.
+ns.title = C_AddOns.GetAddOnMetadata(addonName, "Title")
 
--- The spaced name every player-facing surface shows: window title, launcher, addon menu and chat prefix.
-local ADDON_TITLE = "Questie Guide"
+-- Every chat line goes through this one helper.
+function ns.Print(message)
+    print(YELLOW_FONT_COLOR:WrapTextInColorCode("[" .. ns.title .. "]:") .. " " .. message)
+end
+
+-- Rounds a length derived from text up to the 4 px grid.
+function ns.Snap(length)
+    return math.ceil(length / 4) * 4
+end
 
 local DEFAULTS = {
     sortMode = "xp",
@@ -34,16 +41,16 @@ local DEFAULTS = {
 -- Bounds of the levels below / above band.
 local RANGE_LIMIT = { MIN = 0, MAX = 10 }
 
--- Colour roles: the shared UI.Color roles where one fits, other Blizzard colour objects for the quest states it has no role for.
+-- Colour roles on Blizzard's colour objects: muted, heading and good from the shared roles, other colour objects for the quest states they have no role for.
 local COLOR = {
-    MUTED = UI.Color.muted,
-    ACCENT = UI.Color.heading,
+    MUTED = GRAY_FONT_COLOR,
+    ACCENT = NORMAL_FONT_COLOR,
     IN_LOG = LIGHTBLUE_FONT_COLOR,
-    READY = UI.Color.good,
+    READY = GREEN_FONT_COLOR,
     BLOCKED = ORANGE_FONT_COLOR,
 
     -- Grey like the "!" Questie pins a quest with before its required level is reached.
-    LOCKED = UI.Color.muted,
+    LOCKED = GRAY_FONT_COLOR,
     REPEATABLE = LIGHTBLUE_FONT_COLOR,
     LINK = LINK_FONT_COLOR,
 }
@@ -155,7 +162,6 @@ local function clampRange(value)
 end
 
 -- Shared with the other files through the addon namespace.
-ns.ADDON_TITLE = ADDON_TITLE
 ns.ADDON_ICON = ADDON_ICON
 ns.DEFAULTS = DEFAULTS
 ns.RANGE_LIMIT = RANGE_LIMIT

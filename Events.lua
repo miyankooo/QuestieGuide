@@ -1,9 +1,6 @@
 -- Questie readiness and refresh, saved variables, the chat lines on level up and dungeon entry, and the native events.
 local ADDON_NAME, ns = ...
 
-local UI = LibStub("LibNativeUI-1.0")
-
-local ADDON_TITLE = ns.ADDON_TITLE
 local DEFAULTS = ns.DEFAULTS
 local SORT_BY_OPTIONS = ns.SORT_BY_OPTIONS
 local SORT_DIR_OPTIONS = ns.SORT_DIR_OPTIONS
@@ -92,7 +89,7 @@ local function announceNewQuests(newLevel)
         parts[i] = string.format("%d in %s", counts[zoneName], label)
     end
     local more = #zones > 3 and string.format(" and %d more zones", #zones - 3) or ""
-    UI.Print(ADDON_TITLE, "New quests at level " .. newLevel .. ": " .. table.concat(parts, ", ") .. more .. ".")
+    ns.Print("New quests at level " .. newLevel .. ": " .. table.concat(parts, ", ") .. more .. ".")
 end
 
 -- The instance the last dungeon line named, so one visit prints one line; cleared on leaving instances.
@@ -116,7 +113,7 @@ local function announceInstanceQuests()
     announcedInstance = zoneName
     local count = countPickable(entry)
     if count > 0 then
-        UI.Print(ADDON_TITLE, string.format("%s: %d quest%s you could still pick up.", formatZoneLink(zoneName, areaId), count, count == 1 and "" or "s"))
+        ns.Print(string.format("%s: %d quest%s you could still pick up.", formatZoneLink(zoneName, areaId), count, count == 1 and "" or "s"))
     end
 end
 
@@ -157,7 +154,7 @@ end
 local function onQuestieReady()
     ns.missingQuestieField = findMissingField()
     if ns.missingQuestieField then
-        UI.Print(ADDON_TITLE, describeQuestieState())
+        ns.Print(describeQuestieState())
         return
     end
     ns.questieReady = true

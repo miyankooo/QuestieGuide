@@ -1,9 +1,6 @@
 -- Every way to open the window: minimap button, addon menu, slash command, key binding and the zone links in chat.
 local _, ns = ...
 
-local UI = LibStub("LibNativeUI-1.0")
-
-local ADDON_TITLE = ns.ADDON_TITLE
 local ADDON_ICON = ns.ADDON_ICON
 local COLOR = ns.COLOR
 local describeQuestieState = ns.describeQuestieState
@@ -19,7 +16,7 @@ local toggleWindow = ns.toggleWindow
 -- Every launcher's click: toggles the window once Questie is ready, otherwise says why it can't open.
 local function toggleIfReady()
     if not ns.questieReady then
-        UI.Print(ADDON_TITLE, describeQuestieState())
+        ns.Print(describeQuestieState())
         return
     end
     toggleWindow()
@@ -53,28 +50,67 @@ local function fillLauncherTooltip(tooltip)
     GameTooltip_AddInstructionLine(tooltip, "Left-click to toggle the window.")
 end
 
--- The minimap button and addon menu entry, set up at login; its setShown backs /qg minimap.
-local launcher
+-- One launcher for the minimap button and the Addon Compartment: LibDBIcon draws the button and adds the
+-- compartment entry through AddonCompartmentFrame, so both share the click and the tooltip. Such an addon has no
+-- AddonCompartmentFunc toc keys. LibStub, CallbackHandler-1.0, LibDataBroker-1.1 and LibDBIcon-1.0 load first.
+local function CreateLauncher(icon, db, onClick, fillTooltip)
+    local LDBIcon = LibStub("LibDBIcon-1.0")
+    if not LDBIcon:IsRegistered(ns.title) then
+        local object = LibStub("LibDataBroker-1.1"):NewDataObject(ns.title, {
+            type = "launcher",
+            text = ns.title,
+            icon = icon,
+            OnClick = function(_, button) onClick(button) end,
+            OnTooltipShow = function(tooltip)
+                GameTooltip_SetTitle(tooltip, ns.title)
+                fillTooltip(tooltip)
+            end,
+        })
+        LDBIcon:Register(ns.title, object, db)
+        LDBIcon:AddButtonToCompartment(ns.title)
+    end
+    -- Shows or hides only the minimap button and remembers it in db.hide; the addon menu entry stays.
+    return function(shown)
+        db.hide = not shown
+        if shown then LDBIcon:Show(ns.title) else LDBIcon:Hide(ns.title) end
+    end
+end
+
+-- Shows or hides the minimap button, set up at login; LibDBIcon keeps its position in QuestieGuideDB.minimap. Addon-manager bars (Titan Panel, ChocolateBar) pick up the same LDB launcher.
+local setMinimapShown
+
+local function setupLauncher()
+    setMinimapShown = CreateLauncher(ADDON_ICON, QuestieGuideDB.minimap, function(button)
+        if button == "LeftButton" then
+            toggleIfReady()
+        end
+    end, fillLauncherTooltip)
+end
+
+-- Only the minimap button hides; the addon menu entry stays as the way back.
+local function toggleMinimapButton()
+    local show = QuestieGuideDB.minimap.hide == true
+    setMinimapShown(show)
+    ns.Print(show and "Minimap button shown." or "Minimap button hidden. Type /qg minimap to show it again.")
+end
 
 -- /qg toggles the window even when the minimap button is hidden; /qg minimap shows or hides that button; /qg reset rescues a window dragged off-screen. The window holds QuestieGuideDB.position itself, so reset empties it in place.
-UI.RegisterSlash("QUESTIEGUIDE", { "/questieguide", "/qg" }, function(msg)
-    local command = strtrim(string.lower(msg or ""))
+SLASH_QUESTIEGUIDE1, SLASH_QUESTIEGUIDE2 = "/questieguide", "/qg"
+SlashCmdList.QUESTIEGUIDE = function(message)
+    local command = strtrim(message or ""):lower()
     if command == "minimap" then
-        launcher.setShown(QuestieGuideDB.minimap.hide)
-        UI.Print(ADDON_TITLE, QuestieGuideDB.minimap.hide and "Minimap button hidden. Type /qg minimap to show it again." or "Minimap button shown.")
-        return
-    end
-    if command == "reset" then
+        toggleMinimapButton()
+    elseif command == "reset" then
         wipe(QuestieGuideDB.position)
         if ns.mainFrame then
             ns.mainFrame:ClearAllPoints()
             ns.mainFrame:SetPoint("CENTER")
         end
-        UI.Print(ADDON_TITLE, "Window position reset.")
-        return
+        ns.Print("Window position reset.")
+    else
+        toggleIfReady()
     end
-    toggleIfReady()
-end)
+end
 
 -- Key binding entry point; Bindings.xml can only call named globals. The name global labels the entry under Key Bindings, mirroring how Questie registers its Journey toggle.
 BINDING_NAME_QUESTIEGUIDE_TOGGLE = "Toggle Window"
@@ -106,21 +142,6 @@ EventRegistry:RegisterCallback("SetItemRef", function(_, link)
         expandAndScrollToZone(zoneName)
     end)
 end)
-
--- One launcher for the minimap button and the addon menu: LibDBIcon draws the button, keeps its position in QuestieGuideDB.minimap and adds the addon menu entry through Blizzard's AddonCompartmentFrame. Addon-manager bars (Titan Panel, ChocolateBar) pick up the same LDB launcher.
-local function setupLauncher()
-    launcher = UI.CreateLauncher({
-        title = ADDON_TITLE,
-        icon = ADDON_ICON,
-        db = QuestieGuideDB.minimap,
-        onClick = function(button)
-            if button == "LeftButton" then
-                toggleIfReady()
-            end
-        end,
-        tooltip = fillLauncherTooltip,
-    })
-end
 
 ns.formatZoneLink = formatZoneLink
 ns.setupLauncher = setupLauncher

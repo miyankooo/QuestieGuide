@@ -1,9 +1,6 @@
 -- The world map and quest log jumps, and click-through from Questie's map pins into the guide.
 local _, ns = ...
 
-local UI = LibStub("LibNativeUI-1.0")
-
-local ADDON_TITLE = ns.ADDON_TITLE
 local getQuestName = ns.getQuestName
 local resolveStartInfo = ns.resolveStartInfo
 
@@ -17,7 +14,7 @@ local function isBlockedInCombat()
     if not InCombatLockdown() then
         return false
     end
-    UI.Print(ADDON_TITLE, "The map and quest log can't open in combat. Click the quest again after combat.")
+    ns.Print("The map and quest log can't open in combat. Click the quest again after combat.")
     return true
 end
 
@@ -128,7 +125,7 @@ local function openGuideAtQuest(questId)
     -- The window's first layout pass waits a tick after it shows, so the jump waits too.
     C_Timer.After(0.1, function()
         if not ns.jumpToQuestInList(questId) then
-            UI.Print(ADDON_TITLE, getQuestName(questId) .. " is not listed with the current filters. Change the filters to show it.")
+            ns.Print(getQuestName(questId) .. " is not listed with the current filters. Change the filters to show it.")
         end
     end)
 end

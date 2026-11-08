@@ -1,8 +1,6 @@
 -- The quest list: its scroll frame and search box, pooled rows, the render pass, and the jumps, links and menus on its rows.
 local _, ns = ...
 
-local UI = LibStub("LibNativeUI-1.0")
-
 local COLOR = ns.COLOR
 local RANGE_LIMIT = ns.RANGE_LIMIT
 local SUBCAT_ORDER = ns.SUBCAT_ORDER
@@ -27,6 +25,7 @@ local showZoneTooltip = ns.showZoneTooltip
 local showTurnInTooltip = ns.showTurnInTooltip
 local openMapForQuest = ns.openMapForQuest
 local openQuestInLog = ns.openQuestInLog
+local Snap = ns.Snap
 
 local QuestiePlayer = QuestieLoader:ImportModule("QuestiePlayer")
 
@@ -37,23 +36,86 @@ local HEADER_COLOR = QuestDifficultyColors.header
 local COMPLETED_KEY = "||completed"
 local COMPLETED_LABEL = "Completed Quests"
 
--- Quest list metrics on the 4px grid. Rows snap their centred text to the grid, one 16px line at least; quest rows add 8px of air around their text. The +/- toggle sits flush left with header text right after it, and gaps grow per tier (none between quests, one gap before a bucket, two before a zone) so quests, buckets and zones read apart.
+-- Quest list metrics on the 4px grid. Rows snap their centred text to the grid, one 16px line at least; quest rows add 8px of air around their text. The 16 px +/- toggle sits flush left with header text right after it, and gaps grow per tier (none between quests, one gap before a bucket, two before a zone) so quests, buckets and zones read apart.
 local LIST = {
     ROW_HEIGHT = 16,
     ROW_PADDING = 8,
-    GROUP_GAP = UI.Space.gap,
+    GROUP_GAP = 8,
     ZONE_GAP = 16,
     INDENT_STEP = 16,
-    TEXT_INSET = UI.Size.icon,
-    TOGGLE_SIZE = UI.Size.icon,
+    TEXT_INSET = 16,
 }
 
--- Header expand/collapse art, the same textures Forever's Group Finder listing headers use.
+-- The list sits one padding inside the inset and leaves the scroll gutter free on its right: SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT 6, the 8 px MinimalScrollBar and a gap, rounded up to the grid.
+local PADDING = 16
+local SCROLL_GUTTER = 24
+
+-- Text in a font role: GameFontNormal (heading, gold), GameFontHighlight (body, white), GameFontDisable (muted,
+-- grey), GameFontNormalLarge (title, 16 px, a dialog's subject line only).
+local function CreateText(parent, fontObject, layer)
+    local text = parent:CreateFontString(nil, layer or "ARTWORK")
+    text:SetFontObject(fontObject or GameFontHighlight)
+    text:SetJustifyH("LEFT")
+    return text
+end
+
+-- A content button one row (24) tall. Without a width it fits its label the way UIPanelButtonTemplate's FitToText
+-- does (text plus 40, SecureUIPanelTemplates.xml:42), at least 64, rounded up to 8 so neighbours share widths.
+local function CreateButton(parent, label, width)
+    local button = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    button:SetText(label)
+    width = width or math.max(64, math.ceil((button:GetTextWidth() + 40) / 8) * 8)
+    button:SetSize(width, 24)
+    return button
+end
+
+-- SearchBoxTemplate types and hints in 10 px fonts; both move to the 12 px roles, the hint keeping its grey.
+local function CreateSearchBox(parent, width, name)
+    local box = CreateFrame("EditBox", name, parent, "SearchBoxTemplate")
+    box:SetSize(width or 160, 20)
+    box:SetAutoFocus(false)
+    box:SetFontObject(GameFontHighlight)
+    local r, g, b = box.Instructions:GetTextColor()
+    box.Instructions:SetFontObject(GameFontDisable)
+    box.Instructions:SetTextColor(r, g, b)
+    return box
+end
+
+-- A ScrollFrameTemplate with its scroll child. Leave the 24 px gutter free on its right for the bar.
+local function CreateScroll(parent, name)
+    local scroll = CreateFrame("ScrollFrame", name, parent, "ScrollFrameTemplate")
+    scroll.content = CreateFrame("Frame", nil, scroll)
+    scroll.content:SetSize(1, 1)
+    scroll:SetScrollChild(scroll.content)
+    return scroll
+end
+
+-- A row of a list grouped under collapsible headers, from the quest log: the title highlight Forever's gossip and
+-- quest greeting rows use (ADD blend) on hover, the quest log's yellow glow on the selected row, and the plus and
+-- minus buttons on a header. Headers stay flat on hover.
 local TOGGLE_ART = {
     PLUS = "Interface\\Buttons\\UI-PlusButton-Up",
     MINUS = "Interface\\Buttons\\UI-MinusButton-Up",
-    HILIGHT = "Interface\\Buttons\\UI-PlusButton-Hilight",
+    HIGHLIGHT = "Interface\\Buttons\\UI-PlusButton-Hilight",
 }
+local function CreateGroupedRow(parent)
+    local row = CreateFrame("Button", nil, parent)
+    row.highlight = row:CreateTexture(nil, "BACKGROUND")
+    row.highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+    row.highlight:SetBlendMode("ADD")
+    row.highlight:SetAllPoints()
+    row.highlight:Hide()
+    row.selection = row:CreateTexture(nil, "BACKGROUND", nil, -1)
+    row.selection:SetAtlas("questlog-quest-glow-yellow")
+    row.selection:SetAllPoints()
+    row.selection:Hide()
+    row.toggle = row:CreateTexture(nil, "ARTWORK")
+    row.toggle:SetSize(16, 16)
+    row.toggle:SetPoint("LEFT")
+    row.toggle:Hide()
+    row.text = CreateText(row, GameFontHighlight)
+    return row
+end
 
 -- The Quest Types filter that covers each tag id; PvP has none. The elite flag also falls under the Elite filter.
 local TAG_FILTERS = {
@@ -95,39 +157,21 @@ local function acquireRow(index)
         row.toggle:Hide()
         row.toggleHighlight:SetTexture("")
         row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
-        row.text:SetTextColor(UI.Color.body:GetRGB())
+        row.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
         return row
     end
-    row = CreateFrame("Button", nil, scrollChild)
+
+    -- The quest log row. Its hover highlight sits on BACKGROUND so the text stays on top, and renderQuestRow drives it so headers stay flat. placeRow anchors every row before it shows.
+    row = CreateGroupedRow(scrollChild)
     row:SetHeight(LIST.ROW_HEIGHT)
-    row:SetPoint("LEFT", scrollChild, "LEFT", 0, 0)
-    row:SetPoint("RIGHT", scrollChild, "RIGHT", 0, 0)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
-    -- Hover: UI-QuestTitleHighlight in ADD blend, the title highlight Forever's gossip and quest greeting rows use. It sits on BACKGROUND so the row text stays on top, and renderQuestRow drives it so headers stay flat.
-    row.highlight = row:CreateTexture(nil, "BACKGROUND")
-    row.highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-    row.highlight:SetBlendMode("ADD")
-    row.highlight:SetAllPoints(true)
-    row.highlight:Hide()
-
-    -- Selection: the questlog-quest-glow-yellow atlas Forever's quest log keeps on its called-out quest.
-    row.selection = row:CreateTexture(nil, "BACKGROUND", nil, -1)
-    row.selection:SetAtlas("questlog-quest-glow-yellow")
-    row.selection:SetAllPoints(true)
-    row.selection:Hide()
-
     -- Anchored only across the row, so the text is centred vertically and its height follows the wrapped lines; renderList sizes the row from that height (see sizeRow).
-    row.text = UI.CreateText(row, "body")
     row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
     row.text:SetPoint("RIGHT", row, "RIGHT", 0, 0)
     row.text:SetWordWrap(true)
 
-    -- Expand/collapse toggle for header rows. The hilight sits on the HIGHLIGHT layer so the button shows it automatically on mouse-over; quest rows keep its texture empty so nothing renders there.
-    row.toggle = row:CreateTexture(nil, "ARTWORK")
-    row.toggle:SetSize(LIST.TOGGLE_SIZE, LIST.TOGGLE_SIZE)
-    row.toggle:SetPoint("LEFT", row, "LEFT", 0, 0)
-    row.toggle:Hide()
+    -- The header toggle's hilight sits on the HIGHLIGHT layer so the button shows it automatically on mouse-over; quest rows keep its texture empty so nothing renders there.
     row.toggleHighlight = row:CreateTexture(nil, "HIGHLIGHT")
     row.toggleHighlight:SetBlendMode("ADD")
     row.toggleHighlight:SetAllPoints(row.toggle)
@@ -139,11 +183,11 @@ end
 local function styleHeaderRow(row, collapsed)
     row.toggle:SetTexture(collapsed and TOGGLE_ART.PLUS or TOGGLE_ART.MINUS)
     row.toggle:Show()
-    row.toggleHighlight:SetTexture(TOGGLE_ART.HILIGHT)
+    row.toggleHighlight:SetTexture(TOGGLE_ART.HIGHLIGHT)
     row.text:SetPoint("LEFT", row, "LEFT", LIST.TEXT_INSET, 0)
     row.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
     row:SetScript("OnEnter", function(self)
-        self.text:SetTextColor(UI.Color.body:GetRGB())
+        self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
     end)
     row:SetScript("OnLeave", function(self)
         self.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
@@ -295,7 +339,7 @@ end
 local emptyButtons = {}
 
 local function getEmptyButton(label)
-    emptyButtons[label] = emptyButtons[label] or UI.CreateButton(scrollChild, label)
+    emptyButtons[label] = emptyButtons[label] or CreateButton(scrollChild, label)
     return emptyButtons[label]
 end
 
@@ -321,7 +365,7 @@ end
 -- Sizes the row to its wrapped text plus padding, snapped to the grid; minHeight keeps short rows one line tall. The text already spans the row's width, so GetStringHeight reflects the wrapped result, rounded first so a fractional pixel can't add a grid step.
 local function sizeRow(row, minHeight, padding)
     local textHeight = math.floor(row.text:GetStringHeight() + 0.5)
-    local h = UI.Snap(textHeight + (padding or 0))
+    local h = Snap(textHeight + (padding or 0))
     if h < minHeight then h = minHeight end
     row:SetHeight(h)
     return h
@@ -620,7 +664,7 @@ local function renderEmptyState(filters)
         button:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, -(y + LIST.GROUP_GAP))
         button:SetScript("OnClick", action)
         button:Show()
-        y = y + LIST.GROUP_GAP + UI.Size.row
+        y = y + LIST.GROUP_GAP + button:GetHeight()
     end
 end
 
@@ -731,7 +775,7 @@ function renderList()
                 header.text:SetText(headerText)
                 local zoneStats = entry.stats
                 header:SetScript("OnEnter", function(self)
-                    self.text:SetTextColor(UI.Color.body:GetRGB())
+                    self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
                     showZoneTooltip(self, zoneName, zoneStats, isBestZone, true)
                 end)
                 header:SetScript("OnLeave", function(self)
@@ -831,10 +875,10 @@ end
 -- The quest list fills the template's own Inset. ScrollFrameTemplate is what Forever's quest log (QuestScrollFrame) uses; it creates MinimalScrollBar and wires wheel, range and thumb itself.
 local function buildQuestList(frame)
     -- The list sits one padding inside the inset, leaving the gutter the bar hangs into on the right.
-    local scroll = UI.CreateScroll(frame.Inset)
+    local scroll = CreateScroll(frame.Inset)
     scroll.ScrollBar:SetHideIfUnscrollable(true)
-    scroll:SetPoint("TOPLEFT", frame.Inset, "TOPLEFT", UI.Space.padding, -UI.Space.padding)
-    scroll:SetPoint("BOTTOMRIGHT", frame.Inset, "BOTTOMRIGHT", -UI.ScrollGutter(), UI.Space.padding)
+    scroll:SetPoint("TOPLEFT", frame.Inset, "TOPLEFT", PADDING, -PADDING)
+    scroll:SetPoint("BOTTOMRIGHT", frame.Inset, "BOTTOMRIGHT", -SCROLL_GUTTER, PADDING)
 
     -- The scroll child's width follows the viewport so rows wrap inside it. The first render waits for onWindowShow's tick, so the loading line paints before the scan.
     local child = scroll.content
@@ -848,7 +892,7 @@ end
 
 -- Attic search box on AddonList's right edge, centred between the title bar and the inset; SearchBoxTemplate brings the magnifier, clear button and placeholder.
 local function buildSearchBox(frame)
-    local searchBox = UI.CreateSearchBox(frame, LAYOUT.SEARCH_W, "QuestieGuideSearchBox")
+    local searchBox = CreateSearchBox(frame, LAYOUT.SEARCH_W, "QuestieGuideSearchBox")
     searchBox:SetPoint("RIGHT", frame, "TOPRIGHT", -LAYOUT.SEARCH_RIGHT, (PANEL_INSET_TOP_OFFSET + PANEL_INSET_ATTIC_OFFSET) / 2)
     searchBox.Instructions:SetText("Quest, zone or NPC name")
     searchBox:HookScript("OnTextChanged", function(self)
