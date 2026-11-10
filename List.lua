@@ -16,7 +16,6 @@ local ensureScan = ns.ensureScan
 local sortZones = ns.sortZones
 local collectCompletedByZone = ns.collectCompletedByZone
 local findBestZone = ns.findBestZone
-local formatLevelLock = ns.formatLevelLock
 local formatRowLines = ns.formatRowLines
 local showQuestTooltip = ns.showQuestTooltip
 local showChainTooltip = ns.showChainTooltip
@@ -157,7 +156,7 @@ local renderList
 local expandAndScrollToZone
 local searchText = ""
 
--- Quest carrying the selection glow; moved by row left-clicks, list jumps, and Questie map icon clicks.
+-- Quest carrying the selection glow; moved by row left-clicks and list jumps.
 local selectedQuestId
 
 local function acquireRow(index)
@@ -462,12 +461,7 @@ local function renderBucketRow(quest)
             0.5, quest)
         return
     end
-    local badge
-    if quest.inLog then
-        badge = COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
-    elseif quest.lockedLevel then
-        badge = formatLevelLock(quest.lockedLevel)
-    end
+    local badge = quest.inLog and COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]") or nil
     local line1, line2 = formatRowLines(quest, badge)
     local label = line2 and (line1 .. "\n" .. line2) or line1
     local onLeftClick = quest.inLog
@@ -478,7 +472,7 @@ local function renderBucketRow(quest)
         onLeftClick,
         function(self) showQuestContextMenu(self, quest) end,
         function() linkQuestInChat(quest) end,
-        quest.lockedLevel and 0.5 or 1, quest)
+        1, quest)
     if not rowTargets[quest.id] then
         rowTargets[quest.id] = { row = row, top = rowTop }
     end
@@ -645,7 +639,7 @@ local function renderCompletedSection()
     return true
 end
 
--- The empty state when nothing renders: one muted line centred in the list that says what fills it, with a one-click fix for the likely cause under it. No button when Questie's ranges govern or the band is maxed; the line's advice (level up) has no shortcut. Changes made here bypass the Filter menu, so its reset button is rechecked.
+-- The empty state when nothing renders: one muted line centred in the list that says what fills it, with a one-click fix for the likely cause under it. No button when the band is maxed; the line's advice (level up) has no shortcut. Changes made here bypass the Filter menu, so its reset button is rechecked.
 local function renderEmptyState(filters)
     local anyBucket = filters.available or filters.pickedUpElsewhere
     local msg
@@ -676,8 +670,7 @@ local function renderEmptyState(filters)
         action = function()
             ns.mainFrame.searchBox:SetText("")
         end
-    elseif not QuestieGuideDB.useQuestieLevelRange
-        and (below < RANGE_LIMIT.MAX or above < RANGE_LIMIT.MAX) then
+    elseif below < RANGE_LIMIT.MAX or above < RANGE_LIMIT.MAX then
         actionText = "Widen Level Range"
         help = "Adds two levels below and two above your level to the range."
         action = function()
@@ -960,7 +953,6 @@ end
 
 ns.renderList = renderList
 ns.expandAndScrollToZone = expandAndScrollToZone
-ns.jumpToQuestInList = jumpToQuestInList
 ns.renderLoadingPlaceholder = renderLoadingPlaceholder
 ns.buildQuestList = buildQuestList
 ns.buildSearchBox = buildSearchBox

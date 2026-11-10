@@ -10,4 +10,4 @@ ignore:
   - release-please-config.json
 
 required-dependencies:
-  - questie
+  - questiedb

@@ -1,13 +1,10 @@
--- Questie readiness and refresh, saved variables, the chat lines on level up and dungeon entry, and the native events.
+-- Saved variables, the quest and level events that refresh the list, and the chat lines on level up and dungeon entry.
 local ADDON_NAME, ns = ...
 
 local DEFAULTS = ns.DEFAULTS
 local SORT_BY_OPTIONS = ns.SORT_BY_OPTIONS
 local SORT_DIR_OPTIONS = ns.SORT_DIR_OPTIONS
-local findMissingField = ns.findMissingField
-local describeQuestieState = ns.describeQuestieState
 local clampRange = ns.clampRange
-local sessionCache = ns.sessionCache
 local isQuestCompleted = ns.isQuestCompleted
 local getZoneName = ns.getZoneName
 local getEffectiveLevel = ns.getEffectiveLevel
@@ -20,13 +17,12 @@ local countPickable = ns.countPickable
 local renderList = ns.renderList
 local installItemTooltipHooks = ns.installItemTooltipHooks
 local scheduleItemQuestIndexBuild = ns.scheduleItemQuestIndexBuild
-local installMapIconHooks = ns.installMapIconHooks
 local formatZoneLink = ns.formatZoneLink
 local setupLauncher = ns.setupLauncher
 local getQuestLog = ns.getQuestLog
-
-local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
-local AvailableQuests = QuestieLoader:ImportModule("AvailableQuests")
+local questField = ns.questField
+local getAllQuestIds = ns.getAllQuestIds
+local isDoable = ns.isDoable
 
 local refreshTimer
 local function scheduleRefresh()
@@ -44,19 +40,16 @@ end
 
 -- Level-up line: quests whose level requirement is exactly the new level, so each quest announces once. Gates mirror the discovery scan (doable, reachable starter, real zone) so the line only names quests the window would list.
 local function announceNewQuests(newLevel)
-    if not ns.questieReady then
-        return
-    end
     local currentLog = getQuestLog()
     local counts, zones, zoneAreaIds = {}, {}, {}
     local total = 0
-    for questId in pairs(QuestieDB.QuestPointers) do
-        if QuestieDB.QueryQuestSingle(questId, "requiredLevel") == newLevel
+    for _, questId in ipairs(getAllQuestIds()) do
+        if questField(questId, "requiredLevel") == newLevel
             and not currentLog[questId]
             and not isQuestCompleted(questId)
             and hasReachableStarter(questId)
-            and QuestieDB.IsDoable(questId) then
-            local zoneOrSort = QuestieDB.QueryQuestSingle(questId, "zoneOrSort")
+            and isDoable(questId) then
+            local zoneOrSort = questField(questId, "zoneOrSort")
             local level, requiredLevel = getEffectiveLevel(questId, newLevel)
             if zoneOrSort and passesLevelCap(level, requiredLevel) then
                 local zoneName = getZoneName(zoneOrSort)
@@ -117,65 +110,6 @@ local function announceInstanceQuests()
     end
 end
 
--- Questie calls this after its own state changed. Objective progress only re-renders (the completed section reads live completeness); accept, turn-in and abandon change the zone buckets, so they rescan. The debounce also covers the accept path, where Questie adds the quest to its log right after the callback.
-local function onQuestUpdate(_, _, triggerReason)
-    if triggerReason ~= Questie.API.Enums.QuestUpdateTriggerReason.QUEST_UPDATED then
-        invalidateScan()
-    end
-    scheduleRefresh()
-end
-
--- Questie rewrites composed rows when a Policy Correction lands after login (its Darkmoon Faire NPC slot waits for the calendar). Item repairs only fix names, which nothing here caches; NPC, object and quest writes can move givers, turn-ins and chains.
-local function onCorrectionApplied(datatype)
-    if datatype == "Item" then
-        return
-    end
-    wipe(sessionCache.startInfo)
-    wipe(sessionCache.finishInfo)
-    wipe(sessionCache.reachable)
-    if datatype == "Quest" then
-        sessionCache.followers = nil
-        sessionCache.itemQuests = nil
-        scheduleItemQuestIndexBuild()
-    end
-    invalidateScan()
-    scheduleRefresh()
-end
-
--- Questie resets its level-requirement cache whenever its Quest Level Options change and on level-up, so under Questie's range the list rescans with it.
-local function onQuestieLevelRangeChanged()
-    if QuestieGuideDB.useQuestieLevelRange then
-        invalidateScan()
-        scheduleRefresh()
-    end
-end
-
--- Runs once Questie.API reports ready: after Questie's Stage 3 installed its tooltip post-calls and filled its quest log and completed set.
-local function onQuestieReady()
-    ns.missingQuestieField = findMissingField()
-    if ns.missingQuestieField then
-        ns.Print(describeQuestieState())
-        return
-    end
-    ns.questieReady = true
-    installItemTooltipHooks()
-    installMapIconHooks()
-    hooksecurefunc(QuestieDB, "RefreshAfterCorrectionApply", onCorrectionApplied)
-    hooksecurefunc(AvailableQuests, "ResetLevelRequirementCache", onQuestieLevelRangeChanged)
-    Questie.API.RegisterForQuestUpdates(onQuestUpdate)
-    scheduleItemQuestIndexBuild()
-end
-
--- Questie.API is the stable part of Questie; without it the guide stays closed.
-local function registerWithQuestie()
-    local api = Questie.API
-    if not (api and api.RegisterOnReady and api.RegisterForQuestUpdates and api.Enums and api.Enums.QuestUpdateTriggerReason) then
-        ns.missingQuestieField = "Questie.API"
-        return
-    end
-    api.RegisterOnReady(onQuestieReady)
-end
-
 -- Fills every missing or mistyped saved key from the defaults, nested tables included, so a new filter key arrives in old saved variables too.
 local function applyDefaults(db, defaults)
     for key, default in pairs(defaults) do
@@ -213,14 +147,30 @@ local function loadSavedVariables()
     end
 end
 
--- Quest events come from Questie (onQuestUpdate); only the player's own level and location are native events.
+-- Accept, remove and turn-in change which quests list, so they rescan; objective progress only re-renders, since the completed section reads live completeness. A loading screen rebuilds the player's quest sets.
+local WATCHED_EVENTS = { "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_TURNED_IN", "QUEST_WATCH_UPDATE", "PLAYER_ENTERING_WORLD", "PLAYER_LEVEL_CHANGED", "ZONE_CHANGED_NEW_AREA" }
+
+local QUEST_STATE_HANDLERS = {
+    QUEST_ACCEPTED = ns.onQuestAccepted,
+    QUEST_REMOVED = ns.onQuestRemoved,
+    QUEST_TURNED_IN = ns.onQuestTurnedIn,
+}
+
+-- Without QuestieDB the window never opens, so only the saved variables and the launcher load and no quest event is watched.
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_LEVEL_CHANGED")
-events:RegisterEvent("ZONE_CHANGED_NEW_AREA")
-events:SetScript("OnEvent", function(_, event, arg, newLevel)
-    if event == "PLAYER_LEVEL_CHANGED" then
+events:SetScript("OnEvent", function(self, event, arg, newLevel)
+    local updateState = QUEST_STATE_HANDLERS[event]
+    if updateState then
+        updateState(arg)
+        invalidateScan()
+        scheduleRefresh()
+    elseif event == "QUEST_WATCH_UPDATE" then
+        scheduleRefresh()
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        ns.resetPlayerQuests()
+    elseif event == "PLAYER_LEVEL_CHANGED" then
         invalidateScan()
         scheduleRefresh()
 
@@ -236,8 +186,14 @@ events:SetScript("OnEvent", function(_, event, arg, newLevel)
         announceInstanceQuests()
     elseif event == "ADDON_LOADED" and arg == ADDON_NAME then
         loadSavedVariables()
-        registerWithQuestie()
+        if ns.questDB then
+            FrameUtil.RegisterFrameForEvents(self, WATCHED_EVENTS)
+            installItemTooltipHooks()
+        end
     elseif event == "PLAYER_LOGIN" then
         setupLauncher()
+        if ns.questDB then
+            scheduleItemQuestIndexBuild()
+        end
     end
 end)

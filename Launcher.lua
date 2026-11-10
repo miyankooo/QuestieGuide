@@ -3,7 +3,6 @@ local addonName, ns = ...
 
 local ADDON_ICON = ns.ADDON_ICON
 local COLOR = ns.COLOR
-local describeQuestieState = ns.describeQuestieState
 local getZoneName = ns.getZoneName
 local getCurrentZoneName = ns.getCurrentZoneName
 local scanCache = ns.scanCache
@@ -13,10 +12,10 @@ local expandAndScrollToZone = ns.expandAndScrollToZone
 local buildMainFrame = ns.buildMainFrame
 local toggleWindow = ns.toggleWindow
 
--- Every launcher's click: toggles the window once Questie is ready, otherwise says why it can't open.
+-- Every launcher's click: toggles the window when QuestieDB passed its check, otherwise says why it can't open.
 local function toggleIfReady()
-    if not ns.questieReady then
-        ns.Print(describeQuestieState())
+    if not ns.questDB then
+        ns.Print(ns.questDBProblem)
         return
     end
     toggleWindow()
@@ -116,7 +115,7 @@ EventUtil.ContinueOnPlayerLogin(function()
     if ns.firstRun then printWelcome() end
 end)
 
--- Opens the window from a link, and at a zone for a zone link. Another addon's link may come from a line kept from restricted content, so it is checked before any comparison. Chat history survives a reload, so an old link can be clicked before Questie is ready.
+-- Opens the window from a link, and at a zone for a zone link. Another addon's link may come from a line kept from restricted content, so it is checked before any comparison.
 EventRegistry:RegisterCallback("SetItemRef", function(_, link)
     if not ns.CanAccess(link) or type(link) ~= "string" then
         return
@@ -131,8 +130,8 @@ EventRegistry:RegisterCallback("SetItemRef", function(_, link)
             return
         end
     end
-    if not ns.questieReady then
-        ns.Print(describeQuestieState())
+    if not ns.questDB then
+        ns.Print(ns.questDBProblem)
         return
     end
     buildMainFrame():Show()

@@ -1,9 +1,9 @@
 -- Offline smoke test for QuestieGuide. It loads every toc file in order against stubs of the client and
--- of Questie, checks the welcome line, opens the window, then checks a render, the help tip, the
--- tooltips, the launcher status, the dungeon line, a combat click, the Filter menu, a level change, a
--- search and the empty state, the chat links, the slash commands, the map pins and a later login. It
--- proves the files wire together and the list logic runs; how the window looks still needs an in-game
--- pass.
+-- of QuestieDB, checks the welcome line, opens the window, then checks a render, the help tip, the
+-- tooltips, the launcher status, the quest events, the dungeon line, a combat click, the Filter menu, a
+-- level change, a search and the empty state, the chat links, the slash commands, the hidden quests, a
+-- later login and a missing QuestieDB. It proves the files wire together and the list logic runs; how the
+-- window looks still needs an in-game pass.
 --
 -- Run from the QuestieGuide folder:  lua Tests/Smoke.lua
 
@@ -101,12 +101,22 @@ FILTER = "Filter"
 SEARCH = "Search"
 ERR_NOT_IN_COMBAT = "You can't do that while in combat"
 Constants = { QuestConsts = { QUEST_INFO_ELITE_ID = 1, QUEST_INFO_DUNGEON_ID = 81, QUEST_INFO_PVP_ID = 41, QUEST_INFO_RAID_ID = 62 } }
-Enum = { TooltipDataType = { Item = 0 } }
+Enum = {
+    TooltipDataType = { Item = 0 },
+    UIMapType = { Cosmic = 0, World = 1, Continent = 2, Zone = 3 },
+    RelativeContentDifficulty = { Trivial = 0, Easy = 1, Fair = 2, Difficult = 3, Impossible = 4 },
+}
 MenuResponse = { Open = 1, Refresh = 2, Close = 3, CloseAll = 4 }
 PANEL_INSET_TOP_OFFSET = -24
 PANEL_INSET_ATTIC_OFFSET = -60
 SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT = 6
 UISpecialFrames = {}
+FrameUtil = { RegisterFrameForEvents = function(frame, events) for _, event in ipairs(events) do frame:RegisterEvent(event) end end }
+GetDifficultyColor = function() return colour(1, 1, 0) end
+
+-- The client's Lua 5.1 globals that newer Lua dropped; the stub environment is not enforced.
+loadstring = loadstring or load
+setfenv = setfenv or function(fn) return fn end
 SlashCmdList = {}
 
 -- Frames that registered an event, in creation order, so the test can fire events at them.
@@ -391,12 +401,12 @@ C_Map = {
     GetAreaInfo = function(areaId) return AREAS[areaId] end,
     GetMapArtLayers = function() return { {} } end,
     GetMapInfo = function() return nil end,
+    GetBestMapForUnit = function() return 1412 end,
     CanSetUserWaypointOnMap = function() return true end,
     SetUserWaypoint = function(point) mapCalls.waypoint = point end,
 }
 UiMapPoint = { CreateFromCoordinates = function(mapId, x, y) return { mapId = mapId, x = x, y = y } end }
 C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
-C_QuestLog = { IsEliteQuest = function(questId) return questId == 103 end }
 function OpenWorldMap(mapId) mapCalls.opened = mapId end
 local itemRefCallbacks = {}
 EventRegistry = {
@@ -409,121 +419,83 @@ EventRegistry = {
 }
 ChatFrameUtil = { GetActiveWindow = function() return nil end }
 
--- Questie with a small world: quests, givers and the player's log and completed set.
+-- QuestieDB with a small world: quests, givers, XP and the zone tables, behind its public readers.
 local QUESTS = {
-    [101] = { name = "Wolves Across the Border", level = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 450 },
-    [102] = { name = "Kobold Candles", level = 11, requiredLevel = 9, zoneOrSort = 12, startedBy = { { 1002 } }, xp = 600 },
-    [103] = { name = "Princess Must Die", level = 12, requiredLevel = 10, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 900, tag = 1 },
-    [104] = { name = "The Defias Brotherhood", level = 14, requiredLevel = 11, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 1400 },
-    [105] = { name = "Red Linen Goods", level = 9, requiredLevel = 6, zoneOrSort = 12, startedBy = { { 1002 } }, xp = 300, preQuestSingle = { 101 } },
-    [106] = { name = "Westfall Stew", level = 10, requiredLevel = 8, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 500 },
-    [107] = { name = "A Fishy Peril", level = 9, requiredLevel = 7, zoneOrSort = 12, startedBy = { { 1001 } }, finishedBy = { { 1001 } }, xp = 350 },
-    [108] = { name = "Red Silk Bandanas", level = 12, requiredLevel = 10, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 800, tag = 81 },
+    [101] = { name = "Wolves Across the Border", questLevel = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 450 },
+    [102] = { name = "Kobold Candles", questLevel = 11, requiredLevel = 9, zoneOrSort = 12, startedBy = { { 1002 } }, xp = 600 },
+    [103] = { name = "Princess Must Die", questLevel = 12, requiredLevel = 10, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 900, tag = 1 },
+    [104] = { name = "The Defias Brotherhood", questLevel = 14, requiredLevel = 11, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 1400 },
+    [105] = { name = "Red Linen Goods", questLevel = 9, requiredLevel = 6, zoneOrSort = 12, startedBy = { { 1002 } }, xp = 300, preQuestSingle = { 101 } },
+    [106] = { name = "Westfall Stew", questLevel = 10, requiredLevel = 8, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 500 },
+    [107] = { name = "A Fishy Peril", questLevel = 9, requiredLevel = 7, zoneOrSort = 12, startedBy = { { 1001 } }, finishedBy = { { 1001 } }, xp = 350 },
+    [108] = { name = "Red Silk Bandanas", questLevel = 12, requiredLevel = 10, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 800, tag = 81 },
+    [109] = { name = "Nature's Defense", questLevel = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 450, requiredRaces = 8 },
+    [110] = { name = "Smelt On, Smelt Off", questLevel = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1002 } }, xp = 450, requiredSkill = { 186, 50 } },
 }
 local NPCS = {
     [1001] = { name = "Marshal Dughan", friendlyToFaction = "A", spawns = { [12] = { { 42.1, 65.9 } } } },
     [1002] = { name = "William Pestle", friendlyToFaction = "A", spawns = { [12] = { { 43.3, 65.7 } } } },
     [1003] = { name = "Gryan Stoutmantle", friendlyToFaction = "A", spawns = { [40] = { { 56.3, 47.5 } } } },
 }
--- The player's log as Questie 12.6's ActiveQuests holds it: questId -> acceptance. Reset replaces the table, so a
--- check that swaps questLog for a new table models a rebuilt log.
-local questLog = { [106] = { questId = 106 }, [107] = { questId = 107 } }
-local completed = {}
-
-local modules = {}
-local function module(name)
-    modules[name] = modules[name] or {}
-    return modules[name]
+local questIds, xpTable = {}, {}
+for questId, quest in pairs(QUESTS) do
+    questIds[#questIds + 1] = questId
+    xpTable[questId] = { quest.questLevel, quest.xp }
 end
-QuestieLoader = { ImportModule = function(_, name) return module(name) end }
+table.sort(questIds)
 
-local QuestieDB = module("QuestieDB")
-QuestieDB.QuestPointers = {}
-for questId in pairs(QUESTS) do QuestieDB.QuestPointers[questId] = true end
-QuestieDB.questKeys = { parentQuest = 25, availableUntilCompleted = 30 }
-QuestieDB.autoBlacklist = {}
-function QuestieDB.QueryQuestSingle(questId, key) return QUESTS[questId] and QUESTS[questId][key] end
-function QuestieDB.QueryQuest() return nil end
-function QuestieDB.QueryNPCSingle(npcId, key) return NPCS[npcId] and NPCS[npcId][key] end
-function QuestieDB.QueryObjectSingle() return nil end
-function QuestieDB.QueryItemSingle() return nil end
-function QuestieDB:GetNPC(npcId) return NPCS[npcId] end
-function QuestieDB.GetQuest(questId)
-    local quest = QUESTS[questId]
-    return quest and { requiredLevel = quest.requiredLevel, objectivesText = { "Do the thing." } }
+local function reader(rows)
+    return {
+        Get = function(id, key) return rows[id] and rows[id][key] end,
+        GetAllIds = function() return questIds end,
+    }
 end
-function QuestieDB:IsPreQuestSingleFulfilled(preIds)
-    for _, preId in ipairs(preIds) do
-        if completed[preId] then return true end
-    end
-    return false
-end
-function QuestieDB:IsPreQuestGroupFulfilled(preIds)
-    for _, preId in ipairs(preIds) do
-        if not completed[preId] then return false end
-    end
-    return true
-end
-function QuestieDB.IsDoable(questId)
-    if questLog[questId] or completed[questId] then return false end
-    local preIds = QUESTS[questId].preQuestSingle
-    return not preIds or QuestieDB:IsPreQuestSingleFulfilled(preIds)
-end
-function QuestieDB.IsRepeatable() return false end
-function QuestieDB.IsPvPQuest() return false end
-function QuestieDB.IsDungeonQuest() return false end
-function QuestieDB.IsRaidQuest() return false end
-function QuestieDB.IsComplete(questId) return questId == 107 and 1 or 0 end
-function QuestieDB.IsTrivial(level) return level < player.level - 5 end
-function QuestieDB.GetQuestTagInfo(questId) return QUESTS[questId].tag end
-function QuestieDB.RefreshAfterCorrectionApply() end
-
-local QuestieLib = module("QuestieLib")
-function QuestieLib.GetEffectiveQuestLevel(questId)
-    local quest = QUESTS[questId]
-    return quest.level, quest.requiredLevel, 0
-end
-function QuestieLib:GetColoredQuestName(questId) return QUESTS[questId].name end
-function QuestieLib:GetDifficultyColorPercent() return 1, 1, 0 end
-
-local QuestiePlayer = module("QuestiePlayer")
-function QuestiePlayer.HasRequiredRace() return true end
-function QuestiePlayer.HasRequiredClass() return true end
-function QuestiePlayer:GetCurrentZoneId() return 12 end
-
-local ActiveQuests = module("ActiveQuests")
-function ActiveQuests.GetAll() return questLog end
-
-local ZoneDB = module("ZoneDB")
-function ZoneDB:GetUiMapIdByAreaId(areaId) return areaId + 1400 end
-function ZoneDB:GetLocalizedDungeonName() return nil end
-
-module("QuestXP").GetQuestLogRewardXP = function(_, questId) return QUESTS[questId].xp end
-module("QuestieMap").GetFramesForQuest = function() return {} end
-module("QuestieCorrections").hiddenQuests = {}
-module("QuestieQuestBlacklist").AQWarEffortQuests = {}
-module("QuestieTooltips").lookupByKey = {}
-module("QuestieFrame").CreateIconFrame = function() end
-module("QuestieCompat").GetQuestGreenRange = function() return 5 end
-module("AvailableQuests").ResetLevelRequirementCache = function() end
-module("QuestieEvent").activeQuests = {}
-
-local readyCallbacks = {}
-Questie = {
-    LOWLEVEL_ALL = 1, LOWLEVEL_OFFSET = 2, LOWLEVEL_RANGE = 3,
-    Colorize = function(_, text) return text end,
-    db = {
-        char = { complete = completed, hidden = {} },
-        profile = { lowLevelStyle = 0, manualLevelOffset = 5, minLevelFilter = 1, maxLevelFilter = 60,
-            enableTooltips = true, enableTooltipsQuestLevel = true, showQuestsInNpcTooltip = true,
-            showRepeatableQuests = true, showPvPQuests = true, showDungeonQuests = true, showRaidQuests = true, showAQWarEffortQuests = false },
-    },
-    API = {
-        RegisterOnReady = function(fn) readyCallbacks[#readyCallbacks + 1] = fn end,
-        RegisterForQuestUpdates = function() end,
-        Enums = { QuestUpdateTriggerReason = { QUEST_UPDATED = 1 } },
+local SUPPORT = {
+    QuestXP = { db = xpTable },
+    ZoneDB = {
+        private = {
+            areaIdToUiMapId = "return { [12] = 1429, [40] = 1436 }",
+            areaIdToUiMapIdOverride = "return { [12] = 1412, [40] = 1440 }",
+            uiMapIdToAreaId = "return { [1412] = 12, [1440] = 40 }",
+        },
+        instanceIdToAreaId = {},
     },
 }
+LibQuestieDB = {
+    Quest = reader(QUESTS),
+    Npc = reader(NPCS),
+    Object = reader({}),
+    Item = reader({}),
+    Enum = { raceMaskById = { [1] = 1, [3] = 4, [4] = 8 } },
+    Support = { Get = function(name) return SUPPORT[name] end },
+    RequireContract = function(version) return version >= 1 and version <= 4 end,
+}
+
+-- The game's side: a Human Warrior at level 10 in Elwynn Forest with two quests in the log, one ready to turn in.
+local questLog = { [106] = true, [107] = true }
+local completed = {}
+C_QuestLog = {
+    IsEliteQuest = function(questId) return questId == 103 end,
+    GetQuestTagInfo = function(questId) return QUESTS[questId].tag and { tagID = QUESTS[questId].tag } end,
+    IsOnQuest = function(questId) return questLog[questId] == true end,
+    IsComplete = function(questId) return questId == 107 end,
+    GetQuestObjectives = function(questId) return questLog[questId] and { { finished = questId == 107 } } or {} end,
+    GetAllCompletedQuestIDs = function()
+        local list = {}
+        for questId in pairs(completed) do list[#list + 1] = questId end
+        return list
+    end,
+    GetTrivialRange = function() return 5 end,
+}
+C_PlayerInfo = { GetContentDifficultyQuestForPlayer = function() return Enum.RelativeContentDifficulty.Fair end }
+function HaveQuestData() return false end
+function UnitRace() return "Human", "Human", 1 end
+function UnitClass() return "Warrior", "WARRIOR", 1 end
+function GetRealZoneText() return "Elwynn Forest" end
+function GetInstanceInfo() return "Elwynn Forest", "none", 0, "", 5, 0, false, 0 end
+C_SkillInfo = { GetSkillLineInfoByID = function() return nil end }
+C_Reputation = { GetFactionDataByID = function() return nil end }
+C_SpellBook = { IsSpellKnown = function() return false end }
 
 local function load(path, ...)
     local chunk, err = loadfile(ROOT .. path)
@@ -622,15 +594,15 @@ local function hasLine(lines, fragment)
     return false
 end
 
--- First login on the account: no saved variables, Questie's ready callback, then PLAYER_LOGIN.
+-- First login on the account: no saved variables, then PLAYER_LOGIN and the first loading screen.
 QuestieGuideDB = nil
 fireEvent("ADDON_LOADED", ADDON_NAME)
 check("saved variables get their defaults", type(QuestieGuideDB) == "table" and QuestieGuideDB.sortMode == "xp"
     and QuestieGuideDB.filters.inLog == true and QuestieGuideDB.levelBelow == 5)
 check("the first load marks the first run and prints nothing", ns.firstRun == true and #chat == 0, chat[1])
-check("waits for Questie's ready callback", #readyCallbacks == 1, #readyCallbacks)
-for _, ready in ipairs(readyCallbacks) do ready() end
+check("QuestieDB passes the contract check", ns.questDB == LibQuestieDB and ns.questDBProblem == nil, ns.questDBProblem)
 fireEvent("PLAYER_LOGIN")
+fireEvent("PLAYER_ENTERING_WORLD")
 check("launcher registers with LibDBIcon", LibStub("LibDBIcon-1.0"):IsRegistered("Questie Guide"))
 check("login prints exactly one welcome line", #chat == 1, #chat)
 check("the welcome line has the gold title prefix, the window link and the alias",
@@ -639,20 +611,6 @@ check("the welcome line has the gold title prefix, the window link and the alias
 check("slash command registers", SLASH_QUESTIEGUIDE1 == "/questieguide" and SLASH_QUESTIEGUIDE2 == "/qg")
 flushTimers()
 chat = {}
-
--- The required-API check passes on Questie 12.6's shape and names what an older or newer Questie lacks.
-check("Questie 12.6 has every internal the guide reads", ns.questieReady and ns.findMissingField() == nil, ns.findMissingField())
-QuestiePlayer.currentQuestlog = questLog
-local getAll = ActiveQuests.GetAll
-ActiveQuests.GetAll = nil
-check("a Questie without ActiveQuests is named, even with the old currentQuestlog",
-    ns.findMissingField() == "ActiveQuests.GetAll", ns.findMissingField())
-ActiveQuests.GetAll = getAll
-QuestiePlayer.currentQuestlog = nil
-ns.missingQuestieField = "ActiveQuests.GetAll"
-check("the missing internal's line names it and what to update", ns.describeQuestieState()
-    == "This Questie version has no ActiveQuests.GetAll, which the quest list needs. Update Questie, QuestieDB and Questie Guide.")
-ns.missingQuestieField = nil
 
 -- Open: the loading line first, then the list on the next tick.
 SlashCmdList.QUESTIEGUIDE("")
@@ -738,15 +696,22 @@ LibStub("LibDataBroker-1.1")["Questie Guide"].OnTooltipShow(GameTooltip)
 check("launcher tooltip names the Next zone", hasLine(GameTooltip.lines, "Next: Elwynn Forest: 2600 XP"))
 check("launcher counts only quests to pick up", hasLine(GameTooltip.lines, "Elwynn Forest: 3 |4quest:quests; to pick up"))
 
--- A stale scan still feeds the launcher, minus quests accepted since, read from the log Questie rebuilt into a
--- new table.
-local logBefore = questLog
-questLog = { [102] = { questId = 102 } }
-for questId, acceptance in pairs(logBefore) do questLog[questId] = acceptance end
-ns.invalidateScan()
+-- Accepting a quest marks the scan stale; until the next render the launcher reads the stale scan, minus the
+-- quest just accepted. Abandoning it lists it again.
+questLog[102] = true
+fireEvent("QUEST_ACCEPTED", 102)
 LibStub("LibDataBroker-1.1")["Questie Guide"].OnTooltipShow(GameTooltip)
 check("stale scan skips a quest accepted since", hasLine(GameTooltip.lines, "Elwynn Forest: 2 |4quest:quests; to pick up"))
-questLog = logBefore
+flushTimers()
+check("the accepted quest lists as in the log", findRow("Kobold Candles") ~= nil
+    and findRow("Kobold Candles").text.label:find("[In Questlog]", 1, true) ~= nil)
+questLog[102] = nil
+fireEvent("QUEST_REMOVED", 102)
+flushTimers()
+check("an abandoned quest lists as available again", findRow("Kobold Candles") ~= nil
+    and findRow("Kobold Candles").text.label:find("[In Questlog]", 1, true) == nil)
+check("a quest for another race never lists", findRow("Nature's Defense") == nil)
+check("a quest for a profession the player lacks never lists", findRow("Smelt On, Smelt Off") == nil)
 
 -- Entering an instance: one line per visit, counting neither the blocked nor the in-log row.
 chat = {}
@@ -799,7 +764,7 @@ filter:ValidateResetState()
 check("reset restores the defaults", QuestieGuideDB.showCompleted and not filter.ResetButton.shown
     and findRow("Completed Quests") ~= nil)
 check("range radios keep the menu open, sort radios close it",
-    entries["radio:Questie Level Ranges"]() == MenuResponse.Refresh and entries["radio:Total XP"]() == nil)
+    entries["radio:5"]() == MenuResponse.Refresh and entries["radio:Total XP"]() == nil)
 filter.defaultCallback()
 
 -- Level change: a rescan, a new Next zone and one chat line with the zone link.
@@ -899,33 +864,24 @@ QuestieGuideDB.position.point = "TOPLEFT"
 SlashCmdList.QUESTIEGUIDE("reset")
 check("reset empties the saved position", QuestieGuideDB.position.point == nil and plain(chat[1]):find("Window position reset.", 1, true) ~= nil)
 
--- Questie map pins: only an available "!" opens the guide.
-QuestieFrame1 = CreateFrame("Button", "QuestieFrame1")
-QuestieFrame1.miniMapIcon = true
-modules.QuestieFrame.CreateIconFrame(1)
-QuestieFrame1.data = { Id = 102, Type = "monster" }
-runScript(QuestieFrame1, "OnClick", "LeftButton")
-check("objective pin leaves the guide closed", not QuestieGuideFrame:IsShown())
-QuestieFrame1.data = { Id = 102, Type = "available" }
-runScript(QuestieFrame1, "OnClick", "LeftButton")
+-- A quest on the hidden list never lists.
+ns.HIDDEN_QUESTS[102] = true
+ns.invalidateScan()
+QuestieGuide_Toggle()
 flushTimers()
-check("available pin opens the guide at the quest", QuestieGuideFrame:IsShown() and findRow("Kobold Candles") ~= nil
-    and findRow("Kobold Candles").selection.shown)
+check("a hidden quest drops out", findRow("Kobold Candles") == nil and findRow("Wolves Across the Border") ~= nil)
+ns.HIDDEN_QUESTS[102] = nil
+ns.invalidateScan()
+ns.renderList()
+check("off the list it lists again", findRow("Kobold Candles") ~= nil)
 
--- Quest types Questie's options hide never list, the way they never get a Questie pin.
-local isDungeonQuest = QuestieDB.IsDungeonQuest
-QuestieDB.IsDungeonQuest = function(questId) return questId == 102 end
-Questie.db.profile.showDungeonQuests = false
-ns.invalidateScan()
-ns.renderList()
+-- Turning in the ready quest completes it: it leaves the completed section and never lists again.
+questLog[107] = nil
+completed[107] = true
+fireEvent("QUEST_TURNED_IN", 107)
 flushTimers()
-check("a quest type Questie hides drops out", findRow("Kobold Candles") == nil)
-Questie.db.profile.showDungeonQuests = true
-ns.invalidateScan()
-ns.renderList()
-flushTimers()
-check("showing the type again lists it", findRow("Kobold Candles") ~= nil)
-QuestieDB.IsDungeonQuest = isDungeonQuest
+check("a turned-in quest leaves the list", findRow("A Fishy Peril") == nil and findRow("Completed Quests") == nil)
+QuestieGuide_Toggle()
 
 -- A later session on the same account: the saved variables exist, so login prints nothing.
 chat = {}
@@ -937,6 +893,20 @@ fireEvent("ADDON_LOADED", ADDON_NAME)
 fireEvent("PLAYER_LOGIN")
 flushTimers()
 check("a later login prints nothing", ns.firstRun == nil and #chat == 0, chat[1])
+
+-- A QuestieDB outside the contract keeps the window closed and says why.
+LibQuestieDB.RequireContract = function() return false end
+chat = {}
+wipe(eventFrames)
+wipe(loginCallbacks)
+wipe(itemRefCallbacks)
+ns = loadAddon()
+fireEvent("ADDON_LOADED", ADDON_NAME)
+fireEvent("PLAYER_LOGIN")
+QuestieGuideFrame:Hide()
+SlashCmdList.QUESTIEGUIDE("")
+check("an unsupported QuestieDB names the fix", ns.questDB == nil and not QuestieGuideFrame:IsShown() and plain(chat[#chat] or "")
+    == "[Questie Guide]: This QuestieDB version is not supported, so the quest list can't open. Update QuestieDB and Questie Guide.", chat[#chat])
 
 print = realPrint
 print(string.format("QuestieGuide smoke test: %d passed, %d failed", passes, failures))

@@ -155,13 +155,7 @@ end
 
 local TIP_TEXT = "Open Filter to choose quest types, the level range and the sort order."
 
--- Level Range radios: Questie's own Quest Level Options, or the guide's band of levels below and above the player.
-local RANGE_SOURCE_OPTIONS = {
-    { value = true,  label = "Questie Level Ranges" },
-    { value = false, label = "Custom Range" },
-}
-
--- Radio entries for one side of the custom band, 0 to 10 levels.
+-- Radio entries for one side of the level band, 0 to 10 levels.
 local BAND_OPTIONS = {}
 for levels = RANGE_LIMIT.MIN, RANGE_LIMIT.MAX do
     BAND_OPTIONS[#BAND_OPTIONS + 1] = { value = levels, label = tostring(levels) }
@@ -189,7 +183,7 @@ local FILTER_FAMILIES = {
 }
 
 -- Everything the menu holds except the sort order, which is not a filter; the native reset button shows while any of it differs from DEFAULTS.
-local RANGE_KEYS = { "showCompleted", "useQuestieLevelRange", "levelBelow", "levelAbove" }
+local RANGE_KEYS = { "showCompleted", "levelBelow", "levelAbove" }
 
 local function filtersAreDefault()
     for key, default in pairs(DEFAULTS.filters) do
@@ -216,12 +210,9 @@ local function resetFilters()
     renderList()
 end
 
--- The level range decides which quests the scan lists, so every change rescans. Picking a band size switches to the custom range it belongs to.
+-- The level range decides which quests the scan lists, so every change rescans.
 local function setRangeSetting(dbKey, value)
     QuestieGuideDB[dbKey] = value
-    if dbKey ~= "useQuestieLevelRange" then
-        QuestieGuideDB.useQuestieLevelRange = false
-    end
     invalidateScan()
     renderList()
 end
@@ -267,7 +258,6 @@ local function setupFilterMenu(_, rootDescription)
         end)
 
     local rangeMenu = rootDescription:CreateButton(LEVEL_RANGE)
-    addRadios(rangeMenu, "useQuestieLevelRange", RANGE_SOURCE_OPTIONS, setRangeSetting, MenuResponse.Refresh)
     addRadios(rangeMenu:CreateButton("Levels Below"), "levelBelow", BAND_OPTIONS, setRangeSetting, MenuResponse.Refresh)
     addRadios(rangeMenu:CreateButton("Levels Above"), "levelAbove", BAND_OPTIONS, setRangeSetting, MenuResponse.Refresh)
 
@@ -298,7 +288,7 @@ end
 local function jumpToCurrentZone()
     local zoneName = getCurrentZoneName()
     if not zoneName then
-        ns.Print("Your current zone has no Questie data.")
+        ns.Print("Your current zone has no quest data.")
         return
     end
     if not expandAndScrollToZone(zoneName) then
@@ -306,7 +296,7 @@ local function jumpToCurrentZone()
     end
 end
 
--- Questie fills its tag cache a second after a first lookup misses, so the session's first list renders once more when the tags have arrived.
+-- The client loads a quest's tag a moment after a first lookup misses, so the session's first list renders once more when the tags have arrived.
 local TAG_RETRY_DELAY = 1.5
 local tagRetryDone = false
 

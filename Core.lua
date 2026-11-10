@@ -1,4 +1,4 @@
--- QuestieGuide: zone-bucketed quest browser sourced from Questie. This file holds the shared constants, saved-variable defaults and the Questie compatibility check.
+-- QuestieGuide: zone-bucketed quest browser sourced from QuestieDB. This file holds the shared constants, saved-variable defaults and the QuestieDB check.
 local addonName, ns = ...
 
 -- The toc Title, the spaced name every player-facing surface shows: window title, launcher, addon menu and chat prefix.
@@ -52,7 +52,6 @@ local DEFAULTS = {
 
     -- The window reads and writes its position in this table in place, so it always exists.
     position = {},
-    useQuestieLevelRange = false,
     levelBelow = 5,
     levelAbove = 5,
     showCompleted = true,
@@ -69,7 +68,7 @@ local COLOR = {
     READY = GREEN_FONT_COLOR,
     BLOCKED = ORANGE_FONT_COLOR,
 
-    -- Grey like the "!" Questie pins a quest with before its required level is reached.
+    -- Grey for a quest the player is too low to accept.
     LOCKED = GRAY_FONT_COLOR,
     REPEATABLE = LIGHTBLUE_FONT_COLOR,
 
@@ -116,63 +115,32 @@ local ADDON_ICON = "Interface\\Icons\\INV_Misc_Map02"
 
 local MAX_CHAIN_DEPTH = 12
 
--- Every Questie internal the guide reads, checked once when Questie.API reports ready. The check is per field because QuestieLoader:ImportModule hands back an empty table for an unknown module; one gap keeps the window closed and names the field instead of erroring mid-scan.
-local QUESTIE_FIELDS = {
-    { module = "QuestieDB", fields = { "QuestPointers", "QueryQuestSingle", "QueryQuest", "QueryNPCSingle", "QueryObjectSingle", "QueryItemSingle", "GetNPC", "GetQuest", "IsDoable", "IsPreQuestSingleFulfilled", "IsPreQuestGroupFulfilled", "IsRepeatable", "IsPvPQuest", "IsDungeonQuest", "IsRaidQuest", "IsComplete", "IsTrivial", "GetQuestTagInfo", "autoBlacklist", "RefreshAfterCorrectionApply" } },
-    { module = "QuestieLib", fields = { "GetEffectiveQuestLevel", "GetColoredQuestName", "GetDifficultyColorPercent" } },
-    { module = "QuestiePlayer", fields = { "HasRequiredRace", "HasRequiredClass", "GetCurrentZoneId" } },
-    { module = "ActiveQuests", fields = { "GetAll" } },
-    { module = "ZoneDB", fields = { "GetUiMapIdByAreaId", "GetLocalizedDungeonName" } },
-    { module = "QuestXP", fields = { "GetQuestLogRewardXP" } },
-    { module = "QuestieMap", fields = { "GetFramesForQuest" } },
-    { module = "QuestieCorrections", fields = { "hiddenQuests" } },
-    { module = "QuestieQuestBlacklist", fields = { "AQWarEffortQuests" } },
-    { module = "QuestieTooltips", fields = { "lookupByKey" } },
-    { module = "QuestieFrame", fields = { "CreateIconFrame" } },
-    { module = "QuestieCompat", fields = { "GetQuestGreenRange" } },
-    { module = "AvailableQuests", fields = { "ResetLevelRequirementCache" } },
-    { module = "QuestieEvent", fields = { "activeQuests" } },
-    { module = "QuestieDB.questKeys", fields = { "parentQuest", "availableUntilCompleted" } },
-    { module = "Questie", fields = { "Colorize", "db", "LOWLEVEL_ALL", "LOWLEVEL_OFFSET", "LOWLEVEL_RANGE" } },
-    { module = "Questie.db.char", fields = { "complete", "hidden" } },
-    { module = "Questie.db.profile", fields = { "lowLevelStyle", "manualLevelOffset", "minLevelFilter", "maxLevelFilter", "showRepeatableQuests", "showPvPQuests", "showDungeonQuests", "showRaidQuests", "showAQWarEffortQuests", "enableTooltips", "enableTooltipsQuestLevel", "showQuestsInNpcTooltip" } },
-}
+-- The QuestieDB contract this guide is written against; RequireContract accepts a range, so additive QuestieDB releases keep working.
+local QUESTIE_DB_CONTRACT = 4
 
--- True once Questie.API reported ready and every field checked out; every launcher waits for it. Events.lua sets it, and ns.missingQuestieField to the first Questie field or API the running Questie lacks, which keeps the window closed for the session.
-ns.questieReady = false
+local QUESTIE_DB_MISSING = "QuestieDB is not loaded, so the quest list can't open. Enable QuestieDB in the AddOns list and reload."
+local QUESTIE_DB_UNSUPPORTED = "This QuestieDB version is not supported, so the quest list can't open. Update QuestieDB and Questie Guide."
 
--- Walks a dotted owner such as "Questie.db.profile" or "QuestieDB.questKeys" from the Questie global or a QuestieLoader module. It resolves at check time because Questie.db is a placeholder until Questie's init.
-local function getFieldOwner(path)
-    local root, rest = path:match("^([^.]+)%.?(.*)$")
-    local owner = root == "Questie" and Questie or QuestieLoader:ImportModule(root)
-    for key in rest:gmatch("[^.]+") do
-        if type(owner) ~= "table" then
-            return nil
-        end
-        owner = owner[key]
+-- QuestieDB is a toc dependency, so it has loaded and applied its own corrections before this file runs. Returns the library, or nil and why the window stays closed.
+local function loadQuestDB()
+    local lib = _G.LibQuestieDB
+    if type(lib) ~= "table" then
+        return nil, QUESTIE_DB_MISSING
     end
-    return owner
-end
-
-local function findMissingField()
-    for _, entry in ipairs(QUESTIE_FIELDS) do
-        local owner = getFieldOwner(entry.module)
-        for _, field in ipairs(entry.fields) do
-            if type(owner) ~= "table" or owner[field] == nil then
-                return entry.module .. "." .. field
-            end
+    if type(lib.RequireContract) ~= "function" or not lib.RequireContract(QUESTIE_DB_CONTRACT) or type(lib.Support) ~= "table" then
+        return nil, QUESTIE_DB_UNSUPPORTED
+    end
+    for _, name in ipairs({ "Quest", "Npc", "Object", "Item" }) do
+        local entity = lib[name]
+        if type(entity) ~= "table" or type(entity.Get) ~= "function" or type(entity.GetAllIds) ~= "function" then
+            return nil, QUESTIE_DB_UNSUPPORTED
         end
     end
-    return nil
+    return lib
 end
 
--- Why the window can't open yet, printed by every launcher.
-local function describeQuestieState()
-    if ns.missingQuestieField then
-        return "This Questie version has no " .. ns.missingQuestieField .. ", which the quest list needs. Update Questie, QuestieDB and Questie Guide."
-    end
-    return "Questie is still loading. Try again in a moment, or check Questie for errors if this stays."
-end
+-- The library every data file reads, or nil with ns.questDBProblem as the line every launcher prints.
+ns.questDB, ns.questDBProblem = loadQuestDB()
 
 local function clampRange(value)
     if type(value) ~= "number" then
@@ -195,6 +163,4 @@ ns.SUBCAT_ORDER = SUBCAT_ORDER
 ns.SUBCAT_LABEL = SUBCAT_LABEL
 ns.LAYOUT = LAYOUT
 ns.MAX_CHAIN_DEPTH = MAX_CHAIN_DEPTH
-ns.findMissingField = findMissingField
-ns.describeQuestieState = describeQuestieState
 ns.clampRange = clampRange

@@ -1,12 +1,12 @@
 ## Interface: 16001
 ## Title: Questie Guide
-## Notes: Unofficial Questie companion: lists the quests you can pick up now, grouped by zone and rated by XP.
+## Notes: Lists the quests you can pick up now, grouped by zone and rated by XP, from QuestieDB.
 ## Author: miyanko
 ## Version: @project-version@
 ## Category: Quests
 ## IconTexture: Interface\Icons\INV_Misc_Map02
 ## X-Curse-Project-ID: 1785995
-## Dependencies: Questie
+## Dependencies: QuestieDB
 ## SavedVariables: QuestieGuideDB
 
 Libs\LibStub\LibStub.lua
@@ -14,6 +14,7 @@ Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
 Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 Core.lua
+Hidden.lua
 Data.lua
 Scan.lua
 Tooltip.lua

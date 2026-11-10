@@ -17,10 +17,12 @@ local exceedsRequiredMaxLevel = ns.exceedsRequiredMaxLevel
 local matchesPlayerFaction = ns.matchesPlayerFaction
 local isBlockedByPrereqs = ns.isBlockedByPrereqs
 local getQuestLog = ns.getQuestLog
-
-local QuestieDB = QuestieLoader:ImportModule("QuestieDB")
-local QuestieLib = QuestieLoader:ImportModule("QuestieLib")
-local QuestieTooltips = QuestieLoader:ImportModule("QuestieTooltips")
+local questField = ns.questField
+local itemField = ns.itemField
+local getAllQuestIds = ns.getAllQuestIds
+local isRepeatable = ns.isRepeatable
+local isDoable = ns.isDoable
+local getLevelDifficulty = ns.getLevelDifficulty
 
 -- The tag text Forever's quest log prints after a quest name, per tag id (Camelot QuestUtilsOverrides.GetQuestTagText).
 local QUEST_TAG_TEXT = {
@@ -60,26 +62,36 @@ local function showTooltip(anchor, fill)
     GameTooltip:Show()
 end
 
--- Questie's difficulty colour (red/orange/yellow/green/grey), so the level brackets and name share the hue of Questie's own titles, which prefer the client's per-quest difficulty.
+-- The colour Forever's quest log gives a title (Camelot QuestUtilsOverrides.GetQuestTitleDifficultyColor): the game's difficulty for a quest the client has loaded, else the level gap, since the game rates a quest it hasn't loaded yellow.
 local function getDifficultyColor(level, questId)
-    return CreateColor(QuestieLib:GetDifficultyColorPercent(level, questId))
+    local difficulty
+    if HaveQuestData(questId) then
+        difficulty = C_PlayerInfo.GetContentDifficultyQuestForPlayer(questId)
+    elseif level and level > 0 then
+        difficulty = getLevelDifficulty(level, UnitLevel("player"))
+    end
+    local color = GetDifficultyColor(difficulty)
+    return CreateColor(color.r, color.g, color.b)
+end
+
+-- "[12+] Quest name" in the quest's difficulty colour, the title Forever's quest log shows (Camelot QuestUtilsOverrides.GetQuestTitlePrefix).
+local function formatQuestTitle(questId, level, name)
+    local _, isElite = getQuestTag(questId)
+    local title = string.format("[%d%s] %s", level or 0, isElite and "+" or "", name or getQuestName(questId))
+    return getDifficultyColor(level, questId):WrapTextInColorCode(title)
 end
 
 local function showQuestTooltip(anchor, questId)
-    local quest = QuestieDB.GetQuest(questId)
-    if not quest then
-        return
-    end
-
     showTooltip(anchor, function(tooltip)
-        GameTooltip_SetTitle(tooltip, QuestieLib:GetColoredQuestName(questId, true, false))
+        GameTooltip_SetTitle(tooltip, formatQuestTitle(questId, (getEffectiveLevel(questId, UnitLevel("player")))))
         GameTooltip_AddBlankLineToTooltip(tooltip)
 
-        if quest.requiredLevel and quest.requiredLevel > 0 then
-            GameTooltip_AddHighlightLine(tooltip, ITEM_MIN_LEVEL:format(quest.requiredLevel))
+        local requiredLevel = questField(questId, "requiredLevel")
+        if requiredLevel and requiredLevel > 0 then
+            GameTooltip_AddHighlightLine(tooltip, ITEM_MIN_LEVEL:format(requiredLevel))
         end
 
-        if QuestieDB.IsRepeatable(questId) then
+        if isRepeatable(questId) then
             GameTooltip_AddColoredLine(tooltip, QUEST_CLASSIFICATION_RECURRING, COLOR.REPEATABLE)
         end
         local tagText = QUEST_TAG_TEXT[getQuestTag(questId)]
@@ -96,10 +108,11 @@ local function showQuestTooltip(anchor, questId)
             addTooltipField(tooltip, "XP", BreakUpLargeNumbers(xp))
         end
 
-        if type(quest.objectivesText) == "table" and #quest.objectivesText > 0 then
+        local objectivesText = questField(questId, "objectivesText")
+        if type(objectivesText) == "table" and #objectivesText > 0 then
             GameTooltip_AddBlankLineToTooltip(tooltip)
             GameTooltip_AddNormalLine(tooltip, "Objectives")
-            for _, line in ipairs(quest.objectivesText) do
+            for _, line in ipairs(objectivesText) do
                 GameTooltip_AddHighlightLine(tooltip, line)
             end
         end
@@ -117,11 +130,10 @@ local function formatGiverLine(startInfo)
     return table.concat(parts, ", ")
 end
 
--- Two-line row presentation in Forever's quest log format, "[12+] Quest name (Dungeon) [badge?]", over the giver's zone and name. Level and quest name share Questie's difficulty colour; the tag and the whole giver line are muted grey so they read as secondary. `badge` is appended to line 1 when provided.
+-- Two-line row presentation in Forever's quest log format, "[12+] Quest name (Dungeon) [badge?]", over the giver's zone and name. Level and quest name share the difficulty colour; the tag and the whole giver line are muted grey so they read as secondary. `badge` is appended to line 1 when provided.
 local function formatRowLines(quest, badge)
-    local tagId, isElite = getQuestTag(quest.id)
-    local title = string.format("[%d%s] %s", quest.level or 0, isElite and "+" or "", quest.name or "")
-    local line1 = getDifficultyColor(quest.level, quest.id):WrapTextInColorCode(title)
+    local tagId = getQuestTag(quest.id)
+    local line1 = formatQuestTitle(quest.id, quest.level, quest.name or "")
     if QUEST_TAG_TEXT[tagId] then
         line1 = line1 .. " " .. COLOR.MUTED:WrapTextInColorCode(PARENS_TEMPLATE:format(QUEST_TAG_TEXT[tagId]))
     end
@@ -133,12 +145,12 @@ local function formatRowLines(quest, badge)
     return line1, giverLine and COLOR.MUTED:WrapTextInColorCode(giverLine)
 end
 
--- Status badge for prior quests in the chain tooltip. `[In Questlog]` if the player has the quest in their log, `[Available]` if it can be picked up right now, `[Requires Level N]` if only its level requirement stands in the way (IsDoable ignores it), otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
+-- Status badge for prior quests in the chain tooltip. `[In Questlog]` if the player has the quest in their log, `[Available]` if it can be picked up right now, `[Requires Level N]` if only its level requirement stands in the way (isDoable ignores it), otherwise no badge. Completed quests don't appear in the chain at all (findMissingChains skips them).
 local function getStatusBadge(questId)
     if getQuestLog()[questId] then
         return COLOR.IN_LOG:WrapTextInColorCode("[In Questlog]")
     end
-    if QuestieDB.IsDoable(questId) then
+    if isDoable(questId) then
         local playerLevel = UnitLevel("player")
         local _, requiredLevel = getEffectiveLevel(questId, playerLevel)
         if not meetsRequiredLevel(requiredLevel, playerLevel) then
@@ -242,10 +254,10 @@ local function showZoneTooltip(anchor, zoneName, stats, isBest, focusHint)
     end)
 end
 
--- Tooltip for a ready-to-turn-in quest: Questie-colored name plus the turn-in target, mirroring showQuestTooltip's field styling. The quest's startInfo carries the finisher (see collectCompletedByZone).
+-- Tooltip for a ready-to-turn-in quest: the coloured title plus the turn-in target, mirroring showQuestTooltip's field styling. The quest's startInfo carries the finisher (see collectCompletedByZone).
 local function showTurnInTooltip(anchor, quest)
     showTooltip(anchor, function(tooltip)
-        GameTooltip_SetTitle(tooltip, QuestieLib:GetColoredQuestName(quest.id, true, false))
+        GameTooltip_SetTitle(tooltip, formatQuestTitle(quest.id, quest.level, quest.name))
         GameTooltip_AddColoredLine(tooltip, "Completed", COLOR.READY)
         GameTooltip_AddBlankLineToTooltip(tooltip)
         local info = quest.startInfo
@@ -257,13 +269,11 @@ local function showTurnInTooltip(anchor, quest)
     end)
 end
 
--- List every quest the item belongs to that is NOT in the quest log, styled like Questie's active-quest titles (difficulty-colored name via GetColoredQuestName plus a Questie:Colorize'd "(Status)" suffix, the same pattern as its "(Complete)"), so they read as part of Questie's block. Active quests stay Questie's job; adding them here would duplicate its title and objective lines.
+-- Item tooltips list every quest the item belongs to that is NOT in the quest log, as the coloured quest title plus a "(Status)" suffix. Quests in the log are left out; the quest log already tracks them.
 local INDEX_BUILD_DELAY = 5
 local indexBuildScheduled = false
 
-local ITEM_QUEST_KEYS = { "objectives", "sourceItemId", "requiredSourceItems" }
-
--- sessionCache.itemQuests: itemId -> quest ids referencing the item (objectives, quest-provided, required source), built from Questie's compiled quest DB.
+-- sessionCache.itemQuests: itemId -> quest ids referencing the item (objectives, quest-provided, required source), built from QuestieDB.
 local function buildItemQuestIndex()
     indexBuildScheduled = false
     local index = {}
@@ -282,36 +292,35 @@ local function buildItemQuestIndex()
             list[#list + 1] = questId
         end
     end
-    for questId in pairs(QuestieDB.QuestPointers) do
-        local fields = QuestieDB.QueryQuest(questId, ITEM_QUEST_KEYS)
-        if fields then
-            local objectives = fields[1]
-            if type(objectives) == "table" then
-                if type(objectives[3]) == "table" then
-                    for _, objective in ipairs(objectives[3]) do
-                        add((type(objective) == "table" and objective[1]) or objective, questId)
-                    end
+    for _, questId in ipairs(getAllQuestIds()) do
+        -- Item objectives, then spell objectives, whose third field is the item the spell is cast with.
+        local objectives = questField(questId, "objectives")
+        if type(objectives) == "table" then
+            if type(objectives[3]) == "table" then
+                for _, objective in ipairs(objectives[3]) do
+                    add((type(objective) == "table" and objective[1]) or objective, questId)
                 end
-                if type(objectives[6]) == "table" then
-                    for _, objective in ipairs(objectives[6]) do
-                        if type(objective) == "table" then
-                            add(objective[3], questId)
-                        end
+            end
+            if type(objectives[6]) == "table" then
+                for _, objective in ipairs(objectives[6]) do
+                    if type(objective) == "table" then
+                        add(objective[3], questId)
                     end
                 end
             end
-            add(fields[2], questId)
-            if type(fields[3]) == "table" then
-                for _, itemId in ipairs(fields[3]) do
-                    add(itemId, questId)
-                end
+        end
+        add(questField(questId, "sourceItemId"), questId)
+        local sourceItems = questField(questId, "requiredSourceItems")
+        if type(sourceItems) == "table" then
+            for _, itemId in ipairs(sourceItems) do
+                add(itemId, questId)
             end
         end
     end
     sessionCache.itemQuests = index
 end
 
--- A few seconds after Questie reports ready, so the walk doesn't share a frame with Questie's own available-quest draw at the end of its init.
+-- A few seconds after login, so the walk over every quest doesn't share a frame with the login's own work.
 local function scheduleItemQuestIndexBuild()
     if indexBuildScheduled then
         return
@@ -320,13 +329,13 @@ local function scheduleItemQuestIndexBuild()
     C_Timer.After(INDEX_BUILD_DELAY, buildItemQuestIndex)
 end
 
--- Classifies a non-log quest for the item tooltip; nil skips the line. Skipped entirely: active quests (Questie renders them), hidden or race/class-gated quests, and permanently unobtainable ones. A quest the player is too low for reads "Requires Level N", the list's own wording (ITEM_MIN_LEVEL), in the grey of Questie's level-locked pin; "Upcoming" is left for prereq-blocked quests.
+-- Classifies a non-log quest for the item tooltip as a label and its colour; nil skips the line. Skipped entirely: active quests, hidden or race/class-gated quests, and permanently unobtainable ones. A quest the player is too low for reads "Requires Level N", the chain tooltip's own wording (ITEM_MIN_LEVEL), in grey; "Upcoming" is left for prereq-blocked quests.
 local function getItemQuestStatus(questId, playerLevel, currentLog)
     if currentLog[questId] then
         return nil
     end
     if isQuestCompleted(questId) then
-        return "Completed Before", "gray"
+        return "Completed Before", GRAY_FONT_COLOR
     end
     if isQuestHidden(questId) or not matchesPlayerFaction(questId) then
         return nil
@@ -336,44 +345,23 @@ local function getItemQuestStatus(questId, playerLevel, currentLog)
         return nil
     end
     if not meetsRequiredLevel(requiredLevel, playerLevel) then
-        return ITEM_MIN_LEVEL:format(requiredLevel), "gray"
+        return ITEM_MIN_LEVEL:format(requiredLevel), GRAY_FONT_COLOR
     end
-    if QuestieDB.IsDoable(questId) then
-        return "Available", "green"
+    if isDoable(questId) then
+        return "Available", GREEN_FONT_COLOR
     end
     if isBlockedByPrereqs(questId) then
-        return "Upcoming", "yellow"
+        return "Upcoming", YELLOW_FONT_COLOR
     end
     return nil
 end
 
--- True when Questie already names this quest on the item tooltip via its start-item line, registered by its own item handler on the same hover before ours runs.
-local function questieShowsStartLine(itemId, questId, profile)
-    if not profile.showQuestsInNpcTooltip then
-        return false
-    end
-    local entries = QuestieTooltips.lookupByKey["i_" .. itemId]
-    if not entries then
-        return false
-    end
-    for _, entry in pairs(entries) do
-        if entry.questId == questId and entry.name then
-            return true
-        end
-    end
-    return false
-end
-
--- Per-frame dedup mirroring Questie's item handler: the post-call can fire repeatedly for one hover, so re-add only when the tooltip shows a different item or was rebuilt (fewer lines than when we last added).
+-- Per-frame dedup: the post-call can fire repeatedly for one hover, so re-add only when the tooltip shows a different item or was rebuilt (fewer lines than when we last added).
 local lastTooltipItem = {}
 
 local function addQuestLinesToItemTooltip(tooltip, itemId)
     local itemQuests = sessionCache.itemQuests
     if tooltip:IsForbidden() or not itemId or not itemQuests then
-        return
-    end
-    local profile = Questie.db.profile
-    if not profile.enableTooltips then
         return
     end
     local last = lastTooltipItem[tooltip]
@@ -388,26 +376,21 @@ local function addQuestLinesToItemTooltip(tooltip, itemId)
         seen[questId] = true
         questIds[#questIds + 1] = questId
     end
-    local startQuestId = QuestieDB.QueryItemSingle(itemId, "startQuest")
+    local startQuestId = itemField(itemId, "startQuest")
     if startQuestId and startQuestId > 0 and not seen[startQuestId] then
         questIds[#questIds + 1] = startQuestId
     end
     for _, questId in ipairs(questIds) do
         local label, color = getItemQuestStatus(questId, playerLevel, currentLog)
-
-        -- Drop the Available label when it would only repeat Questie's own start-item line; other statuses add information that line lacks.
-        if label == "Available" and questId == startQuestId and questieShowsStartLine(itemId, questId, profile) then
-            label = nil
-        end
         if label then
-            local status = Questie:Colorize("(" .. label .. ")", color)
-            tooltip:AddLine(QuestieLib:GetColoredQuestName(questId, profile.enableTooltipsQuestLevel, false) .. " " .. status)
+            local level = getEffectiveLevel(questId, playerLevel)
+            tooltip:AddLine(formatQuestTitle(questId, level) .. " " .. color:WrapTextInColorCode("(" .. label .. ")"))
         end
     end
     lastTooltipItem[tooltip] = { itemId = itemId, count = tooltip:NumLines() }
 end
 
--- Forever hides tooltip data as secret values inside instances and in some combat cases, as Questie's own tooltip handler notes; a secret can't be read or used as a key. Both predicates are declared SecretArguments = "AllowedWhenUntainted", so callers pcall this and count a raise as secret.
+-- Forever hides tooltip data as secret values inside instances and in some combat cases; a secret can't be read or used as a key. Both predicates are declared SecretArguments = "AllowedWhenUntainted", so callers pcall this and count a raise as secret.
 local function readableItemId(data)
     if type(data) ~= "table" or issecrettable(data) then
         return nil
@@ -419,7 +402,7 @@ local function readableItemId(data)
     return itemId
 end
 
--- Hooks the same two tooltips Questie's item handler hooks. Installed from the ready callback, after Questie's Stage 3 registered its own post-call, and post-calls run in registration order, so these lines land under Questie's.
+-- The item tooltip and the chat link tooltip; other tooltips, such as the comparison ones, stay as they are.
 local function installItemTooltipHooks()
     TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tooltip, data)
         if tooltip ~= GameTooltip and tooltip ~= ItemRefTooltip then
@@ -438,7 +421,6 @@ local function installItemTooltipHooks()
     end
 end
 
-ns.formatLevelLock = formatLevelLock
 ns.formatRowLines = formatRowLines
 ns.showQuestTooltip = showQuestTooltip
 ns.showChainTooltip = showChainTooltip
