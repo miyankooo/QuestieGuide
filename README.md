@@ -2,13 +2,13 @@
 
 # Questie Guide
 
-A WoW Forever addon that lists every quest you can pick up now, grouped by zone and rated by the XP of one trip through each zone. It is an unofficial Questie companion and needs Questie.
+A WoW Forever addon that lists every quest you can pick up now, grouped by zone and rated by the XP of one trip through each zone. It reads QuestieDB, Questie's quest database, which the CurseForge app installs with Questie Guide. Questie itself is not needed.
 
 ## Features
 
 - A Next banner names the best zone for your next trip.
 - Each zone shows its quest count and trip XP.
-- Each quest shows only the status that matters, such as Requires Level or Missing Pre-Quest.
+- Each quest shows only the status that matters, such as In Questlog or Missing Pre-Quest.
 - Click a quest to open the map at its giver with a waypoint.
 - Quests ready to turn in sit at the top.
 - One Filter menu sets quest types, level range and sorting.
@@ -21,7 +21,6 @@ A WoW Forever addon that lists every quest you can pick up now, grouped by zone 
 2. Read the Next banner, or press Current Zone.
 3. Type in the search box to find a quest, zone or NPC.
 4. Click a quest to open the map at its giver. Shift-click links it in chat.
-5. Click a Questie "!" on the map to open the guide at that quest.
 
 Commands:
 
