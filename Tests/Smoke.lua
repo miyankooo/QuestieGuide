@@ -700,6 +700,24 @@ check("a bucket header says what it holds", GameTooltip.lines[1] == "Starts Here
 local wolves = findRow("Wolves Across the Border")
 wolves.scripts.OnEnter(wolves)
 check("quest tooltip names the giver", hasLine(GameTooltip.lines, "NPC: Marshal Dughan"))
+
+-- Shift-click links a quest only into a chat box the player has open; opening chat from addon code would taint it.
+local inserted = {}
+ChatFrameUtil.InsertLink = function(text)
+    if not ChatFrameUtil.GetActiveWindow() then return false end
+    inserted[#inserted + 1] = text
+    return true
+end
+IsModifiedClick = function() return true end
+chat = {}
+wolves.scripts.OnClick(wolves, "LeftButton")
+check("Shift-click with no chat box open asks for one in red, with no chat line",
+    uiErrors[#uiErrors] == "Open the chat box first to link a quest." and #inserted == 0 and #chat == 0, uiErrors[#uiErrors])
+ChatFrameUtil.GetActiveWindow = function() return {} end
+wolves.scripts.OnClick(wolves, "LeftButton")
+check("Shift-click with the chat box open inserts the quest", inserted[1] == "[[10] Wolves Across the Border (101)]", inserted[1])
+ChatFrameUtil.GetActiveWindow = function() return nil end
+IsModifiedClick = function() return false end
 local linen = findRow("Red Linen Goods")
 linen.scripts.OnEnter(linen)
 check("chain tooltip lists the first step", hasLine(GameTooltip.lines, "1. [10] Wolves Across the Border"))

@@ -243,14 +243,28 @@ local function buildQuestLink(quest)
     return string.format("[[%d] %s (%d)]", lvl, name, quest.id)
 end
 
--- Puts the link into the open chat box, or opens chat with it. A quest in the log gets the native link every reader can click, as Questie itself prefers.
+-- Like Blizzard's own Shift-click, a link goes into the chat box the player has open. Opening chat from addon code
+-- (ChatFrameUtil.OpenChat) writes the chat box's own fields and taints Blizzard's chat, so with no box open the
+-- click says to open one. A quest in the log gets the native link every reader can click, as Questie itself prefers.
+local LINK_NEEDS_CHAT = "Open the chat box first to link a quest."
+
 local function linkQuestInChat(quest)
     local link = getQuestLog()[quest.id] and GetQuestLink(quest.id) or buildQuestLink(quest)
-    local editBox = ChatFrameUtil.GetActiveWindow()
-    if editBox and editBox:IsVisible() then
-        ChatFrameUtil.InsertLink(link)
-    else
-        ChatFrameUtil.OpenChat(link)
+    if not ChatFrameUtil.InsertLink(link) then
+        UIErrorsFrame:AddExternalErrorMessage(LINK_NEEDS_CHAT)
+    end
+end
+
+-- Link in Chat for a row's menu, greyed with the reason while no chat box is open, as the dungeon finder greys a
+-- choice (LFDFrame.lua).
+local function addLinkButton(rootDescription, quest)
+    local button = rootDescription:CreateButton("Link in Chat", function() linkQuestInChat(quest) end)
+    if not ChatFrameUtil.GetActiveWindow() then
+        button:SetEnabled(false)
+        button:SetTooltip(function(tooltip)
+            GameTooltip_SetTitle(tooltip, "Link in Chat")
+            GameTooltip_AddErrorLine(tooltip, LINK_NEEDS_CHAT)
+        end)
     end
 end
 
@@ -259,7 +273,7 @@ local function showQuestContextMenu(anchor, quest)
     MenuUtil.CreateContextMenu(anchor, function(_, rootDescription)
         rootDescription:CreateTitle(quest.name)
         rootDescription:CreateButton("Show on Map", function() openMapForQuest(quest) end)
-        rootDescription:CreateButton("Link in Chat", function() linkQuestInChat(quest) end)
+        addLinkButton(rootDescription, quest)
     end)
 end
 
@@ -269,7 +283,7 @@ local function showChainContextMenu(anchor, mpe)
     MenuUtil.CreateContextMenu(anchor, function(_, rootDescription)
         rootDescription:CreateTitle(mpe.name)
         rootDescription:CreateButton("Show Next Step on Map", function() openMapForQuest(initial) end)
-        rootDescription:CreateButton("Link in Chat", function() linkQuestInChat(mpe) end)
+        addLinkButton(rootDescription, mpe)
     end)
 end
 
