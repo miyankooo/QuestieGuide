@@ -155,11 +155,16 @@ end
 
 local TIP_TEXT = "Open Filter to choose quest types, the level range and the sort order."
 
--- Radio entries for one side of the level band, 0 to 10 levels.
-local BAND_OPTIONS = {}
-for levels = RANGE_LIMIT.MIN, RANGE_LIMIT.MAX do
-    BAND_OPTIONS[#BAND_OPTIONS + 1] = { value = levels, label = tostring(levels) }
+-- Radio entries for one side of the level band, from no levels up to that side's bound.
+local function bandOptions(max)
+    local options = {}
+    for levels = RANGE_LIMIT.MIN, max do
+        options[#options + 1] = { value = levels, label = tostring(levels) }
+    end
+    return options
 end
+local BELOW_OPTIONS = bandOptions(RANGE_LIMIT.BELOW)
+local ABOVE_OPTIONS = bandOptions(RANGE_LIMIT.ABOVE)
 
 -- Filter menu families, a title and its checkboxes each; the keys live under QuestieGuideDB.filters.
 local FILTER_FAMILIES = {
@@ -258,8 +263,8 @@ local function setupFilterMenu(_, rootDescription)
         end)
 
     local rangeMenu = rootDescription:CreateButton(LEVEL_RANGE)
-    addRadios(rangeMenu:CreateButton("Levels Below"), "levelBelow", BAND_OPTIONS, setRangeSetting, MenuResponse.Refresh)
-    addRadios(rangeMenu:CreateButton("Levels Above"), "levelAbove", BAND_OPTIONS, setRangeSetting, MenuResponse.Refresh)
+    addRadios(rangeMenu:CreateButton("Levels Below"), "levelBelow", BELOW_OPTIONS, setRangeSetting, MenuResponse.Refresh)
+    addRadios(rangeMenu:CreateButton("Levels Above"), "levelAbove", ABOVE_OPTIONS, setRangeSetting, MenuResponse.Refresh)
 
     local sortMenu = rootDescription:CreateButton(WHO_SORT_LABEL)
     addRadios(sortMenu, "sortMode", SORT_BY_OPTIONS, setSortSetting)
@@ -284,15 +289,16 @@ local function buildFilterDropdown(frame)
     frame.filterDropdown = filter
 end
 
--- Expands and scrolls to the zone the player is standing in.
+-- Expands and scrolls to the zone the player is standing in. A jump with no target shows Blizzard's red error text,
+-- as a refused click does, rather than a chat line.
 local function jumpToCurrentZone()
     local zoneName = getCurrentZoneName()
     if not zoneName then
-        ns.Print("Your current zone has no quest data.")
+        UIErrorsFrame:AddExternalErrorMessage("Your current zone has no quest data.")
         return
     end
     if not expandAndScrollToZone(zoneName) then
-        ns.Print("No quests listed for " .. zoneName .. ". Widen the level range or change the filters.")
+        UIErrorsFrame:AddExternalErrorMessage("No quests listed for " .. zoneName .. ". Widen the level range or change the filters.")
     end
 end
 

@@ -5,6 +5,7 @@ local DEFAULTS = ns.DEFAULTS
 local SORT_BY_OPTIONS = ns.SORT_BY_OPTIONS
 local SORT_DIR_OPTIONS = ns.SORT_DIR_OPTIONS
 local clampRange = ns.clampRange
+local RANGE_LIMIT = ns.RANGE_LIMIT
 local isQuestCompleted = ns.isQuestCompleted
 local getZoneName = ns.getZoneName
 local getEffectiveLevel = ns.getEffectiveLevel
@@ -137,8 +138,8 @@ local function loadSavedVariables()
         QuestieGuideDB = {}
     end
     applyDefaults(QuestieGuideDB, DEFAULTS)
-    QuestieGuideDB.levelBelow = clampRange(QuestieGuideDB.levelBelow)
-    QuestieGuideDB.levelAbove = clampRange(QuestieGuideDB.levelAbove)
+    QuestieGuideDB.levelBelow = clampRange(QuestieGuideDB.levelBelow, RANGE_LIMIT.BELOW)
+    QuestieGuideDB.levelAbove = clampRange(QuestieGuideDB.levelAbove, RANGE_LIMIT.ABOVE)
     if not isKnownOption(SORT_BY_OPTIONS, QuestieGuideDB.sortMode) then
         QuestieGuideDB.sortMode = DEFAULTS.sortMode
     end

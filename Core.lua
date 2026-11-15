@@ -53,12 +53,12 @@ local DEFAULTS = {
     -- The window reads and writes its position in this table in place, so it always exists.
     position = {},
     levelBelow = 5,
-    levelAbove = 5,
+    levelAbove = 4,
     showCompleted = true,
 }
 
--- Bounds of the levels below / above band.
-local RANGE_LIMIT = { MIN = 0, MAX = 10 }
+-- Bounds of the levels below / above band. Above stops at 4: a quest 5 or more levels up is red and never lists.
+local RANGE_LIMIT = { MIN = 0, BELOW = 10, ABOVE = 4 }
 
 -- Colour roles on Blizzard's colour objects: muted, heading, good and links from the shared roles, other colour objects for the quest states they have no role for.
 local COLOR = {
@@ -142,13 +142,14 @@ end
 -- The library every data file reads, or nil with ns.questDBProblem as the line every launcher prints.
 ns.questDB, ns.questDBProblem = loadQuestDB()
 
-local function clampRange(value)
+-- Rounds a band size into MIN to max, the side's own bound.
+local function clampRange(value, max)
     if type(value) ~= "number" then
         return nil
     end
     value = math.floor(value + 0.5)
     if value < RANGE_LIMIT.MIN then return RANGE_LIMIT.MIN end
-    if value > RANGE_LIMIT.MAX then return RANGE_LIMIT.MAX end
+    if value > max then return max end
     return value
 end
 

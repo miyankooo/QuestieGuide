@@ -670,12 +670,12 @@ local function renderEmptyState(filters)
         action = function()
             ns.mainFrame.searchBox:SetText("")
         end
-    elseif below < RANGE_LIMIT.MAX or above < RANGE_LIMIT.MAX then
+    elseif below < RANGE_LIMIT.BELOW or above < RANGE_LIMIT.ABOVE then
         actionText = "Widen Level Range"
-        help = "Adds two levels below and two above your level to the range."
+        help = "Adds up to two levels below and two above your level to the range."
         action = function()
-            QuestieGuideDB.levelBelow = clampRange(below + 2)
-            QuestieGuideDB.levelAbove = clampRange(above + 2)
+            QuestieGuideDB.levelBelow = clampRange(below + 2, RANGE_LIMIT.BELOW)
+            QuestieGuideDB.levelAbove = clampRange(above + 2, RANGE_LIMIT.ABOVE)
             ns.mainFrame.filterDropdown:ValidateResetState()
             invalidateScan()
             renderList()

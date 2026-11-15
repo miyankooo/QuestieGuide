@@ -599,6 +599,7 @@ QuestieGuideDB = nil
 fireEvent("ADDON_LOADED", ADDON_NAME)
 check("saved variables get their defaults", type(QuestieGuideDB) == "table" and QuestieGuideDB.sortMode == "xp"
     and QuestieGuideDB.filters.inLog == true and QuestieGuideDB.levelBelow == 5)
+check("Levels Above defaults to 4, the last level below red quests", QuestieGuideDB.levelAbove == 4)
 check("the first load marks the first run and prints nothing", ns.firstRun == true and #chat == 0, chat[1])
 check("QuestieDB passes the contract check", ns.questDB == LibQuestieDB and ns.questDBProblem == nil, ns.questDBProblem)
 fireEvent("PLAYER_LOGIN")
@@ -676,6 +677,16 @@ check("the Filter button has a tooltip", GameTooltip.lines[1] == "Filter")
 local currentZoneButton = QuestieGuideFrame.barButtons[1]
 currentZoneButton.hooks.OnEnter[1](currentZoneButton)
 check("Current Zone has a tooltip", GameTooltip.lines[1] == "Current Zone")
+local errorsBefore = #uiErrors
+currentZoneButton.scripts.OnClick(currentZoneButton)
+check("Current Zone in a listed zone jumps without an error", #uiErrors == errorsBefore)
+local bestMapForUnit = C_Map.GetBestMapForUnit
+C_Map.GetBestMapForUnit = function() return nil end
+chat = {}
+currentZoneButton.scripts.OnClick(currentZoneButton)
+check("Current Zone without quest data shows the red error and no chat line",
+    uiErrors[#uiErrors] == "Your current zone has no quest data." and #chat == 0, uiErrors[#uiErrors])
+C_Map.GetBestMapForUnit = bestMapForUnit
 QuestieGuideFrame.toggleAllButton.hooks.OnEnter[1](QuestieGuideFrame.toggleAllButton)
 check("Collapse All names itself in its tooltip", GameTooltip.lines[1] == "Collapse All")
 QuestieGuideFrame.searchBox.hooks.OnEnter[1](QuestieGuideFrame.searchBox)
@@ -883,7 +894,9 @@ flushTimers()
 check("a turned-in quest leaves the list", findRow("A Fishy Peril") == nil and findRow("Completed Quests") == nil)
 QuestieGuide_Toggle()
 
--- A later session on the same account: the saved variables exist, so login prints nothing.
+-- A later session on the same account: the saved variables exist, so login prints nothing. A band side saved past
+-- its bound comes back clamped.
+QuestieGuideDB.levelAbove = 7
 chat = {}
 wipe(eventFrames)
 wipe(loginCallbacks)
@@ -893,6 +906,7 @@ fireEvent("ADDON_LOADED", ADDON_NAME)
 fireEvent("PLAYER_LOGIN")
 flushTimers()
 check("a later login prints nothing", ns.firstRun == nil and #chat == 0, chat[1])
+check("a saved Levels Above past 4 loads as 4", QuestieGuideDB.levelAbove == 4, QuestieGuideDB.levelAbove)
 
 -- A QuestieDB outside the contract keeps the window closed and says why.
 LibQuestieDB.RequireContract = function() return false end
