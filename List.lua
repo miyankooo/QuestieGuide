@@ -28,22 +28,23 @@ local Snap = ns.Snap
 local HookTooltip = ns.HookTooltip
 local getQuestLog = ns.getQuestLog
 
--- Blizzard's quest log header grey; headers whiten to the body colour while hovered.
-local HEADER_COLOR = QuestDifficultyColors.header
-
 -- Completed-quests section: sentinel collapse key that can't collide with a real zone name ("||" never appears in area names).
 local COMPLETED_KEY = "||completed"
 local COMPLETED_LABEL = "Completed Quests"
 
--- Quest list metrics on the 4px grid. Rows snap their centred text to the grid, one 16px line at least; quest rows add 8px of air around their text. The 16 px +/- toggle sits flush left with header text right after it, and gaps grow per tier (none between quests, one gap before a bucket, two before a zone) so quests, buckets and zones read apart.
+-- Quest rows on the 4px grid: their centred text snapped to it, one 16px line at least, with 8px of air around it. The banner keeps one gap under it.
 local LIST = {
     ROW_HEIGHT = 16,
     ROW_PADDING = 8,
     GROUP_GAP = 8,
-    ZONE_GAP = 16,
-    INDENT_STEP = 16,
-    TEXT_INSET = 16,
 }
+
+-- The tree around the quests, laid out like the character window's Statistics list (Blizzard_Statistics/Camelot): a
+-- zone heads on StatisticsHeaderTemplate's 26 px collapse bar and a category inside it on StatisticsSubHeaderTemplate's
+-- 22 px line, each header GAP under the line before and a category's quests ending GAP above the next line, as its
+-- view spaces them, and each level stands NEST further in, its tree view's indent (StatisticsFrame.lua). The
+-- Statistics list's own metrics, so they are kept off the grid.
+local TREE = { HEADER = 26, SUB_HEADER = 22, GAP = 3, NEST = 20 }
 
 -- The list sits one padding inside the inset and leaves the scroll gutter free on its right: SCROLL_FRAME_SCROLL_BAR_OFFSET_LEFT 6, the 8 px MinimalScrollBar and a gap, rounded up to the grid.
 local PADDING = 16
@@ -95,15 +96,9 @@ local function CreateScroll(parent, name)
     return scroll
 end
 
--- A row of a list grouped under collapsible headers, from the quest log: the title highlight Forever's gossip and
--- quest greeting rows use (ADD blend) on hover, the quest log's yellow glow on the selected row, and the plus and
--- minus buttons on a header. Headers stay flat on hover.
-local TOGGLE_ART = {
-    PLUS = "Interface\\Buttons\\UI-PlusButton-Up",
-    MINUS = "Interface\\Buttons\\UI-MinusButton-Up",
-    HIGHLIGHT = "Interface\\Buttons\\UI-PlusButton-Hilight",
-}
-local function CreateGroupedRow(parent)
+-- A quest row, from the quest log: the title highlight Forever's gossip and quest greeting rows use (ADD blend) on
+-- hover and the quest log's yellow glow on the selected row.
+local function CreateQuestRow(parent)
     local row = CreateFrame("Button", nil, parent)
     row.highlight = row:CreateTexture(nil, "BACKGROUND")
     row.highlight:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
@@ -114,12 +109,84 @@ local function CreateGroupedRow(parent)
     row.selection:SetAtlas("questlog-quest-glow-yellow")
     row.selection:SetAllPoints()
     row.selection:Hide()
-    row.toggle = row:CreateTexture(nil, "ARTWORK")
-    row.toggle:SetSize(16, 16)
-    row.toggle:SetPoint("LEFT")
-    row.toggle:Hide()
     row.text = CreateText(row, GameFontHighlight)
     return row
+end
+
+-- A zone's header, StatisticsHeaderTemplate's: the dark collapse bar (common-button-list-collapseExpand) across the
+-- row, the same art in ADD blend at 0.3 on hover, the plus or minus (common-button-list-plus, -minus) at its own size
+-- 8 in from the right and 1 down, the name in gold 10 in from the left and a muted count before the plus.
+-- SetCollapsed sets the plus or minus. Built from the atlases, since the template's mixin collapses the player's
+-- statistics.
+local function CreateGroupHeader(parent)
+    local header = CreateFrame("Button", nil, parent)
+    header:SetHeight(TREE.HEADER)
+    local bar = header:CreateTexture(nil, "BACKGROUND")
+    bar:SetAtlas("common-button-list-collapseExpand")
+    bar:SetAllPoints()
+    local glow = header:CreateTexture(nil, "HIGHLIGHT")
+    glow:SetAtlas("common-button-list-collapseExpand")
+    glow:SetBlendMode("ADD")
+    glow:SetAlpha(0.3)
+    glow:SetAllPoints()
+    header.state = header:CreateTexture(nil, "BORDER")
+    header.state:SetPoint("RIGHT", -8, -1)
+    header.count = CreateText(header, GameFontDisable, "OVERLAY")
+    header.count:SetPoint("RIGHT", header.state, "LEFT", -8, 1)
+    header.name = CreateText(header, GameFontNormal, "OVERLAY")
+    header.name:SetPoint("LEFT", 10, 0)
+    header.name:SetPoint("RIGHT", header.count, "LEFT", -4, 0)
+    header.name:SetWordWrap(false)
+    function header:SetCollapsed(collapsed)
+        self.state:SetAtlas(collapsed and "common-button-list-plus" or "common-button-list-minus", true)
+    end
+    return header
+end
+
+-- A category inside a zone, StatisticsSubHeaderTemplate's: 22 tall, the closed or open campaign icon
+-- (campaign_headericon_closed, -open) at its own size in the template's 20 px toggle 2 in from the left, lit by the
+-- plus button's hilight on hover, the name in body 4 after the toggle and 24 short of the right edge, and the entry's
+-- rounded line from character creation's dropdowns (charactercreate-customize-dropdown-linemouseover) behind it, white
+-- at 0.10 alpha on hover (StatisticsEntryMixin:RefreshBackgroundHighlightOpacity). A click anywhere on it toggles, as
+-- the template's own click does. SetCollapsed sets the icon, SetHovered the line.
+local function CreateSubHeader(parent)
+    local header = CreateFrame("Button", nil, parent)
+    header:SetHeight(TREE.SUB_HEADER)
+    local left = header:CreateTexture(nil, "BACKGROUND")
+    left:SetAtlas("charactercreate-customize-dropdown-linemouseover-side")
+    left:SetWidth(6)
+    left:SetPoint("TOPLEFT")
+    left:SetPoint("BOTTOMLEFT")
+    local right = header:CreateTexture(nil, "BACKGROUND")
+    right:SetAtlas("charactercreate-customize-dropdown-linemouseover-side")
+    right:SetTexCoord(1, 0, 0, 1)
+    right:SetWidth(6)
+    right:SetPoint("TOPRIGHT")
+    right:SetPoint("BOTTOMRIGHT")
+    local middle = header:CreateTexture(nil, "BACKGROUND")
+    middle:SetAtlas("charactercreate-customize-dropdown-linemouseover-middle")
+    middle:SetPoint("TOPLEFT", left, "TOPRIGHT")
+    middle:SetPoint("BOTTOMRIGHT", right, "BOTTOMLEFT")
+    local line = { left, right, middle }
+    header.state = header:CreateTexture(nil, "ARTWORK")
+    header.state:SetPoint("CENTER", header, "LEFT", 12, 0)
+    local hilight = header:CreateTexture(nil, "HIGHLIGHT")
+    hilight:SetTexture("Interface\\Buttons\\UI-PlusButton-Hilight")
+    hilight:SetBlendMode("ADD")
+    hilight:SetSize(20, 20)
+    hilight:SetPoint("LEFT", 2, 0)
+    header.name = CreateText(header, GameFontHighlight, "OVERLAY")
+    header.name:SetPoint("LEFT", 26, 0)
+    header.name:SetPoint("RIGHT", -24, 0)
+    header.name:SetWordWrap(false)
+    function header:SetCollapsed(collapsed)
+        self.state:SetAtlas(collapsed and "campaign_headericon_closed" or "campaign_headericon_open", true)
+    end
+    function header:SetHovered(hovered)
+        for _, part in ipairs(line) do part:SetAlpha(hovered and 0.10 or 0) end
+    end
+    header:SetHovered(false)
+    return header
 end
 
 -- An empty list says what fills it and how, in one muted line centred in the list.
@@ -164,21 +231,15 @@ local function acquireRow(index)
     if row then
         row:Show()
 
-        -- Pool rows persist across renders; reset alpha so a row that was previously used for an out-of-range quest doesn't carry the dimmed look forward when it's reused for a header or in-range quest. renderQuestRow overrides this for actual fading rows.
+        -- Pool rows persist across renders; reset alpha so a row that was previously used for an out-of-range quest doesn't carry the dimmed look forward when it's reused for the banner or an in-range quest. renderQuestRow overrides this for actual fading rows.
         row:SetAlpha(1)
         row.highlight:Hide()
         row.selection:Hide()
-
-        -- Reset the header dressing so a row reused for a quest or message doesn't keep the toggle, text inset, or grey header color.
-        row.toggle:Hide()
-        row.toggleHighlight:SetTexture("")
-        row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
-        row.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
         return row
     end
 
-    -- The quest log row. Its hover highlight sits on BACKGROUND so the text stays on top, and renderQuestRow drives it so headers stay flat. placeRow anchors every row before it shows.
-    row = CreateGroupedRow(scrollChild)
+    -- The quest log row. Its hover highlight sits on BACKGROUND so the text stays on top, and renderQuestRow and the banner drive it. placeRow anchors every row before it shows.
+    row = CreateQuestRow(scrollChild)
     row:SetHeight(LIST.ROW_HEIGHT)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
@@ -186,35 +247,8 @@ local function acquireRow(index)
     row.text:SetPoint("LEFT", row, "LEFT", 0, 0)
     row.text:SetPoint("RIGHT", row, "RIGHT", 0, 0)
     row.text:SetWordWrap(true)
-
-    -- The header toggle's hilight sits on the HIGHLIGHT layer so the button shows it automatically on mouse-over; quest rows keep its texture empty so nothing renders there.
-    row.toggleHighlight = row:CreateTexture(nil, "HIGHLIGHT")
-    row.toggleHighlight:SetBlendMode("ADD")
-    row.toggleHighlight:SetAllPoints(row.toggle)
     rowPool[index] = row
     return row
-end
-
--- Dresses a pooled row as a quest log header: plus/minus toggle, indented text, and header grey that whitens while hovered. A header with a title and help line shows them as its tooltip.
-local function styleHeaderRow(row, collapsed, title, help)
-    row.toggle:SetTexture(collapsed and TOGGLE_ART.PLUS or TOGGLE_ART.MINUS)
-    row.toggle:Show()
-    row.toggleHighlight:SetTexture(TOGGLE_ART.HIGHLIGHT)
-    row.text:SetPoint("LEFT", row, "LEFT", LIST.TEXT_INSET, 0)
-    row.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
-    row:SetScript("OnEnter", function(self)
-        self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
-        if title then
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip_SetTitle(GameTooltip, title)
-            GameTooltip_AddNormalLine(GameTooltip, help)
-            GameTooltip:Show()
-        end
-    end)
-    row:SetScript("OnLeave", function(self)
-        self.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
-        GameTooltip_Hide()
-    end)
 end
 
 local function hideUnusedRows(fromIndex)
@@ -417,10 +451,114 @@ local function sizeRow(row, minHeight, padding)
     return h
 end
 
+-- Zone and category headers, pooled apart from the quest rows; each render numbers them from one again.
+local headerPool, subHeaderPool = {}, {}
+local headerCount, subHeaderCount = 0, 0
+
+local function hideUnusedHeaders(pool, fromIndex)
+    for i = fromIndex, #pool do
+        pool[i]:Hide()
+    end
+end
+
+-- A header's tooltip: the zone breakdown on a zone, otherwise its title and what it holds.
+local function onHeaderEnter(self)
+    if self.stats then
+        showZoneTooltip(self, self.key, self.stats, self.isBest, true)
+        return
+    end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip_SetTitle(GameTooltip, self.title)
+    GameTooltip_AddNormalLine(GameTooltip, self.help)
+    GameTooltip:Show()
+end
+
+-- A click flips the header's own saved state, a category's independent of its zone's, so Collapse All's collapsed categories stay collapsed. A right-click on a zone focuses it: every other zone and the completed section collapse, this one expands.
+local function onHeaderClick(self, button)
+    if button == "RightButton" and self.stats then
+        local zoneCollapsedDB = QuestieGuideDB.zoneCollapsed
+        for _, other in ipairs(lastZoneOrder) do
+            zoneCollapsedDB[other] = other ~= self.key
+        end
+        zoneCollapsedDB[COMPLETED_KEY] = true
+    else
+        self.store[self.key] = not self.collapsed
+    end
+    renderList()
+end
+
+local function onSubHeaderEnter(self)
+    self:SetHovered(true)
+    onHeaderEnter(self)
+end
+
+local function onSubHeaderLeave(self)
+    self:SetHovered(false)
+    GameTooltip_Hide()
+end
+
+-- A header's muted count: its quests, and their XP when they give any.
+local function formatHeaderCount(count, xp)
+    local text = string.format("%d |4quest:quests;", count)
+    if xp and xp > 0 then
+        text = text .. ", " .. BreakUpLargeNumbers(xp) .. " XP"
+    end
+    return text
+end
+
+-- Places a header across the list, indent in from the left, GAP above the next line.
+local function placeHeader(header, height, indent)
+    header:ClearAllPoints()
+    header:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", indent, -y)
+    header:SetPoint("TOPRIGHT", scrollChild, "TOPRIGHT", 0, -y)
+    header:Show()
+    y = y + height + TREE.GAP
+end
+
+-- A header on the collapse bar, saved under store[key]: a zone, whose caller adds stats and isBest for its tooltip and right-click, or the completed section, whose caller adds a title and a help line.
+local function renderHeader(key, store, collapsed, name, count)
+    headerCount = headerCount + 1
+    local header = headerPool[headerCount]
+    if not header then
+        header = CreateGroupHeader(scrollChild)
+        header:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        header:SetScript("OnEnter", onHeaderEnter)
+        header:SetScript("OnLeave", GameTooltip_Hide)
+        header:SetScript("OnClick", onHeaderClick)
+        headerPool[headerCount] = header
+    end
+    header.key, header.store, header.collapsed = key, store, collapsed
+    header.stats, header.isBest, header.title, header.help = nil, nil, nil, nil
+    header.name:SetText(name)
+    header.count:SetText(count)
+    header:SetCollapsed(collapsed)
+    placeHeader(header, TREE.HEADER, 0)
+    return header
+end
+
+-- A category's header inside a zone or the completed section, saved under store[key], its count muted after the name.
+local function renderSubHeader(key, store, collapsed, label, count, help)
+    subHeaderCount = subHeaderCount + 1
+    local header = subHeaderPool[subHeaderCount]
+    if not header then
+        header = CreateSubHeader(scrollChild)
+        header:SetScript("OnEnter", onSubHeaderEnter)
+        header:SetScript("OnLeave", onSubHeaderLeave)
+        header:SetScript("OnClick", onHeaderClick)
+        subHeaderPool[subHeaderCount] = header
+    end
+    header.key, header.store, header.collapsed = key, store, collapsed
+    header.title, header.help = label, help
+    header.name:SetText(label .. " " .. COLOR.MUTED:WrapTextInColorCode("(" .. count .. ")"))
+    header:SetCollapsed(collapsed)
+    header:SetHovered(header:IsMouseOver())
+    placeHeader(header, TREE.SUB_HEADER, TREE.NEST)
+end
+
 local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShiftClick, alpha, quest)
     local rowTop = y
     local row = acquireRow(index)
-    placeRow(row, LIST.INDENT_STEP * 2)
+    placeRow(row, TREE.NEST * 2)
 
     -- Rows are pooled and reused across renders, so always reset alpha explicitly. Out-of-range quests pass 0.5 to dim the row.
     row:SetAlpha(alpha or 1)
@@ -600,19 +738,10 @@ local function renderCompletedSection()
         return false
     end
 
+    -- The section heads on the collapse bar like a zone, its turn-in zones as its categories; each keeps its own state.
     local collapsed = zoneCollapsedDB[COMPLETED_KEY] == true
-    local header = acquireRow(index)
-    placeRow(header, 0)
-    styleHeaderRow(header, collapsed, COMPLETED_LABEL, "Quests ready to turn in, grouped by the zone of their turn-in NPC.")
-    header.text:SetText(COMPLETED_LABEL .. " (" .. total .. ")")
-
-    -- Section toggle only flips the section itself; turn-in zone state is independent, matching the zone headers.
-    header:SetScript("OnClick", function()
-        zoneCollapsedDB[COMPLETED_KEY] = not collapsed
-        renderList()
-    end)
-    y = y + sizeRow(header, LIST.ROW_HEIGHT)
-    index = index + 1
+    local header = renderHeader(COMPLETED_KEY, zoneCollapsedDB, collapsed, COMPLETED_LABEL, formatHeaderCount(total))
+    header.title, header.help = COMPLETED_LABEL, "Quests ready to turn in, grouped by the zone of their turn-in NPC."
 
     if not collapsed then
         for _, zoneName in ipairs(completedZoneOrder) do
@@ -620,19 +749,7 @@ local function renderCompletedSection()
             if list then
                 local groupKey = COMPLETED_KEY .. "||" .. zoneName
                 local groupHidden = groupCollapsedDB[groupKey] == true
-
-                y = y + LIST.GROUP_GAP
-
-                local sub = acquireRow(index)
-                placeRow(sub, LIST.INDENT_STEP)
-                styleHeaderRow(sub, groupHidden, zoneName, "Completed quests to turn in here.")
-                sub.text:SetText(string.format("%s (%d)", zoneName, #list))
-                sub:SetScript("OnClick", function()
-                    groupCollapsedDB[groupKey] = not groupHidden
-                    renderList()
-                end)
-                y = y + sizeRow(sub, LIST.ROW_HEIGHT)
-                index = index + 1
+                renderSubHeader(groupKey, groupCollapsedDB, groupHidden, zoneName, #list, "Completed quests to turn in here.")
 
                 if not groupHidden then
                     for _, quest in ipairs(list) do
@@ -646,6 +763,7 @@ local function renderCompletedSection()
                             function() linkQuestInChat(quest) end,
                             nil, quest)
                     end
+                    y = y + TREE.GAP
                 end
             end
         end
@@ -718,6 +836,7 @@ function renderList()
     local filters = QuestieGuideDB.filters
     local currentZoneName = getCurrentZoneName()
     index, y = 1, 0
+    headerCount, subHeaderCount = 0, 0
     local renderedZones = 0
 
     local zoneCollapsedDB = QuestieGuideDB.zoneCollapsed
@@ -782,57 +901,17 @@ function renderList()
 
             -- Zones render only when they hold at least one in-range row; out-of-range rows never reach the visible lists.
             if visibleTotal > 0 then
-                if renderedZones > 0 or completedShown then
-                    y = y + LIST.ZONE_GAP
-                end
                 renderedZones = renderedZones + 1
                 zoneHeaderTops[zoneName] = y
 
-                local header = acquireRow(index)
-                placeRow(header, 0)
-                styleHeaderRow(header, collapsed)
-                local summary = " (" .. inRangeTotal .. ")"
-
-                -- Search narrows the rows on screen, so the zone-level follow-up projection would no longer match them; the projection only shows on the unfiltered view.
+                -- One XP figure: rows in range plus the follow-ups unlocking in the zone. Search narrows the rows on screen, so the zone-level follow-up projection would no longer match them; it only counts on the unfiltered view. The percent of the level lives in the tooltip.
                 local followupXp = (searchText == "" and entry.followups and entry.followups.xp) or 0
-
-                -- Single total XP figure: rows in range plus follow-ups unlocking in-zone. Percent-of-level detail lives in the header tooltip.
-                local totalXp = inRangeXp + followupXp
-                if totalXp > 0 then
-                    summary = summary .. " " .. COLOR.MUTED:WrapTextInColorCode(BreakUpLargeNumbers(totalXp) .. " XP")
-                end
-                local isBestZone = (zoneName == bestZoneName)
-
-                -- Current-zone marker: gold tag on the header of the zone the player is standing in.
-                local headerText = zoneName .. summary
+                local name = zoneName
                 if zoneName == currentZoneName then
-                    headerText = headerText .. " " .. COLOR.ACCENT:WrapTextInColorCode("(You are here)")
+                    name = name .. " " .. HIGHLIGHT_FONT_COLOR:WrapTextInColorCode("(You are here)")
                 end
-                header.text:SetText(headerText)
-                local zoneStats = entry.stats
-                header:SetScript("OnEnter", function(self)
-                    self.text:SetTextColor(HIGHLIGHT_FONT_COLOR:GetRGB())
-                    showZoneTooltip(self, zoneName, zoneStats, isBestZone, true)
-                end)
-                header:SetScript("OnLeave", function(self)
-                    self.text:SetTextColor(HEADER_COLOR.r, HEADER_COLOR.g, HEADER_COLOR.b)
-                    GameTooltip_Hide()
-                end)
-
-                -- Zone toggle only flips the zone itself; subcategory state is independent and survives so Collapse All's collapsed subs stay collapsed. Right-click focuses the zone: everything else collapses, this zone expands.
-                header:SetScript("OnClick", function(_, btn)
-                    if btn == "RightButton" then
-                        for _, other in ipairs(lastZoneOrder) do
-                            zoneCollapsedDB[other] = other ~= zoneName
-                        end
-                        zoneCollapsedDB[COMPLETED_KEY] = true
-                    else
-                        zoneCollapsedDB[zoneName] = not collapsed
-                    end
-                    renderList()
-                end)
-                y = y + sizeRow(header, LIST.ROW_HEIGHT)
-                index = index + 1
+                local header = renderHeader(zoneName, zoneCollapsedDB, collapsed, name, formatHeaderCount(inRangeTotal, inRangeXp + followupXp))
+                header.stats, header.isBest = entry.stats, zoneName == bestZoneName
 
                 if not collapsed then
                     for _, subKey in ipairs(SUBCAT_ORDER) do
@@ -840,25 +919,12 @@ function renderList()
                         if filters[subKey] and #list > 0 then
                             local groupKey = zoneName .. "||" .. subKey
                             local groupHidden = groupCollapsedDB[groupKey] == true
-
-                            y = y + LIST.GROUP_GAP
-
-                            local sub = acquireRow(index)
-                            placeRow(sub, LIST.INDENT_STEP)
-                            styleHeaderRow(sub, groupHidden, SUBCAT_LABEL[subKey], SUBCAT_HELP[subKey])
-                            sub.text:SetText(string.format("%s (%d)",
-                                SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0))
-                            sub:SetScript("OnClick", function()
-                                groupCollapsedDB[groupKey] = not groupHidden
-                                renderList()
-                            end)
-                            y = y + sizeRow(sub, LIST.ROW_HEIGHT)
-                            index = index + 1
-
+                            renderSubHeader(groupKey, groupCollapsedDB, groupHidden, SUBCAT_LABEL[subKey], subInRangeCount[subKey] or 0, SUBCAT_HELP[subKey])
                             if not groupHidden then
                                 for _, quest in ipairs(list) do
                                     renderBucketRow(quest)
                                 end
+                                y = y + TREE.GAP
                             end
                         end
                     end
@@ -873,6 +939,8 @@ function renderList()
 
     scrollChild:SetHeight(math.max(y, 1))
     hideUnusedRows(index)
+    hideUnusedHeaders(headerPool, headerCount + 1)
+    hideUnusedHeaders(subHeaderPool, subHeaderCount + 1)
 
     local anyExpanded = completedShown and not zoneCollapsedDB[COMPLETED_KEY]
     for _, zoneName in ipairs(zoneOrder) do
@@ -899,6 +967,8 @@ end
 local function renderLoadingPlaceholder()
     hideEmptyState()
     hideUnusedRows(1)
+    hideUnusedHeaders(headerPool, 1)
+    hideUnusedHeaders(subHeaderPool, 1)
     emptyState:SetText("Scanning quest database\226\128\166")
     emptyState:Show()
     scrollChild:SetHeight(1)

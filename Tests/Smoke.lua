@@ -218,6 +218,8 @@ function Region:SetTexture(texture) self.texture = texture end
 function Region:SetColorTexture(r, g, b, a) self.colorTexture = { r, g, b, a } end
 function Region:SetAtlas(atlas) self.atlas = atlas end
 function Region:SetBlendMode() end
+function Region:SetTexCoord() end
+function Region:IsMouseOver() return false end
 function Region:CreateFontString() return newRegion("FontString", nil, self) end
 function Region:CreateTexture() return newRegion("Texture", nil, self) end
 
@@ -570,11 +572,20 @@ local function plain(text)
     return (text:gsub("|cff", ""):gsub("|r", ""))
 end
 
--- The list rows on screen, top to bottom, as plain text.
+-- A line's text as the player reads it: a quest row's label, or a header's name with its muted count after it.
+local function rowLabel(region)
+    if region.text then return region.text.label end
+    if region.name and region.name.label then
+        local count = region.count and region.count.label
+        return region.name.label .. (count and ("  " .. count) or "")
+    end
+end
+
+-- The list's lines on screen, quest rows and headers, top to bottom.
 local function listRows()
     local rows = {}
     for _, region in ipairs(QuestieGuideFrame.scroll.content.children) do
-        if region.shown and region.text and region.text.label then
+        if region.shown and rowLabel(region) then
             rows[#rows + 1] = region
         end
     end
@@ -584,13 +595,13 @@ end
 
 local function rowTexts()
     local texts = {}
-    for i, row in ipairs(listRows()) do texts[i] = plain(row.text.label) end
+    for i, row in ipairs(listRows()) do texts[i] = plain(rowLabel(row)) end
     return texts
 end
 
 local function findRow(fragment)
     for _, row in ipairs(listRows()) do
-        if row.text.label:find(fragment, 1, true) then return row end
+        if plain(rowLabel(row)):find(fragment, 1, true) then return row end
     end
 end
 
@@ -632,9 +643,20 @@ flushTimers()
 check("the loading line goes with the first render", not QuestieGuideFrame.emptyState.shown)
 local opened = rowTexts()
 check("banner names the best zone", opened[1] == "Next: Elwynn Forest  2600 XP in one trip, covers 260% of level 10", opened[1])
-check("completed section lists the turn-in", findRow("Completed Quests (1)") ~= nil and findRow("A Fishy Peril") ~= nil)
-check("current zone header carries XP and the marker", findRow("Elwynn Forest (5) ") ~= nil
-    and findRow("Elwynn Forest (5) "):GetHeight() == 16)
+check("completed section lists the turn-in", findRow("Completed Quests  1 |4quest:quests;") ~= nil and findRow("A Fishy Peril") ~= nil)
+check("current zone header carries XP and the marker", findRow("Elwynn Forest (You are here)  5 |4quest:quests;, 2600 XP") ~= nil)
+
+-- The tree reads like the character window's Statistics list: a zone on the 26 px collapse bar across the list, a
+-- category on the 22 px sub-header 20 in, its quests 40 in.
+local zoneHeader = findRow("Elwynn Forest (You are here)")
+local startsHereHeader = findRow("Starts Here (5)")
+local wolvesRow = findRow("Wolves Across the Border")
+check("a zone heads on the open collapse bar", zoneHeader:GetHeight() == 26 and zoneHeader.points[1].x == 0
+    and zoneHeader.state.atlas == "common-button-list-minus")
+check("a category heads on the open sub-header inside its zone", startsHereHeader:GetHeight() == 22
+    and startsHereHeader.points[1].x == 20 and startsHereHeader.state.atlas == "campaign_headericon_open")
+check("a category's quests stand one level further in", wolvesRow.points[1].x == 40)
+check("a category sits 3 px under its zone's bar", startsHereHeader.points[1].y == zoneHeader.points[1].y - 26 - 3)
 check("elite quest reads like the quest log", findRow("[12+] Princess Must Die") ~= nil
     and plain(findRow("Princess Must Die").text.label):find("(Elite)", 1, true) ~= nil)
 check("blocked quest shows its badge", findRow("[Missing Pre-Quest]") ~= nil
@@ -643,7 +665,8 @@ check("blocked quest shows its badge", findRow("[Missing Pre-Quest]") ~= nil
 -- Under the stub's 12 px lines a two-line row is 24 + 8 padding; in game it snaps to 36 (UNVERIFIED).
 check("a two-line quest row snaps to the grid", findRow("Wolves Across the Border"):GetHeight() == 32,
     findRow("Wolves Across the Border"):GetHeight())
-check("Westfall starts collapsed", findRow("Westfall (2)") ~= nil and findRow("Red Silk Bandanas") == nil)
+check("Westfall starts collapsed", findRow("Westfall  2 |4quest:quests;") ~= nil and findRow("Red Silk Bandanas") == nil
+    and findRow("Westfall  2").state.atlas == "common-button-list-plus")
 check("Collapse All reads the expanded state", QuestieGuideFrame.toggleAllButton.label == "Collapse All")
 
 -- The help tip: an own HelpTipTemplate frame on the Filter button, shown with the window.
