@@ -1,4 +1,4 @@
--- The world map and quest log jumps.
+-- The world map jump and the quest focus.
 local _, ns = ...
 
 local resolveStartInfo = ns.resolveStartInfo
@@ -41,6 +41,11 @@ local function setNativeWaypoint(uiMapId, x, y)
 end
 
 -- OpenWorldMap honours the WorldMapDisabled game rule; without a renderable map it only opens the map. In combat only the waypoint lands.
+-- A map change made by addon code refreshes the quest log in that code's taint, and the refresh shows again the quest
+-- the player has open in its details, writing QuestMapFrame.DetailsFrame.questID (QuestLogMixin:Refresh,
+-- QuestMapFrame_UpdateAll). The objective tracker reads that field on every update (QuestMapFrame_GetFocusedQuestID,
+-- QuestObjectiveTracker.lua:296), so its next update would run tainted and be blocked in combat. While a quest's
+-- details are open, the map therefore opens where it is; ShowUIPanel itself runs through Blizzard's forbidden delegate.
 local function openMapForQuest(quest)
     local startInfo = resolveStartInfo(quest)
     local uiMapId = startInfo.areaId and getUiMapId(startInfo.areaId)
@@ -53,15 +58,17 @@ local function openMapForQuest(quest)
     if isBlockedInCombat() then
         return
     end
-    OpenWorldMap(renderMapId)
+    OpenWorldMap(not QuestMapFrame_GetFocusedQuestID() and renderMapId or nil)
 end
 
--- Opens the quest map log at the quest, which selects and scrolls on its own. The details view needs a quest that is in the log, so the log gates the call.
-local function openQuestInLog(questId)
-    if getQuestLog()[questId] and not isBlockedInCombat() then
-        QuestMapFrame_OpenToQuestDetails(questId)
+-- A quest in the log gets the objective tracker's own Focus Quest (SUPER_TRACK_QUEST): the tracker marks it and the
+-- in-world arrow leads to its objectives or its turn-in, in combat too. Never QuestMapFrame_OpenToQuestDetails, which
+-- would write the details frame's quest from addon code and taint the tracker as above.
+local function focusQuest(questId)
+    if getQuestLog()[questId] then
+        C_SuperTrack.SetSuperTrackedQuestID(questId)
     end
 end
 
 ns.openMapForQuest = openMapForQuest
-ns.openQuestInLog = openQuestInLog
+ns.focusQuest = focusQuest

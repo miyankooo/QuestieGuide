@@ -23,7 +23,7 @@ local getLevelShare = ns.getLevelShare
 local showZoneTooltip = ns.showZoneTooltip
 local showTurnInTooltip = ns.showTurnInTooltip
 local openMapForQuest = ns.openMapForQuest
-local openQuestInLog = ns.openQuestInLog
+local focusQuest = ns.focusQuest
 local Snap = ns.Snap
 local HookTooltip = ns.HookTooltip
 local getQuestLog = ns.getQuestLog
@@ -461,7 +461,7 @@ local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShift
     return row, rowTop
 end
 
--- One row in a zone bucket. A blocked row is the blocked quest itself, greyed until its chain is cleared: left-click jumps the list to the chain step the player can pick up now, and the chat link points at the blocked quest. In-log rows open the native quest log. Pickable and level-locked rows open the map at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. Pickable is the default state, so it carries no badge. Every row but a blocked one registers as a jump target for blocked rows' chains.
+-- One row in a zone bucket. A blocked row is the blocked quest itself, greyed until its chain is cleared: left-click jumps the list to the chain step the player can pick up now, and the chat link points at the blocked quest. In-log rows focus the quest, as the tracker's Focus Quest does, so the in-world arrow leads to it. Pickable and level-locked rows open the map at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. Pickable is the default state, so it carries no badge. Every row but a blocked one registers as a jump target for blocked rows' chains.
 local function renderBucketRow(quest)
     if quest.blocked then
         local badge = COLOR.BLOCKED:WrapTextInColorCode("[Missing Pre-Quest]")
@@ -479,7 +479,7 @@ local function renderBucketRow(quest)
     local line1, line2 = formatRowLines(quest, badge)
     local label = line2 and (line1 .. "\n" .. line2) or line1
     local onLeftClick = quest.inLog
-        and function() openQuestInLog(quest.id) end
+        and function() focusQuest(quest.id) end
         or function() openMapForQuest(quest) end
     local row, rowTop = renderQuestRow(label,
         function(self) showQuestTooltip(self, quest.id) end,
@@ -636,12 +636,12 @@ local function renderCompletedSection()
 
                 if not groupHidden then
                     for _, quest in ipairs(list) do
-                        -- Left-click opens the quest in the native log, matching every other in-log row; the turn-in map view stays reachable through the right-click menu. The section header already says these are completed, so the rows carry no badge.
+                        -- Left-click focuses the quest, so the in-world arrow leads to its turn-in, matching every other in-log row; the turn-in map view stays reachable through the right-click menu. The section header already says these are completed, so the rows carry no badge.
                         local line1, line2 = formatRowLines(quest)
                         local label = line2 and (line1 .. "\n" .. line2) or line1
                         renderQuestRow(label,
                             function(self) showTurnInTooltip(self, quest) end,
-                            function() openQuestInLog(quest.id) end,
+                            function() focusQuest(quest.id) end,
                             function(self) showQuestContextMenu(self, quest) end,
                             function() linkQuestInChat(quest) end,
                             nil, quest)

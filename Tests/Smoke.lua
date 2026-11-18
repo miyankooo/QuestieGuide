@@ -406,8 +406,15 @@ C_Map = {
     SetUserWaypoint = function(point) mapCalls.waypoint = point end,
 }
 UiMapPoint = { CreateFromCoordinates = function(mapId, x, y) return { mapId = mapId, x = x, y = y } end }
-C_SuperTrack = { SetSuperTrackedUserWaypoint = function() end }
+C_SuperTrack = {
+    SetSuperTrackedUserWaypoint = function() end,
+    SetSuperTrackedQuestID = function(questId) mapCalls.focused = questId end,
+}
 function OpenWorldMap(mapId) mapCalls.opened = mapId end
+-- The quest the world map's quest log shows in its details, nil while it shows the list.
+local detailsQuestId
+function QuestMapFrame_GetFocusedQuestID() return detailsQuestId end
+function QuestMapFrame_OpenToQuestDetails() error("addon code must not open quest details: it taints the objective tracker") end
 local itemRefCallbacks = {}
 EventRegistry = {
     RegisterCallback = function(_, event, func, owner)
@@ -769,6 +776,15 @@ flushTimers()
 check("row click opens the giver's map", mapCalls.opened == 1412 and mapCalls.waypoint and mapCalls.waypoint.mapId == 1412)
 check("clicked row is selected", findRow("Wolves Across the Border").selection.shown)
 
+-- With a quest open in the quest log's details, a row click opens the map where it is: moving it from addon code would
+-- show those details again in the addon's taint and taint the objective tracker.
+detailsQuestId, mapCalls.opened, mapCalls.waypoint = 999, "unchanged", nil
+findRow("Wolves Across the Border").scripts.OnClick(findRow("Wolves Across the Border"), "LeftButton")
+flushTimers()
+check("row click keeps the map put while quest details are open", mapCalls.opened == nil
+    and mapCalls.waypoint and mapCalls.waypoint.mapId == 1412)
+detailsQuestId = nil
+
 -- Filter menu: the template's reset button follows the filters.
 local filter = QuestieGuideFrame.filterDropdown
 local entries = {}
@@ -805,6 +821,14 @@ check("level up rescans into the new Next zone", rowTexts()[1]:find("Next: Westf
 check("newly unlocked quest lists", findRow("The Defias Brotherhood") ~= nil)
 check("in-log quest shows its status", findRow("Westfall Stew") ~= nil
     and findRow("Westfall Stew").text.label:find("[In Questlog]", 1, true) ~= nil)
+
+-- A click on a quest in the log focuses it, as the tracker's Focus Quest does, in combat too, and opens no window.
+mapCalls.focused, mapCalls.opened = nil, "unchanged"
+player.inCombat = true
+findRow("Westfall Stew").scripts.OnClick(findRow("Westfall Stew"), "LeftButton")
+player.inCombat = false
+flushTimers()
+check("in-log row click focuses the quest", mapCalls.focused ~= nil and mapCalls.opened == "unchanged", mapCalls.focused)
 check("one chat line names the new quests", #chat == 1
     and plain(chat[1]):find("New quests at level 11: 1 in |Haddon:QuestieGuide:zone:40|h[Westfall]|h.", 1, true) ~= nil, chat[1])
 
