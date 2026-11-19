@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0](https://github.com/miyankooo/QuestieGuide/compare/v1.0.0...v1.1.0) (2026-11-19)
+
+
+### Features
+
+* Click a quest to set the game's own map pin at its giver, with a chat line that links the pin ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+* Completed Quests is now Ready for Turn-In, the game's own wording ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+* Every quest tooltip says what a click does, and a quest's right-click menu offers Set Map Pin ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+* The zone you stand in comes first, and class and profession quests get their own section, as in the quest log ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+
+
+### Bug Fixes
+
+* Quests that start at an object, such as a wanted poster, get a pin and the object's name ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+* Quests that start from an item name the item instead of Quest Item ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+* The giver is the one for your faction, so a quest both sides can take no longer points at the other side's NPC ([8725a9b](https://github.com/miyankooo/QuestieGuide/commit/8725a9b0741fb4e3690385ffb6c07f71db5fa0d5))
+
 ## 1.0.0 (2026-11-18)
 
 
