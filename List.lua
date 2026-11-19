@@ -22,15 +22,25 @@ local showChainTooltip = ns.showChainTooltip
 local getLevelShare = ns.getLevelShare
 local showZoneTooltip = ns.showZoneTooltip
 local showTurnInTooltip = ns.showTurnInTooltip
+local setMapPin = ns.setMapPin
 local openMapForQuest = ns.openMapForQuest
 local focusQuest = ns.focusQuest
 local Snap = ns.Snap
 local HookTooltip = ns.HookTooltip
 local getQuestLog = ns.getQuestLog
 
--- Completed-quests section: sentinel collapse key that can't collide with a real zone name ("||" never appears in area names).
+-- Ready for Turn-In section: sentinel collapse key that can't collide with a real zone name ("||" never appears in area names).
 local COMPLETED_KEY = "||completed"
-local COMPLETED_LABEL = "Completed Quests"
+local COMPLETED_LABEL = "Ready for Turn-In"
+
+-- What a plain click on each kind of row does, as the instruction line under its tooltip.
+local CLICK_HINT = {
+    pickup = "Click to set a map pin at the giver. Right-click for more.",
+    inLog = "Click to focus this quest. Right-click for more.",
+    turnIn = "Click to focus this quest, so the arrow leads to its turn-in. Right-click for more.",
+    blocked = "Click to jump to the step you can do now. Right-click for more.",
+}
+local SET_MAP_PIN = "Set Map Pin"
 
 -- Quest rows on the 4px grid: their centred text snapped to it, one 16px line at least, with 8px of air around it. The banner keeps one gap under it.
 local LIST = {
@@ -303,19 +313,33 @@ local function addLinkButton(rootDescription, quest)
 end
 
 -- Context menus use MenuUtil, which shares no UIDropDownMenu globals with Blizzard's secure dropdowns and so can't taint them.
+-- A quest in the log leads with the objective tracker's own Focus (SUPER_TRACK_QUEST). Set Map Pin pins the giver, or the turn-in target of a quest ready to turn in, so a quest still in progress has none.
 local function showQuestContextMenu(anchor, quest)
     MenuUtil.CreateContextMenu(anchor, function(_, rootDescription)
         rootDescription:CreateTitle(quest.name)
+        if getQuestLog()[quest.id] then
+            rootDescription:CreateButton(SUPER_TRACK_QUEST, function() focusQuest(quest.id) end)
+        end
+        if not quest.inLog then
+            rootDescription:CreateButton(SET_MAP_PIN, function() setMapPin(quest) end)
+        end
         rootDescription:CreateButton("Show on Map", function() openMapForQuest(quest) end)
         addLinkButton(rootDescription, quest)
     end)
 end
 
--- "Show Next Step on Map" jumps to the next actionable step (the chain's initial), since the blocked quest itself isn't pickup-able yet. "Link in Chat" links the blocked quest (the row the player is hovering).
+-- The chain's first step, the quest to pick up first, as the map actions take it.
+local function chainStart(mpe)
+    local questId = type(mpe.chain) == "table" and mpe.chain[1] or mpe.id
+    return { id = questId, name = getQuestName(questId) }
+end
+
+-- The map actions point at the chain's first step, since the blocked quest itself can't be picked up yet. "Link in Chat" links the blocked quest (the row the player is hovering).
 local function showChainContextMenu(anchor, mpe)
-    local initial = { id = mpe.chain and mpe.chain[1] }
+    local initial = chainStart(mpe)
     MenuUtil.CreateContextMenu(anchor, function(_, rootDescription)
         rootDescription:CreateTitle(mpe.name)
+        rootDescription:CreateButton("Set Map Pin at Next Step", function() setMapPin(initial) end)
         rootDescription:CreateButton("Show Next Step on Map", function() openMapForQuest(initial) end)
         addLinkButton(rootDescription, mpe)
     end)
@@ -393,7 +417,7 @@ local function jumpToQuestInList(questId)
     return true
 end
 
--- Left-click on a blocked row lands on the chain step the player can act on now. The chain runs [initial, ..., blocked target]; the earliest step with a pickable or in-log row is the actionable one. Falls back to the map at the chain start when no step is listed.
+-- Left-click on a blocked row lands on the chain step the player can act on now. The chain runs [initial, ..., blocked target]; the earliest step with a pickable or in-log row is the actionable one. Falls back to a map pin at the chain start when no step is listed.
 local function jumpToUnlockingQuest(mpe)
     local chain = mpe.chain
     if type(chain) == "table" then
@@ -403,7 +427,7 @@ local function jumpToUnlockingQuest(mpe)
             end
         end
     end
-    openMapForQuest({ id = type(chain) == "table" and chain[1] or mpe.id })
+    setMapPin(chainStart(mpe))
 end
 
 -- Action buttons under the empty-state line, one per label because a button fits its label once, when it is created. Every render hides them with the line.
@@ -599,14 +623,14 @@ local function renderQuestRow(label, onEnter, onLeftClick, onRightClick, onShift
     return row, rowTop
 end
 
--- One row in a zone bucket. A blocked row is the blocked quest itself, greyed until its chain is cleared: left-click jumps the list to the chain step the player can pick up now, and the chat link points at the blocked quest. In-log rows focus the quest, as the tracker's Focus Quest does, so the in-world arrow leads to it. Pickable and level-locked rows open the map at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. Pickable is the default state, so it carries no badge. Every row but a blocked one registers as a jump target for blocked rows' chains.
+-- One row in a zone bucket. A blocked row is the blocked quest itself, greyed until its chain is cleared: left-click jumps the list to the chain step the player can pick up now, and the chat link points at the blocked quest. In-log rows focus the quest, as the tracker's Focus Quest does, so the in-world arrow leads to it. Pickable and level-locked rows set Blizzard's map pin at their giver, and level-locked rows dim like blocked ones because they can't be accepted yet. Pickable is the default state, so it carries no badge. Every row but a blocked one registers as a jump target for blocked rows' chains.
 local function renderBucketRow(quest)
     if quest.blocked then
         local badge = COLOR.BLOCKED:WrapTextInColorCode("[Missing Pre-Quest]")
         local line1, line2 = formatRowLines(quest, badge)
         local label = line2 and (line1 .. "\n" .. line2) or line1
         renderQuestRow(label,
-            function(self) showChainTooltip(self, quest) end,
+            function(self) showChainTooltip(self, quest, CLICK_HINT.blocked) end,
             function() jumpToUnlockingQuest(quest) end,
             function(self) showChainContextMenu(self, quest) end,
             function() linkQuestInChat(quest) end,
@@ -618,9 +642,9 @@ local function renderBucketRow(quest)
     local label = line2 and (line1 .. "\n" .. line2) or line1
     local onLeftClick = quest.inLog
         and function() focusQuest(quest.id) end
-        or function() openMapForQuest(quest) end
+        or function() setMapPin(quest) end
     local row, rowTop = renderQuestRow(label,
-        function(self) showQuestTooltip(self, quest.id) end,
+        function(self) showQuestTooltip(self, quest.id, quest.inLog and CLICK_HINT.inLog or CLICK_HINT.pickup) end,
         onLeftClick,
         function(self) showQuestContextMenu(self, quest) end,
         function() linkQuestInChat(quest) end,
@@ -708,7 +732,7 @@ local function renderBanner(byZone, bestZoneName)
     index = index + 1
 end
 
--- Completed Quests section at the top of the list: turn-in zones sorted by count, quests styled like the zone buckets below. Returns true when it drew anything so the zone loop and empty-state message can account for it.
+-- Ready for Turn-In section at the top of the list: turn-in zones sorted by count, quests styled like the zone buckets below. Returns true when it drew anything so the zone loop and empty-state message can account for it.
 local function renderCompletedSection()
     if not QuestieGuideDB.showCompleted then
         lastCompletedZones = {}
@@ -749,7 +773,7 @@ local function renderCompletedSection()
             if list then
                 local groupKey = COMPLETED_KEY .. "||" .. zoneName
                 local groupHidden = groupCollapsedDB[groupKey] == true
-                renderSubHeader(groupKey, groupCollapsedDB, groupHidden, zoneName, #list, "Completed quests to turn in here.")
+                renderSubHeader(groupKey, groupCollapsedDB, groupHidden, zoneName, #list, "Quests to turn in here.")
 
                 if not groupHidden then
                     for _, quest in ipairs(list) do
@@ -757,7 +781,7 @@ local function renderCompletedSection()
                         local line1, line2 = formatRowLines(quest)
                         local label = line2 and (line1 .. "\n" .. line2) or line1
                         renderQuestRow(label,
-                            function(self) showTurnInTooltip(self, quest) end,
+                            function(self) showTurnInTooltip(self, quest, CLICK_HINT.turnIn) end,
                             function() focusQuest(quest.id) end,
                             function(self) showQuestContextMenu(self, quest) end,
                             function() linkQuestInChat(quest) end,
@@ -828,13 +852,13 @@ function renderList()
     end
     hideEmptyState()
     local byZone, zoneOrder = ensureScan()
-    sortZones(zoneOrder, byZone)
+    local currentZoneName = getCurrentZoneName()
+    sortZones(zoneOrder, byZone, currentZoneName)
     lastZoneOrder = zoneOrder
     rowTargets = {}
     zoneHeaderTops = {}
     local bestZoneName = findBestZone(byZone, zoneOrder)
     local filters = QuestieGuideDB.filters
-    local currentZoneName = getCurrentZoneName()
     index, y = 1, 0
     headerCount, subHeaderCount = 0, 0
     local renderedZones = 0

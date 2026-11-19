@@ -7,7 +7,7 @@ local SUBCAT_ORDER = ns.SUBCAT_ORDER
 local sessionCache = ns.sessionCache
 local isQuestCompleted = ns.isQuestCompleted
 local getQuestXp = ns.getQuestXp
-local getZoneName = ns.getZoneName
+local getQuestZoneName = ns.getQuestZoneName
 local isQuestHidden = ns.isQuestHidden
 local getEffectiveLevel = ns.getEffectiveLevel
 local passesLevelCap = ns.passesLevelCap
@@ -137,7 +137,7 @@ local function collectZoneFollowups(zoneName, seeds, currentLog, playerLevel, is
                     and not isQuestCompleted(followerId) then
                     -- Zone membership: set in the zone (zoneOrSort) or picked up in the zone (giver). The cheap zoneOrSort check runs first; the giver lookup is session-cached per quest.
                     local zoneOrSort = questField(followerId, "zoneOrSort")
-                    local inZone = zoneOrSort and getZoneName(zoneOrSort) == zoneName
+                    local inZone = zoneOrSort and getQuestZoneName(followerId, zoneOrSort) == zoneName
                     if not inZone then
                         local _, giverZoneName = getQuestStartInfo(followerId)
                         inZone = giverZoneName == zoneName
@@ -202,12 +202,15 @@ local function scanQuestsByZone()
         return entry
     end
 
-    -- Lists a row in its quest's zone, under Starts Elsewhere when the giver stands in another zone, and under Starts Here in that giver zone too, so the giver zone's totals and follow-up seeds count it. Rows share one table across both zones unless ownRowPerZone asks for a copy, which blocked rows need because the follow-up projection marks unlocksHere per zone.
+    -- Lists a row in its quest's zone, under Starts Elsewhere when the giver stands in another zone, and under Starts Here in that giver zone too, so the giver zone's totals and follow-up seeds count it. Rows share one table across both zones unless ownRowPerZone asks for a copy, which blocked rows need because the follow-up projection marks unlocksHere per zone. A sort category, such as a class or a profession, is a section of the list rather than a place, so it is marked and never named Next.
     local function addRow(row, zoneOrSort, ownRowPerZone)
-        local questZoneName = getZoneName(zoneOrSort)
+        local questZoneName = getQuestZoneName(row.id, zoneOrSort)
         local _, giverZoneName = getQuestStartInfo(row.id)
         local giverElsewhere = giverZoneName and giverZoneName ~= questZoneName
         local entry = ensureZone(questZoneName)
+        if zoneOrSort <= 0 then
+            entry.category = true
+        end
         local bucket = giverElsewhere and entry.pickedUpElsewhere or entry.available
         bucket[#bucket + 1] = row
         if giverElsewhere then
@@ -383,8 +386,8 @@ local function scanQuestsByZone()
     return byZone, zoneOrder
 end
 
--- Apply the user's sort mode + direction in place. Cheap; safe to call every render. Zones without a value for the chosen metric sort to the END regardless of direction (so the player sees only zones with available quests at the top).
-local function sortZones(zoneOrder, byZone)
+-- Apply the user's sort mode + direction in place. Cheap; safe to call every render. Zones without a value for the chosen metric sort to the END regardless of direction (so the player sees only zones with available quests at the top). The zone the player stands in leads, as the native quest log lists the quests of the current map first.
+local function sortZones(zoneOrder, byZone, currentZoneName)
     local mode = QuestieGuideDB.sortMode
     local desc = QuestieGuideDB.sortDir == "desc"
 
@@ -418,6 +421,13 @@ local function sortZones(zoneOrder, byZone)
         if name == OTHER_ZONE_NAME then
             table.remove(zoneOrder, i)
             zoneOrder[#zoneOrder + 1] = name
+            break
+        end
+    end
+    for i, name in ipairs(zoneOrder) do
+        if name == currentZoneName then
+            table.remove(zoneOrder, i)
+            table.insert(zoneOrder, 1, name)
             break
         end
     end
@@ -487,11 +497,12 @@ local function collectCompletedByZone()
     return byZone, zoneOrder
 end
 
--- The zone with the highest one-trip value (XP available now plus follow-ups unlocking in-zone): the answer to "where should I go questing next", independent of the active sort. "Other" is a sort catch-all rather than a destination, so it never wins.
+-- The zone with the highest one-trip value (XP available now plus follow-ups unlocking in-zone): the answer to "where should I go questing next", independent of the active sort. A sort category, such as a class, Other included, is no destination, so it never wins.
 local function findBestZone(byZone, zoneOrder)
     local bestZoneName, bestXp = nil, 0
     for _, zoneName in ipairs(zoneOrder) do
-        local stats = zoneName ~= OTHER_ZONE_NAME and byZone[zoneName].stats
+        local entry = byZone[zoneName]
+        local stats = zoneName ~= OTHER_ZONE_NAME and not entry.category and entry.stats
         if stats and stats.xp > bestXp then
             bestZoneName, bestXp = zoneName, stats.xp
         end

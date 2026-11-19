@@ -188,6 +188,25 @@ local function getZoneName(zoneOrSort)
     return name
 end
 
+-- The list section a quest belongs in: its zone, or for a sort category the heading the native quest log gives it, the
+-- profession for a profession quest and the player's class for a class quest. Every other category collects in Other.
+-- The scan only lists profession quests the player has the profession for and class quests of the player's class.
+local function getQuestZoneName(questId, zoneOrSort)
+    if zoneOrSort and zoneOrSort > 0 then
+        return getZoneName(zoneOrSort)
+    end
+    local requiredSkill = questField(questId, "requiredSkill")
+    local skill = type(requiredSkill) == "table" and C_SkillInfo.GetSkillLineInfoByID(requiredSkill[1])
+    if skill and skill.name and skill.name ~= "" then
+        return skill.name
+    end
+    local requiredClasses = questField(questId, "requiredClasses")
+    if requiredClasses and requiredClasses ~= 0 then
+        return (UnitClass("player"))
+    end
+    return OTHER_ZONE_NAME
+end
+
 -- Area name -> area id over every area QuestieDB maps, built on first use. A subzone can share its zone's name; the zone has the lower id and wins.
 local areaIdsByName
 
@@ -320,43 +339,60 @@ local function describeSpawnedForQuest(entity, id, questId)
     return name, getZoneName(bestZoneId), bestSpawn, bestZoneId
 end
 
--- Returns name, zoneName, {x, y}, areaId for the quest's start source. QuestieDB's `startedBy` is a 3-tuple: [1] NPC ids, [2] object ids, [3] item ids. Object/item start (no NPC giver): use the quest's own zone as a best-effort location and "Quest Item" as the generic giver name.
+-- The faction test reads the player's own faction.
+local function isNpcStarterReachable(npcId, playerFaction)
+    local friendlyToFaction = Npc.Get(npcId, "friendlyToFaction")
+    local hostile = (playerFaction == "Alliance" and friendlyToFaction == "H")
+        or (playerFaction == "Horde" and friendlyToFaction == "A")
+    if hostile then
+        return false
+    end
+    local spawns = Npc.Get(npcId, "spawns")
+    if type(spawns) == "table" and next(spawns) then
+        return true
+    end
+    local waypoints = Npc.Get(npcId, "waypoints")
+    return type(waypoints) == "table" and next(waypoints) ~= nil
+end
+
+-- Returns name, zoneName, {x, y}, areaId and kind ("npc", "object" or "item") for the quest's start source. QuestieDB's `startedBy` is a 3-tuple: [1] NPC ids, [2] object ids, [3] item ids. A quest both factions can take lists each side's giver, so the first NPC the player can reach gives it. An object, such as a wanted poster, is located like an NPC. An item drops somewhere, so it names the giver line and takes the quest's own zone without a position.
 local function computeQuestStartInfo(questId)
     local startedBy = questField(questId, "startedBy")
     if type(startedBy) ~= "table" then
-        return nil, nil, nil, nil
+        return nil
     end
-
-    local npcIds = startedBy[1]
-    if type(npcIds) == "table" and npcIds[1] then
-        local npcName, zoneName, spawn, areaId = describeSpawnedForQuest(Npc, npcIds[1], questId)
-        if npcName then
-            return npcName, zoneName, spawn, areaId
+    local playerFaction = UnitFactionGroup("player")
+    for _, npcId in ipairs(type(startedBy[1]) == "table" and startedBy[1] or {}) do
+        if isNpcStarterReachable(npcId, playerFaction) then
+            local name, zoneName, spawn, areaId = describeSpawnedForQuest(Npc, npcId, questId)
+            if name then
+                return name, zoneName, spawn, areaId, "npc"
+            end
         end
     end
-
-    local hasObjectStart = type(startedBy[2]) == "table" and startedBy[2][1] ~= nil
-    local hasItemStart = type(startedBy[3]) == "table" and startedBy[3][1] ~= nil
-    if hasObjectStart or hasItemStart then
+    for _, objectId in ipairs(type(startedBy[2]) == "table" and startedBy[2] or {}) do
+        local name, zoneName, spawn, areaId = describeSpawnedForQuest(Object, objectId, questId)
+        if name then
+            return name, zoneName, spawn, areaId, "object"
+        end
+    end
+    local itemId = type(startedBy[3]) == "table" and startedBy[3][1]
+    if itemId then
         local questZone = getPreferredZoneId(questId)
-        if questZone then
-            return "Quest Item", getZoneName(questZone), nil, questZone
-        end
-        return "Quest Item", nil, nil, nil
+        return itemField(itemId, "name") or "Quest Item", questZone and getZoneName(questZone), nil, questZone, "item"
     end
-
-    return nil, nil, nil, nil
+    return nil
 end
 
 -- Start info is static DB data, but the scan resolves it for every doable quest on every rescan (accept, turn-in, level-up) and quest row tables are rebuilt each scan, so a per-row cache would not survive. Cache per questId for the session instead.
 local function getQuestStartInfo(questId)
     local cached = sessionCache.startInfo[questId]
     if cached then
-        return cached.npcName, cached.zoneName, cached.spawn, cached.areaId
+        return cached.npcName, cached.zoneName, cached.spawn, cached.areaId, cached.kind
     end
-    local npcName, zoneName, spawn, areaId = computeQuestStartInfo(questId)
-    sessionCache.startInfo[questId] = { npcName = npcName, zoneName = zoneName, spawn = spawn, areaId = areaId }
-    return npcName, zoneName, spawn, areaId
+    local npcName, zoneName, spawn, areaId, kind = computeQuestStartInfo(questId)
+    sessionCache.startInfo[questId] = { npcName = npcName, zoneName = zoneName, spawn = spawn, areaId = areaId, kind = kind }
+    return npcName, zoneName, spawn, areaId, kind
 end
 
 -- Row and tooltip callers keep the table shape they already use; it fronts the session cache.
@@ -364,12 +400,13 @@ local function resolveStartInfo(quest)
     if quest.startInfo then
         return quest.startInfo
     end
-    local npcName, zoneName, spawn, areaId = getQuestStartInfo(quest.id)
+    local npcName, zoneName, spawn, areaId, kind = getQuestStartInfo(quest.id)
     quest.startInfo = {
         npcName = npcName,
         zoneName = zoneName,
         spawn = spawn,
         areaId = areaId,
+        kind = kind,
     }
     return quest.startInfo
 end
@@ -486,22 +523,6 @@ local function exceedsRequiredMaxLevel(requiredMaxLevel, playerLevel)
         return false
     end
     return playerLevel > requiredMaxLevel
-end
-
--- The faction test reads the player's own faction.
-local function isNpcStarterReachable(npcId, playerFaction)
-    local friendlyToFaction = Npc.Get(npcId, "friendlyToFaction")
-    local hostile = (playerFaction == "Alliance" and friendlyToFaction == "H")
-        or (playerFaction == "Horde" and friendlyToFaction == "A")
-    if hostile then
-        return false
-    end
-    local spawns = Npc.Get(npcId, "spawns")
-    if type(spawns) == "table" and next(spawns) then
-        return true
-    end
-    local waypoints = Npc.Get(npcId, "waypoints")
-    return type(waypoints) == "table" and next(waypoints) ~= nil
 end
 
 local function computeReachableStarter(questId)
@@ -791,6 +812,7 @@ ns.getQuestTag = getQuestTag
 ns.getQuestXp = getQuestXp
 ns.getUiMapId = getUiMapId
 ns.getZoneName = getZoneName
+ns.getQuestZoneName = getQuestZoneName
 ns.getCurrentZoneName = getCurrentZoneName
 ns.isQuestHidden = isQuestHidden
 ns.getEffectiveLevel = getEffectiveLevel

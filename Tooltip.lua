@@ -81,7 +81,18 @@ local function formatQuestTitle(questId, level, name)
     return getDifficultyColor(level, questId):WrapTextInColorCode(title)
 end
 
-local function showQuestTooltip(anchor, questId)
+-- The label of the giver field by what gives the quest.
+local GIVER_LABEL = { npc = "NPC", object = "Object", item = "Item" }
+
+-- A row tooltip ends with one instruction line naming what a click on the row does.
+local function addClickHint(tooltip, hint)
+    if hint then
+        GameTooltip_AddBlankLineToTooltip(tooltip)
+        GameTooltip_AddInstructionLine(tooltip, hint)
+    end
+end
+
+local function showQuestTooltip(anchor, questId, hint)
     showTooltip(anchor, function(tooltip)
         GameTooltip_SetTitle(tooltip, formatQuestTitle(questId, (getEffectiveLevel(questId, UnitLevel("player")))))
         GameTooltip_AddBlankLineToTooltip(tooltip)
@@ -99,8 +110,8 @@ local function showQuestTooltip(anchor, questId)
             GameTooltip_AddColoredLine(tooltip, tagText, COLOR.MUTED)
         end
 
-        local npcName, npcZone, npcSpawn = getQuestStartInfo(questId)
-        addTooltipField(tooltip, "NPC", npcName)
+        local npcName, npcZone, npcSpawn, _, kind = getQuestStartInfo(questId)
+        addTooltipField(tooltip, GIVER_LABEL[kind] or GIVER_LABEL.npc, npcName)
         addTooltipField(tooltip, "Location", formatLocation(npcZone, npcSpawn))
 
         local xp = getQuestXp(questId)
@@ -116,6 +127,7 @@ local function showQuestTooltip(anchor, questId)
                 GameTooltip_AddHighlightLine(tooltip, line)
             end
         end
+        addClickHint(tooltip, hint)
     end)
 end
 
@@ -202,12 +214,13 @@ local function fillChainTooltip(tooltip, mpe)
 end
 
 -- Missing-prerequisite chain tooltip on a blocked row.
-local function showChainTooltip(anchor, mpe)
+local function showChainTooltip(anchor, mpe, hint)
     if type(mpe.chain) ~= "table" or #mpe.chain < 2 then
         return
     end
     showTooltip(anchor, function(tooltip)
         fillChainTooltip(tooltip, mpe)
+        addClickHint(tooltip, hint)
     end)
 end
 
@@ -255,10 +268,10 @@ local function showZoneTooltip(anchor, zoneName, stats, isBest, focusHint)
 end
 
 -- Tooltip for a ready-to-turn-in quest: the coloured title plus the turn-in target, mirroring showQuestTooltip's field styling. The quest's startInfo carries the finisher (see collectCompletedByZone).
-local function showTurnInTooltip(anchor, quest)
+local function showTurnInTooltip(anchor, quest, hint)
     showTooltip(anchor, function(tooltip)
         GameTooltip_SetTitle(tooltip, formatQuestTitle(quest.id, quest.level, quest.name))
-        GameTooltip_AddColoredLine(tooltip, "Completed", COLOR.READY)
+        GameTooltip_AddColoredLine(tooltip, QUEST_WATCH_QUEST_READY, COLOR.READY)
         GameTooltip_AddBlankLineToTooltip(tooltip)
         local info = quest.startInfo
         addTooltipField(tooltip, "Turn in to", info and info.npcName)
@@ -266,6 +279,7 @@ local function showTurnInTooltip(anchor, quest)
         if quest.xp and quest.xp > 0 then
             addTooltipField(tooltip, "XP", BreakUpLargeNumbers(quest.xp))
         end
+        addClickHint(tooltip, hint)
     end)
 end
 

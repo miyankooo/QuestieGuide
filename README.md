@@ -10,9 +10,11 @@ A WoW Forever addon that lists every quest you can pick up now, grouped by zone 
 - Each zone shows its quest count and trip XP, follow-up quests that unlock along the way included.
 - Each quest shows only the status that matters, such as In Questlog or Missing Pre-Quest.
 - A quest behind a missing pre-quest shows the chain that unlocks it, and a click jumps to the step you can do now.
-- Click a quest to open the map at its giver with a waypoint.
+- Click a quest to set the game's own map pin at its giver, so the arrow leads there. A chat line links the pin: click it to open the map at the giver.
+- Givers are the right ones for your faction, and quests that start at an object, such as a wanted poster, are pinned too.
 - Click a quest in your log to focus it, so the arrow leads to its objectives or turn-in.
 - Quests ready to turn in sit at the top, grouped by where you hand them in.
+- The zone you stand in comes first, and class and profession quests get their own section, as in the quest log.
 - One Filter menu sets quest types, level range and sorting.
 - Item tooltips name the quests an item is for.
 - A chat line points out new quests when you level up, and the quests a dungeon still holds when you enter it.
@@ -22,7 +24,7 @@ A WoW Forever addon that lists every quest you can pick up now, grouped by zone 
 1. Open it with the minimap button, `/qg` or a key binding.
 2. Read the Next banner, or press Current Zone.
 3. Type in the search box to find a quest, zone or NPC.
-4. Click a quest to open the map at its giver, or a quest in your log to focus it. Shift-click links it in chat. Right-click a zone to show only that zone.
+4. Click a quest to pin its giver, or a quest in your log to focus it. Right-click a quest for Show on Map and Link in Chat, or Shift-click it to link it. Right-click a zone to show only that zone.
 
 Commands:
 

@@ -100,6 +100,14 @@ RAID = "Raid"
 FILTER = "Filter"
 SEARCH = "Search"
 ERR_NOT_IN_COMBAT = "You can't do that while in combat"
+MAP_PIN_INVALID_MAP = "You can't place a pin on this map."
+SUPER_TRACK_QUEST = "Focus"
+QUEST_WATCH_QUEST_READY = "Ready for turn-in"
+SOUNDKIT = { UI_MAP_WAYPOINT_SUPER_TRACK_ON = 170270 }
+local sounds = {}
+function PlaySound(soundKitId) sounds[#sounds + 1] = soundKitId end
+-- Blizzard colours a chat link that carries no colour of its own: yellow for a map pin (ItemRef.lua).
+function GetFixedLink(text) return text:find("|c", 1, true) and text or ("|cffffff00" .. text .. "|r") end
 Constants = { QuestConsts = { QUEST_INFO_ELITE_ID = 1, QUEST_INFO_DUNGEON_ID = 81, QUEST_INFO_PVP_ID = 41, QUEST_INFO_RAID_ID = 62 } }
 Enum = {
     TooltipDataType = { Item = 0 },
@@ -397,7 +405,7 @@ EventUtil = { ContinueOnPlayerLogin = function(callback) loginCallbacks[#loginCa
 local uiErrors = {}
 UIErrorsFrame = { AddExternalErrorMessage = function(_, message) uiErrors[#uiErrors + 1] = message end }
 
-local AREAS = { [12] = "Elwynn Forest", [40] = "Westfall" }
+local AREAS = { [12] = "Elwynn Forest", [40] = "Westfall", [10] = "Duskwood" }
 local mapCalls = {}
 C_Map = {
     GetAreaInfo = function(areaId) return AREAS[areaId] end,
@@ -405,11 +413,16 @@ C_Map = {
     GetMapInfo = function() return nil end,
     GetBestMapForUnit = function() return 1412 end,
     CanSetUserWaypointOnMap = function() return true end,
-    SetUserWaypoint = function(point) mapCalls.waypoint = point end,
+    SetUserWaypoint = function(point) mapCalls.waypoint = point; return true end,
+    -- The pin as Blizzard links it in chat, without a colour of its own.
+    GetUserWaypointHyperlink = function()
+        local point = mapCalls.waypoint
+        return point and string.format("|Hworldmap:%d:%d:%d|h[Map Pin Location]|h", point.mapId, point.x * 10000, point.y * 10000)
+    end,
 }
 UiMapPoint = { CreateFromCoordinates = function(mapId, x, y) return { mapId = mapId, x = x, y = y } end }
 C_SuperTrack = {
-    SetSuperTrackedUserWaypoint = function() end,
+    SetSuperTrackedUserWaypoint = function(tracked) mapCalls.pinFocused = tracked end,
     SetSuperTrackedQuestID = function(questId) mapCalls.focused = questId end,
 }
 function OpenWorldMap(mapId) mapCalls.opened = mapId end
@@ -428,6 +441,23 @@ EventRegistry = {
 }
 ChatFrameUtil = { GetActiveWindow = function() return nil end }
 
+-- A row's context menu: its title, its buttons in order, and each button's click by its label.
+local lastMenu
+MenuUtil = {
+    CreateContextMenu = function(owner, generator)
+        local menu = { buttons = {} }
+        local root = {}
+        function root:CreateTitle(text) menu.title = text end
+        function root:CreateButton(text, callback)
+            menu.buttons[#menu.buttons + 1] = text
+            menu[text] = callback
+            return { SetEnabled = function() end, SetTooltip = function() end }
+        end
+        generator(owner, root)
+        lastMenu = menu
+    end,
+}
+
 -- QuestieDB with a small world: quests, givers, XP and the zone tables, behind its public readers.
 local QUESTS = {
     [101] = { name = "Wolves Across the Border", questLevel = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 450 },
@@ -440,11 +470,23 @@ local QUESTS = {
     [108] = { name = "Red Silk Bandanas", questLevel = 12, requiredLevel = 10, zoneOrSort = 40, startedBy = { { 1003 } }, xp = 800, tag = 81 },
     [109] = { name = "Nature's Defense", questLevel = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1001 } }, xp = 450, requiredRaces = 8 },
     [110] = { name = "Smelt On, Smelt Off", questLevel = 10, requiredLevel = 8, zoneOrSort = 12, startedBy = { { 1002 } }, xp = 450, requiredSkill = { 186, 50 } },
+    [111] = { name = "Wanted: The Gnoll Leader", questLevel = 10, requiredLevel = 5, zoneOrSort = 10, startedBy = { [2] = { 2001 } }, xp = 100 },
+    [112] = { name = "The Night Watch", questLevel = 10, requiredLevel = 5, zoneOrSort = 10, startedBy = { { 1004, 1005 } }, xp = 100 },
+    [113] = { name = "A Warrior's Training", questLevel = 10, requiredLevel = 5, zoneOrSort = -81, requiredClasses = 1, startedBy = { { 1005 } }, xp = 100 },
+    [114] = { name = "An Old Map", questLevel = 10, requiredLevel = 5, zoneOrSort = 10, startedBy = { [3] = { 3001 } }, xp = 100 },
 }
 local NPCS = {
     [1001] = { name = "Marshal Dughan", friendlyToFaction = "A", spawns = { [12] = { { 42.1, 65.9 } } } },
     [1002] = { name = "William Pestle", friendlyToFaction = "A", spawns = { [12] = { { 43.3, 65.7 } } } },
     [1003] = { name = "Gryan Stoutmantle", friendlyToFaction = "A", spawns = { [40] = { { 56.3, 47.5 } } } },
+    [1004] = { name = "Horde Courier", friendlyToFaction = "H", spawns = { [10] = { { 20.0, 30.0 } } } },
+    [1005] = { name = "Commander Althea Ebonlocke", friendlyToFaction = "A", spawns = { [10] = { { 73.6, 47.4 } } } },
+}
+local OBJECTS = {
+    [2001] = { name = "Wanted Poster", spawns = { [10] = { { 73.6, 46.8 } } } },
+}
+local ITEMS = {
+    [3001] = { name = "A Faded Map" },
 }
 local questIds, xpTable = {}, {}
 for questId, quest in pairs(QUESTS) do
@@ -464,8 +506,8 @@ local SUPPORT = {
     ZoneDB = {
         private = {
             areaIdToUiMapId = "return { [12] = 1429, [40] = 1436 }",
-            areaIdToUiMapIdOverride = "return { [12] = 1412, [40] = 1440 }",
-            uiMapIdToAreaId = "return { [1412] = 12, [1440] = 40 }",
+            areaIdToUiMapIdOverride = "return { [12] = 1412, [40] = 1440, [10] = 1431 }",
+            uiMapIdToAreaId = "return { [1412] = 12, [1440] = 40, [1431] = 10 }",
         },
         instanceIdToAreaId = {},
     },
@@ -473,8 +515,8 @@ local SUPPORT = {
 LibQuestieDB = {
     Quest = reader(QUESTS),
     Npc = reader(NPCS),
-    Object = reader({}),
-    Item = reader({}),
+    Object = reader(OBJECTS),
+    Item = reader(ITEMS),
     Enum = { raceMaskById = { [1] = 1, [3] = 4, [4] = 8 } },
     Support = { Get = function(name) return SUPPORT[name] end },
     RequireContract = function(version) return version >= 1 and version <= 4 end,
@@ -643,7 +685,7 @@ flushTimers()
 check("the loading line goes with the first render", not QuestieGuideFrame.emptyState.shown)
 local opened = rowTexts()
 check("banner names the best zone", opened[1] == "Next: Elwynn Forest  2600 XP in one trip, covers 260% of level 10", opened[1])
-check("completed section lists the turn-in", findRow("Completed Quests  1 |4quest:quests;") ~= nil and findRow("A Fishy Peril") ~= nil)
+check("completed section lists the turn-in", findRow("Ready for Turn-In  1 |4quest:quests;") ~= nil and findRow("A Fishy Peril") ~= nil)
 check("current zone header carries XP and the marker", findRow("Elwynn Forest (You are here)  5 |4quest:quests;, 2600 XP") ~= nil)
 
 -- The tree reads like the character window's Statistics list: a zone on the 26 px collapse bar across the list, a
@@ -784,29 +826,63 @@ player.instanceType = "none"
 fireEvent("ZONE_CHANGED_NEW_AREA")
 flushTimers()
 
--- In combat a row click lands the waypoint, keeps the map closed and says why in Blizzard's red error text.
-chat, mapCalls.opened, mapCalls.waypoint = {}, nil, nil
+-- A row click sets Blizzard's map pin at the giver and focuses it, in combat too, opens no window, and prints one line
+-- with Blizzard's own Map Pin Location link, coloured as Blizzard colours it.
+chat, mapCalls.opened, mapCalls.waypoint, mapCalls.pinFocused, sounds = {}, "unchanged", nil, nil, {}
+local errorsBeforePin = #uiErrors
 player.inCombat = true
 wolves.scripts.OnClick(wolves, "LeftButton")
-flushTimers()
-check("combat click sets only the waypoint", mapCalls.waypoint ~= nil and mapCalls.opened == nil
-    and #chat == 0 and uiErrors[#uiErrors] == ERR_NOT_IN_COMBAT, chat[1])
 player.inCombat = false
-
--- A row click sets the waypoint and opens the map at the giver.
-wolves.scripts.OnClick(wolves, "LeftButton")
 flushTimers()
-check("row click opens the giver's map", mapCalls.opened == 1412 and mapCalls.waypoint and mapCalls.waypoint.mapId == 1412)
+check("row click pins the giver and focuses the pin", mapCalls.waypoint and mapCalls.waypoint.mapId == 1412
+    and math.abs(mapCalls.waypoint.x - 0.421) < 1e-9 and mapCalls.pinFocused == true and sounds[1] == 170270)
+check("row click opens no window and raises no error, in combat too", mapCalls.opened == "unchanged" and #uiErrors == errorsBeforePin)
+check("row click prints the map pin link", #chat == 1 and chat[1]:find(
+    ": Map pin set at Marshal Dughan in Elwynn Forest for Wolves Across the Border: |cffffff00|Hworldmap:1412:4210:6590|h[Map Pin Location]|h|r.", 1, true) ~= nil,
+    chat[1])
 check("clicked row is selected", findRow("Wolves Across the Border").selection.shown)
+local wolvesNow = findRow("Wolves Across the Border")
+wolvesNow.scripts.OnEnter(wolvesNow)
+check("a quest's tooltip names what a click does", GameTooltip.lines[#GameTooltip.lines] == "Click to set a map pin at the giver. Right-click for more.",
+    GameTooltip.lines[#GameTooltip.lines])
 
--- With a quest open in the quest log's details, a row click opens the map where it is: moving it from addon code would
--- show those details again in the addon's taint and taint the objective tracker.
-detailsQuestId, mapCalls.opened, mapCalls.waypoint = 999, "unchanged", nil
-findRow("Wolves Across the Border").scripts.OnClick(findRow("Wolves Across the Border"), "LeftButton")
-flushTimers()
-check("row click keeps the map put while quest details are open", mapCalls.opened == nil
-    and mapCalls.waypoint and mapCalls.waypoint.mapId == 1412)
+-- Right-click: Set Map Pin, Show on Map and Link in Chat. Show on Map opens the map at the pin, but where it is while a
+-- quest is open in the quest log's details: moving it from addon code would show those details again in the addon's
+-- taint and taint the objective tracker.
+wolvesNow.scripts.OnClick(wolvesNow, "RightButton")
+check("a quest's menu holds the map actions", lastMenu.title == "Wolves Across the Border"
+    and table.concat(lastMenu.buttons, ", ") == "Set Map Pin, Show on Map, Link in Chat", table.concat(lastMenu.buttons, ", "))
+lastMenu["Show on Map"]()
+check("Show on Map opens the giver's map", mapCalls.opened == 1412)
+detailsQuestId, mapCalls.opened = 999, "unchanged"
+lastMenu["Show on Map"]()
+check("Show on Map keeps the map put while quest details are open", mapCalls.opened == nil)
 detailsQuestId = nil
+
+-- Duskwood: a wanted poster is pinned like an NPC, a quest both factions take names the player's own side's giver, and
+-- an item has no pin, which the red error text says.
+-- Its four quests: the class quest starts here too.
+local duskwood = findRow("Duskwood  4 |4quest:quests;, 400 XP")
+check("Duskwood starts collapsed", duskwood ~= nil and findRow("The Night Watch") == nil)
+duskwood.scripts.OnClick(duskwood, "LeftButton")
+local poster = findRow("Wanted: The Gnoll Leader")
+check("an object giver names the object", poster ~= nil and plain(poster.text.label):find("Duskwood, Wanted Poster", 1, true) ~= nil)
+chat = {}
+poster.scripts.OnClick(poster, "LeftButton")
+check("an object giver is pinned", mapCalls.waypoint.mapId == 1431 and math.abs(mapCalls.waypoint.y - 0.468) < 1e-9 and #chat == 1)
+check("a quest both factions take names the player's side's giver",
+    plain(findRow("The Night Watch").text.label):find("Commander Althea Ebonlocke", 1, true) ~= nil)
+local oldMap = findRow("An Old Map")
+check("an item giver names the item", plain(oldMap.text.label):find("Duskwood, A Faded Map", 1, true) ~= nil)
+chat = {}
+oldMap.scripts.OnClick(oldMap, "LeftButton")
+check("an item giver has no pin and says so", #chat == 0 and uiErrors[#uiErrors] == "This quest starts from an item, so it has no map pin.")
+duskwood = findRow("Duskwood  4")
+duskwood.scripts.OnClick(duskwood, "LeftButton")
+
+-- A class quest heads under the player's class, as the native quest log does, and is listed where its giver stands.
+check("a class quest heads under the class", findRow("Warrior  1 |4quest:quests;") ~= nil)
+check("a class section is never named Next", rowTexts()[1]:find("Next: Elwynn Forest", 1, true) ~= nil)
 
 -- Filter menu: the template's reset button follows the filters.
 local filter = QuestieGuideFrame.filterDropdown
@@ -821,16 +897,21 @@ local function newDescription()
     return description
 end
 filter.generator(filter, newDescription())
-check("filter menu holds every family", entries[1] == "Availability" and entries["Show Completed"] ~= nil
+check("filter menu holds every family", entries[1] == "Availability" and entries["Show Ready for Turn-In"] ~= nil
     and hasLine(entries, "Level Range") and hasLine(entries, "Sort By"))
 check("reset hidden at defaults", filter.ResetButton.shown == false)
-entries["Show Completed"]()
+entries["radio:Alphabetical by Zone"]()
+local function rowTop(fragment) return findRow(fragment).points[1].y end
+check("the current zone leads in any order", rowTop("Elwynn Forest (You are here)") > rowTop("Westfall  ")
+    and rowTop("Westfall  ") > rowTop("Warrior  "))
+entries["radio:Total XP"]()
+entries["Show Ready for Turn-In"]()
 filter:ValidateResetState()
-check("a changed filter shows reset and re-renders", filter.ResetButton.shown and findRow("Completed Quests") == nil)
+check("a changed filter shows reset and re-renders", filter.ResetButton.shown and findRow("Ready for Turn-In") == nil)
 filter.defaultCallback()
 filter:ValidateResetState()
 check("reset restores the defaults", QuestieGuideDB.showCompleted and not filter.ResetButton.shown
-    and findRow("Completed Quests") ~= nil)
+    and findRow("Ready for Turn-In") ~= nil)
 check("range radios keep the menu open, sort radios close it",
     entries["radio:5"]() == MenuResponse.Refresh and entries["radio:Total XP"]() == nil)
 filter.defaultCallback()
@@ -956,7 +1037,7 @@ questLog[107] = nil
 completed[107] = true
 fireEvent("QUEST_TURNED_IN", 107)
 flushTimers()
-check("a turned-in quest leaves the list", findRow("A Fishy Peril") == nil and findRow("Completed Quests") == nil)
+check("a turned-in quest leaves the list", findRow("A Fishy Peril") == nil and findRow("Ready for Turn-In") == nil)
 QuestieGuide_Toggle()
 
 -- A later session on the same account: the saved variables exist, so login prints nothing. A band side saved past

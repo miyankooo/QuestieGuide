@@ -255,7 +255,7 @@ local function setupFilterMenu(_, rootDescription)
         end
     end
     rootDescription:CreateDivider()
-    rootDescription:CreateCheckbox("Show Completed",
+    rootDescription:CreateCheckbox("Show Ready for Turn-In",
         function() return QuestieGuideDB.showCompleted end,
         function()
             QuestieGuideDB.showCompleted = not QuestieGuideDB.showCompleted

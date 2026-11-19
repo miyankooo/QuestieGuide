@@ -7,7 +7,7 @@ local SORT_DIR_OPTIONS = ns.SORT_DIR_OPTIONS
 local clampRange = ns.clampRange
 local RANGE_LIMIT = ns.RANGE_LIMIT
 local isQuestCompleted = ns.isQuestCompleted
-local getZoneName = ns.getZoneName
+local getQuestZoneName = ns.getQuestZoneName
 local getEffectiveLevel = ns.getEffectiveLevel
 local passesLevelCap = ns.passesLevelCap
 local hasReachableStarter = ns.hasReachableStarter
@@ -53,7 +53,7 @@ local function announceNewQuests(newLevel)
             local zoneOrSort = questField(questId, "zoneOrSort")
             local level, requiredLevel = getEffectiveLevel(questId, newLevel)
             if zoneOrSort and passesLevelCap(level, requiredLevel) then
-                local zoneName = getZoneName(zoneOrSort)
+                local zoneName = getQuestZoneName(questId, zoneOrSort)
                 if not counts[zoneName] then
                     counts[zoneName] = 0
                     zones[#zones + 1] = zoneName

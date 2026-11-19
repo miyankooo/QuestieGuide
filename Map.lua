@@ -1,4 +1,4 @@
--- The world map jump and the quest focus.
+-- Blizzard's map pin at a quest's giver, the world map jump and the quest focus.
 local _, ns = ...
 
 local resolveStartInfo = ns.resolveStartInfo
@@ -31,16 +31,49 @@ local function resolveRenderableMapId(uiMapId)
     return nil
 end
 
--- The native user waypoint plus its in-world beacon. It replaces any waypoint the player set.
-local function setNativeWaypoint(uiMapId, x, y)
-    if not C_Map.CanSetUserWaypointOnMap(uiMapId) then
-        return
+-- Why a pin can't land: an item drops somewhere, and some givers stand where QuestieDB has no position, such as inside a dungeon.
+local NO_POSITION = {
+    item = "This quest starts from an item, so it has no map pin.",
+    other = "This quest's giver has no map position.",
+}
+
+-- Blizzard's map pin (MAP_PIN) at the quest's giver, or at its turn-in target for a quest ready to turn in, focused so
+-- the in-world arrow leads there, with the sound the map plays for it. It replaces any pin the player set, as the
+-- map's own pin does, and needs no window, so it lands in combat too. Returns the place it pinned, or nil after
+-- saying why in Blizzard's red error text.
+local function placeMapPin(quest)
+    local startInfo = resolveStartInfo(quest)
+    local uiMapId = startInfo.areaId and getUiMapId(startInfo.areaId)
+    local spawn = startInfo.spawn
+    if not (uiMapId and spawn) then
+        UIErrorsFrame:AddExternalErrorMessage(NO_POSITION[startInfo.kind] or NO_POSITION.other)
+        return nil
     end
-    C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(uiMapId, x, y))
+    if not (C_Map.CanSetUserWaypointOnMap(uiMapId)
+        and C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(uiMapId, spawn[1] / 100, spawn[2] / 100))) then
+        UIErrorsFrame:AddExternalErrorMessage(MAP_PIN_INVALID_MAP)
+        return nil
+    end
     C_SuperTrack.SetSuperTrackedUserWaypoint(true)
+    PlaySound(SOUNDKIT.UI_MAP_WAYPOINT_SUPER_TRACK_ON)
+    return startInfo
 end
 
--- OpenWorldMap honours the WorldMapDisabled game rule; without a renderable map it only opens the map. In combat only the waypoint lands.
+-- Set Map Pin: the pin, and one chat line with Blizzard's own Map Pin Location link (C_Map.GetUserWaypointHyperlink),
+-- coloured as Blizzard colours it in chat (GetFixedLink). A click on the link is Blizzard's: it sets the pin again and
+-- opens the map at it (ItemRefHandlers.lua, LinkTypes.WorldMapWaypoint).
+local function setMapPin(quest)
+    local place = placeMapPin(quest)
+    if not place then
+        return
+    end
+    local link = C_Map.GetUserWaypointHyperlink()
+    ns.Print(string.format("Map pin set at %s in %s for %s%s.", place.npcName, place.zoneName, quest.name,
+        link and (": " .. GetFixedLink(link)) or ""))
+end
+
+-- Show on Map: the pin where there is a position, then the map. OpenWorldMap honours the WorldMapDisabled game rule;
+-- without a renderable map it only opens the map. In combat only the pin lands.
 -- A map change made by addon code refreshes the quest log in that code's taint, and the refresh shows again the quest
 -- the player has open in its details, writing QuestMapFrame.DetailsFrame.questID (QuestLogMixin:Refresh,
 -- QuestMapFrame_UpdateAll). The objective tracker reads that field on every update (QuestMapFrame_GetFocusedQuestID,
@@ -49,16 +82,13 @@ end
 local function openMapForQuest(quest)
     local startInfo = resolveStartInfo(quest)
     local uiMapId = startInfo.areaId and getUiMapId(startInfo.areaId)
-    local renderMapId = uiMapId and resolveRenderableMapId(uiMapId)
-
-    -- Spawn coords belong to uiMapId's coordinate space, so a waypoint is only set when that map is the one shown.
-    if renderMapId and renderMapId == uiMapId and startInfo.spawn then
-        setNativeWaypoint(uiMapId, startInfo.spawn[1] / 100, startInfo.spawn[2] / 100)
+    if startInfo.spawn then
+        placeMapPin(quest)
     end
     if isBlockedInCombat() then
         return
     end
-    OpenWorldMap(not QuestMapFrame_GetFocusedQuestID() and renderMapId or nil)
+    OpenWorldMap(not QuestMapFrame_GetFocusedQuestID() and uiMapId and resolveRenderableMapId(uiMapId) or nil)
 end
 
 -- A quest in the log gets the objective tracker's own Focus Quest (SUPER_TRACK_QUEST): the tracker marks it and the
@@ -70,5 +100,6 @@ local function focusQuest(questId)
     end
 end
 
+ns.setMapPin = setMapPin
 ns.openMapForQuest = openMapForQuest
 ns.focusQuest = focusQuest
